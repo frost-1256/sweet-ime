@@ -70,6 +70,18 @@ Run `SweetIME-Setup.exe`. It asks for administrator rights, then:
 `SweetIME-Setup.exe --preview` shows the screens without changing
 anything.
 
+### Updates
+
+The settings app checks GitHub Releases for a newer version when it opens,
+and the installer registers a check at sign-in (at most once a day). Either
+one offers to update. The update downloads `SweetIME-Setup.exe` from the
+release, checks its SHA-256 against the release, and runs it with
+`--update`, which updates the existing install without asking again. To
+turn the checks off, use **Settings → 情報**, or set `update_check = off`.
+
+To publish an update, raise `version` in `Cargo.toml` and `nix/package.nix`,
+then push a matching tag such as `v0.1.3`.
+
 For development, `scripts\install.ps1 -AddToLanguageList` and
 `scripts\uninstall.ps1` do the same from an elevated PowerShell.
 
@@ -195,6 +207,7 @@ suggestions = on       # show predictions while typing
 neural = on            # rerank with the zenz model when installed
 learning = on          # learn from chosen candidates
 theme = default        # default, light, dark, sakura, matcha, midnight, lavender
+update_check = on      # look for new releases on GitHub
 ```
 
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.

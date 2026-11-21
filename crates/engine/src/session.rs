@@ -93,11 +93,13 @@ pub struct Options {
     pub mode_indicator: bool,
     /// Colors of the candidate window and the mode badge.
     pub theme: crate::Theme,
+    /// Look for a newer release on GitHub (settings app and sign-in).
+    pub update_check: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { live_conversion: true, suggestions: true, neural: true, learning: true, mode_indicator: true, theme: crate::Theme::Default }
+        Self { live_conversion: true, suggestions: true, neural: true, learning: true, mode_indicator: true, theme: crate::Theme::Default, update_check: true }
     }
 }
 
@@ -116,6 +118,7 @@ impl Options {
                 "learning" => o.learning = on,
                 "mode_indicator" => o.mode_indicator = on,
                 "theme" => o.theme = crate::Theme::from_id(v).unwrap_or_default(),
+                "update_check" => o.update_check = on,
                 _ => {}
             }
         }
@@ -133,6 +136,7 @@ impl Options {
              learning = {}
              mode_indicator = {}
              theme = {}
+             update_check = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -140,6 +144,7 @@ impl Options {
             b(self.learning),
             b(self.mode_indicator),
             self.theme.id(),
+            b(self.update_check),
         )
     }
 }
@@ -884,7 +889,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);

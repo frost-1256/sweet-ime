@@ -2,13 +2,15 @@
 //!
 //! Edits `config.txt` and `keymap.txt` (saved on every
 //! change), manages the learning history and the user dictionary, and
-//! downloads the optional neural model.
+//! downloads the optional neural model and updates.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dict_page;
 mod keys_page;
 mod theme_page;
+mod update;
+mod update_ui;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -20,6 +22,9 @@ use sweet_engine::learning::Learned;
 use sweet_engine::{Options, UserHistory, paths};
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|a| a == "--check-update") {
+        return update_ui::check_at_sign_in();
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sweet IME の設定")
@@ -83,6 +88,7 @@ struct App {
     download: Option<Download>,
     keys: keys_page::KeysPage,
     dict: dict_page::DictPage,
+    updater: update::Updater,
 }
 
 const MODELS: [(&str, &str); 2] = [
@@ -104,9 +110,14 @@ impl App {
             Some("about") => Page::About,
             _ => Page::Input,
         };
+        let opts = paths::load_options();
+        let mut updater = update::Updater::new();
+        if opts.update_check {
+            updater.check(&cc.egui_ctx);
+        }
         let mut app = Self {
             page,
-            opts: paths::load_options(),
+            opts,
             status: None,
             history,
             learned: Vec::new(),
@@ -116,6 +127,7 @@ impl App {
             download: None,
             keys: keys_page::KeysPage::new(),
             dict: dict_page::DictPage::new(),
+            updater,
         };
         app.reload_history();
         app
@@ -214,6 +226,11 @@ fn start_download(model: &str, ctx: egui::Context) -> Result<Download, String> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.updater.poll(ui.ctx());
+        if matches!(self.updater.state, update::State::Launched) {
+            // Let the installer replace this program.
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         // Drain download output.
         if let Some(d) = &mut self.download {
             while let Ok(Some(line)) = d.lines.try_recv() {
@@ -245,6 +262,9 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(14.0);
+                if self.page != Page::About {
+                    update_ui::banner(ui, &mut self.updater);
+                }
                 sweet_ui::title(ui, self.page.label());
                 ui.add_space(6.0);
                 match self.page {
@@ -258,7 +278,7 @@ impl eframe::App for App {
                     Page::Neural => self.neural_page(ui),
                     Page::Learning => self.learning_page(ui),
                     Page::Dictionary => self.dict.ui(ui, &mut self.status),
-                    Page::About => about_page(ui),
+                    Page::About => self.about_page(ui),
                 }
                 if let Some((msg, ok)) = &self.status {
                     ui.add_space(8.0);
@@ -454,8 +474,12 @@ impl App {
     }
 }
 
-fn about_page(ui: &mut egui::Ui) {
+impl App {
+fn about_page(&mut self, ui: &mut egui::Ui) {
     card(ui, "Sweet IME", concat!("バージョン ", env!("CARGO_PKG_VERSION")), |_| {});
+    if update_ui::section(ui, &mut self.updater, &mut self.opts.update_check) {
+        self.save();
+    }
     card_frame(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("ライセンス").size(15.5));
@@ -480,4 +504,5 @@ fn about_page(ui: &mut egui::Ui) {
             }
         });
     }
+}
 }

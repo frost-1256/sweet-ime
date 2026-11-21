@@ -10,6 +10,8 @@ name = "sweet-settings"
 path = "src/main.rs"
 
 [dependencies]
+serde_json = "1.0.154"
+sha2 = "0.11.1"
 sweet-engine = { path = "../engine" }
 sweet-ui = { path = "../ui" }
 

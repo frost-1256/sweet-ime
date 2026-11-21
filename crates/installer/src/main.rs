@@ -2,6 +2,8 @@
 //!
 //!   sweet-setup                     install the bundled files (elevates)
 //!   sweet-setup --uninstall         uninstall (elevates)
+//!   sweet-setup --update            update an existing install without
+//!                                   asking (started by the settings app)
 //!   sweet-setup --bundle <dir> <out.exe>
 //!                                   build a setup exe carrying <dir>
 //!   sweet-setup --verify            list the bundled files
@@ -60,6 +62,7 @@ fn main() {
         return;
     }
     let uninstall = args.iter().any(|a| a == "--uninstall");
+    let update = !uninstall && args.iter().any(|a| a == "--update");
     // Don't keep the install directory busy (uninstall.exe runs from it).
     let _ = std::env::set_current_dir(std::env::temp_dir());
     let title = if uninstall { "Sweet IME のアンインストール" } else { "Sweet IME のセットアップ" };
@@ -79,6 +82,14 @@ fn main() {
             sweet_ui::setup(&cc.egui_ctx);
             let mut s = Setup::new(uninstall);
             s.preview = preview;
+            if update && s.upgrade {
+                // Keep the existing choices; the model and keyboard list are
+                // already set up.
+                s.add_keyboard = false;
+                s.shortcut = ops::has_shortcut();
+                s.model = false;
+                s.auto_start = true;
+            }
             Ok(Box::new(s))
         }),
     );
@@ -137,6 +148,8 @@ struct Setup {
     detail: String,
     rx: Option<Receiver<Msg>>,
     preview: bool,
+    /// Start right away (update from the settings app).
+    auto_start: bool,
 }
 
 impl Setup {
@@ -154,6 +167,7 @@ impl Setup {
             detail: String::new(),
             rx: None,
             preview: false,
+            auto_start: false,
         }
     }
 
@@ -339,6 +353,10 @@ impl eframe::App for Setup {
             }
         }
         let ctx = ui.ctx().clone();
+        if self.auto_start {
+            self.auto_start = false;
+            self.start(&ctx);
+        }
         egui::Panel::bottom("buttons").show_separator_line(false).show(ui, |ui| {
             ui.add_space(10.0);
             let row = Vec2::new(ui.available_width(), 36.0);
@@ -436,7 +454,12 @@ impl Setup {
     }
 
     fn progress(&mut self, ui: &mut egui::Ui) {
-        sweet_ui::title(ui, if self.uninstall { "アンインストールしています…" } else { "インストールしています…" });
+        let title = match (self.uninstall, self.upgrade) {
+            (true, _) => "アンインストールしています…",
+            (false, true) => "更新しています…",
+            (false, false) => "インストールしています…",
+        };
+        sweet_ui::title(ui, title);
         ui.add_space(6.0);
         card_frame(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());

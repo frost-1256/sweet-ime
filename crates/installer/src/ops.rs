@@ -9,7 +9,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
-    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW,
 };
 use windows::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
@@ -19,6 +19,8 @@ use crate::payload::Entry;
 
 pub const DISPLAY_NAME: &str = "Sweet IME";
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SweetIME";
+const RUN_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+const UPDATE_CHECK_VALUE: &str = "SweetIMEUpdateCheck";
 const TIP: &str = "0411:{7E1D3C2A-5B8F-4C1E-9A3D-2F6B8C4E1A01}{7E1D3C2A-5B8F-4C1E-9A3D-2F6B8C4E1A02}";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -27,6 +29,10 @@ pub type Result<T> = std::result::Result<T, String>;
 pub fn target_dir() -> PathBuf {
     let pf = std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into());
     PathBuf::from(pf).join("SweetIME")
+}
+
+pub fn has_shortcut() -> bool {
+    shortcut_path().exists()
 }
 
 fn shortcut_path() -> PathBuf {
@@ -216,11 +222,20 @@ pub fn register_uninstall(target: &Path) -> Result<()> {
         ("NoRepair", Value::Dword(1)),
         ("EstimatedSize", Value::Dword((dir_size(target) / 1024) as u32)),
     ];
+    write_values(UNINSTALL_KEY, &values)?;
+    // Look for updates at sign-in. The settings app stays quiet unless there
+    // is one, and honors the setting that turns this off.
+    let check = [(UPDATE_CHECK_VALUE, Value::Str(format!("\"{t}\\sweet-settings.exe\" --check-update")))];
+    write_values(RUN_KEY, &check)
+}
+
+/// Creates `HKLM\<subkey>` if needed and sets `values` in it.
+fn write_values(subkey: &str, values: &[(&str, Value)]) -> Result<()> {
     let mut key = HKEY::default();
     unsafe {
         RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
-            &HSTRING::from(UNINSTALL_KEY),
+            &HSTRING::from(subkey),
             None,
             None,
             REG_OPTION_NON_VOLATILE,
@@ -242,6 +257,7 @@ pub fn register_uninstall(target: &Path) -> Result<()> {
 pub fn unregister_uninstall() {
     unsafe {
         let _ = RegDeleteTreeW(HKEY_LOCAL_MACHINE, &HSTRING::from(UNINSTALL_KEY));
+        let _ = RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, &HSTRING::from(RUN_KEY), &HSTRING::from(UPDATE_CHECK_VALUE));
     }
 }
 
