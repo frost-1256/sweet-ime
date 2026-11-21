@@ -15,7 +15,19 @@ fn main() -> Result<()> {
         bail!("usage: sweet-cli <dict> (repl | eval <tsv> | bench)");
     }
     let t0 = Instant::now();
-    let conv = Converter::new(Dictionary::open(&args[1])?);
+    let mut conv = Converter::new(Dictionary::open(&args[1])?);
+    if let Ok(path) = std::env::var("SWEET_ZENZ") {
+        let t = Instant::now();
+        let mut r = sweet_zenz::ZenzReranker::new(sweet_zenz::Zenz::load(&path)?);
+        if let Some(n) = std::env::var("SWEET_RERANK_N").ok().and_then(|v| v.parse().ok()) {
+            r.n = n;
+        }
+        if let Some(m) = std::env::var("SWEET_MIX").ok().and_then(|v| v.parse().ok()) {
+            r.mix = m;
+        }
+        eprintln!("zenz model {path} loaded in {:.2?}", t.elapsed());
+        conv = conv.with_reranker(Box::new(r));
+    }
     eprintln!(
         "loaded {} entries in {:.2?}",
         conv.dictionary().entry_count(),
@@ -41,7 +53,7 @@ fn repl(conv: &Converter) -> Result<()> {
         let line = line?;
         let kana = input_to_kana(line.trim());
         let t = Instant::now();
-        let res = conv.convert(&kana, &[], 5);
+        let res = conv.convert_best(&kana, &[], "");
         let el = t.elapsed();
         println!("{kana}  ({el:.2?})");
         for (i, c) in res.iter().enumerate() {
@@ -65,6 +77,8 @@ fn eval(conv: &Converter, path: &str) -> Result<()> {
     // command, argument. Only conversion commands are scored.
     let text = std::fs::read_to_string(path)?;
     let (mut cases, mut ok, mut mozc_ok, mut agree) = (0, 0, 0, 0);
+    // [top-1 tests, top-N tests] x [cases, sweet ok, mozc ok]
+    let mut split = [[0i32; 3]; 2];
     let mut worst = std::time::Duration::ZERO;
     let mut sum = std::time::Duration::ZERO;
     let verbose = std::env::var_os("SWEET_VERBOSE").is_some();
@@ -82,8 +96,17 @@ fn eval(conv: &Converter, path: &str) -> Result<()> {
             .and_then(|r| r.trim().parse().ok())
             .unwrap_or(1);
         let t = Instant::now();
-        let res = conv.convert(input, &[], top_n.min(50));
+        let mut res = conv.convert_best(input, &[], "");
+        if top_n > 1 {
+            // Candidate-list tests: best first, then the lattice N-best.
+            for c in conv.convert(input, &[], top_n.min(50)) {
+                if !res.iter().any(|r| r.surface() == c.surface()) {
+                    res.push(c);
+                }
+            }
+        }
         let el = t.elapsed();
+        if std::env::var_os("SWEET_PROF").is_some() { eprintln!("case {:.2?}", el); }
         sum += el;
         worst = worst.max(el);
         cases += 1;
@@ -105,6 +128,10 @@ fn eval(conv: &Converter, path: &str) -> Result<()> {
                 _ => continue,
             }
         };
+        let bucket = &mut split[(top_n > 1) as usize];
+        bucket[0] += 1;
+        bucket[1] += pass as i32;
+        bucket[2] += (status == "OK:") as i32;
         if pass {
             ok += 1;
         } else if verbose {
@@ -114,6 +141,10 @@ fn eval(conv: &Converter, path: &str) -> Result<()> {
     let pct = |a: i32| 100.0 * a as f64 / cases as f64;
     println!("sweet pass: {ok}/{cases} ({:.1}%)   mozc-oss pass: {mozc_ok}/{cases} ({:.1}%)   top1 == mozc: {:.1}%",
         pct(ok), pct(mozc_ok), pct(agree));
+    for (name, b) in [("top-1 tests", split[0]), ("top-N tests", split[1])] {
+        println!("  {name}: sweet {}/{} ({:.1}%)  mozc {}/{} ({:.1}%)", b[1], b[0],
+            100.0 * b[1] as f64 / b[0] as f64, b[2], b[0], 100.0 * b[2] as f64 / b[0] as f64);
+    }
     println!("latency: mean {:.2?}, max {:.2?}", sum / cases as u32, worst);
     Ok(())
 }

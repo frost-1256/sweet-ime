@@ -80,6 +80,20 @@ fn sub_range(range: &ITfRange, ec: u32, start: i32, end: i32) -> Result<ITfRange
     }
 }
 
+/// Up to 40 characters of document text immediately before `range`.
+fn read_left_context(ec: u32, range: &ITfRange) -> Option<String> {
+    unsafe {
+        let r = range.Clone().ok()?;
+        r.Collapse(ec, TF_ANCHOR_START).ok()?;
+        let mut moved = 0;
+        r.ShiftStart(ec, -(sweet_zenz::MAX_CONTEXT_CHARS as i32), &mut moved, std::ptr::null()).ok()?;
+        let mut buf = [0u16; 64];
+        let mut n = 0u32;
+        r.GetText(ec, 0, &mut buf, &mut n).ok()?;
+        Some(String::from_utf16_lossy(&buf[..n as usize]))
+    }
+}
+
 fn set_selection(ctx: &ITfContext, ec: u32, range: &ITfRange) -> Result<()> {
     let sel = TF_SELECTION {
         range: std::mem::ManuallyDrop::new(Some(range.clone())),
@@ -209,6 +223,9 @@ fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> 
         }
         let comp = ensure_composition(this, st, ec, ctx)?;
         let range = comp.GetRange()?;
+        if let Some(c) = read_left_context(ec, &range) {
+            st.session.set_left_context(&c);
+        }
         let text: Vec<u16> = pre.text.encode_utf16().collect();
         range.SetText(ec, 0, &text)?;
         let _ = attr_prop.Clear(ec, &range);

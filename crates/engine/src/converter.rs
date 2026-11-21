@@ -61,8 +61,20 @@ struct Lattice<'a> {
 const BOS: u32 = 0;
 const EOS: u32 = 1;
 
+/// Picks the best whole-sentence candidate (e.g. with a neural LM).
+pub trait Reranker: Send + Sync {
+    /// How many lattice candidates to offer.
+    fn candidates(&self) -> usize {
+        5
+    }
+    /// Returns the index of the best candidate, or `None` to keep the
+    /// lattice order.
+    fn choose(&self, reading: &str, left_context: &str, candidates: &[Conversion]) -> Option<usize>;
+}
+
 pub struct Converter {
     dict: Dictionary,
+    reranker: Option<Box<dyn Reranker>>,
 }
 
 fn is_kana(c: char) -> bool {
@@ -71,7 +83,34 @@ fn is_kana(c: char) -> bool {
 
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
-        Self { dict }
+        Self { dict, reranker: None }
+    }
+
+    pub fn with_reranker(mut self, r: Box<dyn Reranker>) -> Self {
+        self.reranker = Some(r);
+        self
+    }
+
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some()
+    }
+
+    /// Best conversion: lattice N-best refined by the reranker if present.
+    /// The chosen candidate is first; the rest follow in lattice order.
+    pub fn convert_best(&self, text: &str, boundaries: &[usize], left_context: &str) -> Vec<Conversion> {
+        let n = self.reranker.as_ref().map_or(1, |r| r.candidates().max(1));
+        let mut res = self.convert(text, boundaries, n);
+        if let Some(r) = &self.reranker {
+            if res.len() > 1 {
+                if let Some(i) = r.choose(text, left_context, &res) {
+                    if i < res.len() {
+                        let c = res.remove(i);
+                        res.insert(0, c);
+                    }
+                }
+            }
+        }
+        res
     }
 
     pub fn dictionary(&self) -> &Dictionary {

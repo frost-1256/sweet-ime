@@ -62,12 +62,26 @@ pub(crate) fn converter() -> Option<&'static Converter> {
         if let Ok(p) = std::env::var("SWEET_IME_DICT") {
             candidates.insert(0, PathBuf::from(p));
         }
-        candidates
-            .into_iter()
-            .find_map(|p| Dictionary::open(&p).ok())
-            .map(Converter::new)
+        let conv = candidates.into_iter().find_map(|p| Dictionary::open(&p).ok()).map(Converter::new)?;
+        Some(match load_zenz() {
+            Some(r) => conv.with_reranker(Box::new(r)),
+            None => conv,
+        })
     })
     .as_ref()
+}
+
+/// Optional neural reranker: `zenz.swz` next to the DLL (or `SWEET_IME_ZENZ`).
+fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
+    let mut paths = Vec::new();
+    if let Ok(p) = std::env::var("SWEET_IME_ZENZ") {
+        paths.push(PathBuf::from(p));
+    }
+    if let Some(dir) = dll_path().parent() {
+        paths.push(dir.join("zenz.swz"));
+        paths.push(dir.join("data").join("zenz.swz"));
+    }
+    paths.into_iter().find_map(|p| sweet_zenz::Zenz::load(&p).ok()).map(sweet_zenz::ZenzReranker::new)
 }
 
 pub(crate) fn lock_module(lock: bool) {
@@ -172,6 +186,7 @@ macro_rules! debug_log {
 ", format!($($t)*));
             eprint!("{s}");
             let w: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
+            #[allow(unused_unsafe)]
             unsafe { windows::Win32::System::Diagnostics::Debug::OutputDebugStringW(windows_core::PCWSTR(w.as_ptr())) };
         }
     };

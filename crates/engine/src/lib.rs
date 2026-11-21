@@ -6,6 +6,6 @@ pub mod romaji;
 pub mod session;
 pub mod width;
 
-pub use converter::{Conversion, Converter, Segment, Word};
+pub use converter::{Conversion, Converter, Reranker, Segment, Word};
 pub use dict::Dictionary;
 pub use session::{CandidateList, Key, Preedit, Session, SpanAttr};

@@ -109,6 +109,8 @@ pub struct Session {
     conv: Option<Converting>,
     commit: String,
     pub page_size: usize,
+    /// Text before the composition (for context-aware conversion).
+    left_context: String,
 }
 
 impl Default for Session {
@@ -119,11 +121,17 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self { comp: Composing::default(), conv: None, commit: String::new(), page_size: 9 }
+        Self { comp: Composing::default(), conv: None, commit: String::new(), page_size: 9, left_context: String::new() }
     }
 
     pub fn is_active(&self) -> bool {
         !self.comp.is_empty() || self.conv.is_some()
+    }
+
+    /// Sets the document text preceding the composition.
+    pub fn set_left_context(&mut self, text: &str) {
+        self.left_context.clear();
+        self.left_context.push_str(text);
     }
 
     /// Text committed since the last call.
@@ -266,7 +274,11 @@ impl Session {
 
     fn start_conversion(&mut self, conv: &Converter, boundaries: &[usize]) {
         let kana = self.comp.kana();
-        let result = conv.convert(&kana, boundaries, 1);
+        let result = if boundaries.is_empty() {
+            conv.convert_best(&kana, boundaries, &self.left_context)
+        } else {
+            conv.convert(&kana, boundaries, 1)
+        };
         self.conv = Some(Converting { segs: segs_from(result.first(), &kana), focus: 0, window: false });
     }
 

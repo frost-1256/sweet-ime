@@ -367,6 +367,18 @@ fn main() -> Result<()> {
         h.key(0x0D);
         check("candidate", h.text(), &shown, &mut fails);
 
+        // 2b. left context steers conversion (needs zenz.swz next to the DLL)
+        for (ctx, input, want) in [("明日は音楽の", "kouenn", "公演"), ("近所の", "kouenn", "公園")] {
+            h.clear();
+            let pre: Vec<u16> = ctx.encode_utf16().collect();
+            *h.store.text.borrow_mut() = pre.clone();
+            h.store.sel.set((pre.len() as i32, pre.len() as i32));
+            h.type_str(input);
+            h.key(0x20);
+            h.key(0x0D);
+            check(&format!("context {ctx}"), h.text(), &format!("{ctx}{want}"), &mut fails);
+        }
+
         // 3. escape cancels
         h.clear();
         h.type_str("aiueo");
