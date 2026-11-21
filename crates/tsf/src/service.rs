@@ -327,6 +327,11 @@ impl TextService_Impl {
         if self.st.borrow().session.is_active() {
             return true;
         }
+        if key == sweet_engine::Key::UndoCommit {
+            // Otherwise the application keeps the key (Ctrl+Backspace
+            // deletes a word).
+            return self.st.borrow().session.can_undo();
+        }
         matches!(
             key,
             sweet_engine::Key::Char(_)
@@ -479,7 +484,36 @@ fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> 
     r
 }
 
+/// Removes `text` just before the caret, if it is there (the commit being
+/// taken back). Returns whether it was.
+fn delete_before_caret(ctx: &ITfContext, ec: u32, text: &str) -> Result<bool> {
+    let want: Vec<u16> = text.encode_utf16().collect();
+    unsafe {
+        let ins: ITfInsertAtSelection = ctx.cast()?;
+        let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
+        range.Collapse(ec, TF_ANCHOR_START)?;
+        let mut moved = 0;
+        range.ShiftStart(ec, -(want.len() as i32), &mut moved, std::ptr::null())?;
+        let mut buf = vec![0u16; want.len() + 1];
+        let mut n = 0u32;
+        range.GetText(ec, 0, &mut buf, &mut n)?;
+        if buf[..n as usize] != want[..] {
+            return Ok(false);
+        }
+        range.SetText(ec, 0, &[])?;
+        range.Collapse(ec, TF_ANCHOR_END)?;
+        set_selection(ctx, ec, &range)?;
+        Ok(true)
+    }
+}
+
 fn update_document_inner(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
+    if let Some(undo) = st.session.take_undo() {
+        // The caret moved or the text changed since: keep the document.
+        if st.composition.is_some() || !delete_before_caret(ctx, ec, &undo).unwrap_or(false) {
+            st.session.reset();
+        }
+    }
     let commit = st.session.take_commit();
     let pre = st.session.preedit();
     unsafe {

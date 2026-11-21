@@ -316,6 +316,10 @@ impl App {
             changed |= toggle(ui, &mut self.opts.calculator).changed();
         });
         #[cfg(windows)]
+        card(ui, "確定の取り消し", "確定した直後に Ctrl+Backspace を押すと、確定前の読みに戻します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.undo_commit).changed();
+        });
+        #[cfg(windows)]
         card(ui, "入力モードを表示", "IME のオン/オフを切り替えたとき、文字カーソルの近くに「あ」「A」を表示します。", |ui| {
             changed |= toggle(ui, &mut self.opts.mode_indicator).changed();
         });

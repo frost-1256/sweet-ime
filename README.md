@@ -211,6 +211,7 @@ update_check = on      # look for new releases on GitHub
 dates = on             # きょう / いま -> dates and times
 emoji = on             # えがお -> 😊, かお -> kaomoji
 calculator = on        # 1+2*3= -> 7
+undo_commit = on       # Ctrl+Backspace right after a commit restores the reading
 ```
 
 Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one

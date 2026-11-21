@@ -41,6 +41,9 @@ pub enum Key {
     ToHalfKatakana,
     ToFullAscii,
     ToHalfAscii,
+    /// Right after a commit: remove the committed text and edit its
+    /// reading again (see [`Session::take_undo`]).
+    UndoCommit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +104,8 @@ pub struct Options {
     pub emoji: bool,
     /// Offer the value of arithmetic typed with a trailing = (1+2=).
     pub calculator: bool,
+    /// Ctrl+Backspace right after committing goes back to the reading.
+    pub undo_commit: bool,
 }
 
 impl Default for Options {
@@ -116,6 +121,7 @@ impl Default for Options {
             dates: true,
             emoji: true,
             calculator: true,
+            undo_commit: true,
         }
     }
 }
@@ -139,6 +145,7 @@ impl Options {
                 "dates" => o.dates = on,
                 "emoji" => o.emoji = on,
                 "calculator" => o.calculator = on,
+                "undo_commit" => o.undo_commit = on,
                 _ => {}
             }
         }
@@ -160,6 +167,7 @@ impl Options {
              dates = {}
              emoji = {}
              calculator = {}
+             undo_commit = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -171,6 +179,7 @@ impl Options {
             b(self.dates),
             b(self.emoji),
             b(self.calculator),
+            b(self.undo_commit),
         )
     }
 }
@@ -328,6 +337,18 @@ pub struct Session {
     pub options: Options,
     /// Text before the composition (for context-aware conversion).
     left_context: String,
+    /// The last commit, while the next key may still take it back.
+    last_commit: Option<LastCommit>,
+    /// A commit just taken back (see [`Session::take_undo`]).
+    undo: Option<String>,
+}
+
+/// What a commit replaced, to restore it.
+struct LastCommit {
+    text: String,
+    kana: String,
+    raw: String,
+    literal: bool,
 }
 
 impl Default for Session {
@@ -338,7 +359,16 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self { comp: Composing::default(), conv: None, commit: String::new(), page_size: 9, options: Options::default(), left_context: String::new() }
+        Self {
+            comp: Composing::default(),
+            conv: None,
+            commit: String::new(),
+            page_size: 9,
+            options: Options::default(),
+            left_context: String::new(),
+            last_commit: None,
+            undo: None,
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -569,8 +599,54 @@ impl Session {
         true
     }
 
+    /// Whether [`Key::UndoCommit`] would restore the last commit now.
+    pub fn can_undo(&self) -> bool {
+        self.options.undo_commit && self.last_commit.is_some() && !self.is_active()
+    }
+
+    /// Text to remove before the caret: the commit that
+    /// [`Key::UndoCommit`] took back. The frontend deletes it (if the
+    /// document still has it there) and shows the restored reading.
+    pub fn take_undo(&mut self) -> Option<String> {
+        self.undo.take()
+    }
+
     /// Handles a key. Returns whether the key was consumed.
     pub fn handle(&mut self, conv: &Converter, key: Key) -> bool {
+        // Only the key right after a commit can take it back.
+        let last = self.last_commit.take();
+        if key == Key::UndoCommit {
+            let Some(last) = last.filter(|_| self.options.undo_commit && !self.is_active()) else { return false };
+            self.comp = Composing::default();
+            if !last.literal && romaji::to_hiragana(&last.raw) == last.kana {
+                for c in last.raw.chars() {
+                    self.comp.composer.push(c);
+                }
+                self.comp.raw = last.raw;
+            } else {
+                self.comp.before = last.kana;
+                self.comp.literal = last.literal;
+            }
+            // Edit the reading, not the conversion it had.
+            self.comp.live_off = true;
+            self.undo = Some(last.text);
+            self.refresh(conv);
+            return true;
+        }
+        let before = (self.comp.kana(), self.comp.raw.clone(), self.comp.literal, self.commit.len());
+        let consumed = self.handle_key(conv, key);
+        if self.commit.len() > before.3 && !self.is_active() && !before.0.is_empty() {
+            self.last_commit = Some(LastCommit {
+                text: self.commit[before.3..].to_string(),
+                kana: before.0,
+                raw: before.1,
+                literal: before.2,
+            });
+        }
+        consumed
+    }
+
+    fn handle_key(&mut self, conv: &Converter, key: Key) -> bool {
         let key = if let Key::ShiftedLetter(ch) = key {
             if !self.comp.literal {
                 if self.conv.is_some() {
@@ -1067,7 +1143,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);

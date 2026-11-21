@@ -682,3 +682,50 @@ fn special_readings_offer_dates_emoji_and_arithmetic() {
     assert!(!list("egao", off).contains(&"😊".to_string()));
     assert_ne!(commit("1+2*3=", off), "7");
 }
+
+#[test]
+fn undo_commit_restores_the_reading() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "kyou");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "今日");
+    assert!(s.can_undo());
+    assert!(s.handle(&c, Key::UndoCommit));
+    assert_eq!(s.take_undo().as_deref(), Some("今日"));
+    assert_eq!(s.preedit().text, "きょう");
+    // Typing goes on from the reading.
+    type_str(&mut s, &c, "ha");
+    assert_eq!(s.preedit().text, "きょうは");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "きょうは");
+
+    // Only right after the commit.
+    type_str(&mut s, &c, "a");
+    assert!(s.handle(&c, Key::Enter));
+    s.take_commit();
+    type_str(&mut s, &c, "i");
+    assert!(s.handle(&c, Key::Escape));
+    assert!(!s.can_undo());
+    assert!(!s.handle(&c, Key::UndoCommit));
+
+    // Live conversion: the English word comes back as its keys.
+    let mut s = Session::new();
+    type_str(&mut s, &c, "github");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "GitHub");
+    assert!(s.handle(&c, Key::UndoCommit));
+    assert_eq!(s.take_undo().as_deref(), Some("GitHub"));
+    assert!(s.handle(&c, Key::ToHalfAscii));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "github");
+
+    // Off in the settings.
+    let mut s = plain();
+    s.options.undo_commit = false;
+    type_str(&mut s, &c, "a");
+    assert!(s.handle(&c, Key::Enter));
+    assert!(!s.can_undo());
+    assert!(!s.handle(&c, Key::UndoCommit));
+}

@@ -728,6 +728,35 @@ fn main() -> Result<()> {
         h.key(0x1B);
         h.key(0x1B);
 
+        // 6b. Ctrl+Backspace right after a commit goes back to the reading.
+        h.clear();
+        h.type_str("kyou");
+        h.key(0x20);
+        h.key(0x0D);
+        let committed = h.text();
+        with_ctrl(true);
+        let eaten = h.key(0x08);
+        with_ctrl(false);
+        check("undo commit eaten", format!("{eaten}"), "true", &mut fails);
+        check("undo commit restores the reading", h.text(), "きょう", &mut fails);
+        h.key(0x20);
+        h.key(0x0D);
+        check("undo commit converts again", h.text(), &committed, &mut fails);
+        // The caret moved away: the document is left alone.
+        h.store.sel.set((0, 0));
+        with_ctrl(true);
+        h.key(0x08);
+        with_ctrl(false);
+        check("undo commit checks the text", h.text(), &committed, &mut fails);
+        h.key(0x1B);
+        h.key(0x1B);
+        h.clear();
+        // Nothing to take back: the application gets Ctrl+Backspace.
+        with_ctrl(true);
+        let eaten = h.key(0x08);
+        with_ctrl(false);
+        check("ctrl+backspace without a commit", format!("{eaten}"), "false", &mut fails);
+
         // 7. Hotkeys delivered as preserved keys.
         h.clear();
         let key_guid = |wanted| {

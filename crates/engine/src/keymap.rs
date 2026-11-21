@@ -155,6 +155,7 @@ pub const ACTIONS: &[(&str, &str, Action)] = &[
     ("full_ascii", "全角英数に変換", Action::Key(Key::ToFullAscii)),
     ("half_ascii", "半角英数に変換", Action::Key(Key::ToHalfAscii)),
     ("suggest", "予測候補を選ぶ", Action::Key(Key::Tab)),
+    ("undo_commit", "確定を取り消す", Action::Key(Key::UndoCommit)),
 ];
 
 pub const WHENS: &[(&str, &str, When)] = &[
@@ -333,6 +334,12 @@ impl Default for Keymap {
                 b(k(0x77), Key(super::Key::ToHalfKatakana)),
                 b(k(0x78), Key(super::Key::ToFullAscii)),
                 b(k(0x79), Key(super::Key::ToHalfAscii)),
+                // Right after committing: back to the reading.
+                Binding {
+                    chord: Chord { vk: 0x08, ctrl: true, shift: false, alt: false },
+                    action: Key(super::Key::UndoCommit),
+                    when: When::Idle,
+                },
             ],
         }
     }
