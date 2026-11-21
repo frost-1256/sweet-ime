@@ -36,6 +36,7 @@ stdenv.mkDerivation (finalAttrs: {
       ../Cargo.toml
       ../Cargo.lock
       ../crates
+      ../assets/icon
       ../scripts/get-zenz.sh
       ../LICENSE
     ];
@@ -74,6 +75,9 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm644 system.dict "$out/share/sweet-ime/system.dict"
     install -Dm755 "$CARGO_TARGET_DIR/release/sweet-settings" "$out/bin/sweet-settings"
     install -Dm755 "$CARGO_TARGET_DIR/release/sweet-zenz-pack" "$out/bin/sweet-zenz-pack"
+    install -Dm644 ../crates/settings/sweet-settings.desktop "$out/share/applications/sweet-settings.desktop"
+    substituteInPlace "$out/share/applications/sweet-settings.desktop" \
+      --replace-fail "Exec=sweet-settings" "Exec=$out/bin/sweet-settings"
     install -Dm755 ../scripts/get-zenz.sh "$out/share/sweet-ime/get-zenz.sh"
     install -Dm644 ../LICENSE "$out/share/sweet-ime/licenses/sweet-ime.txt"
     install -Dm644 ${mozc}/src/data/dictionary_oss/README.txt "$out/share/sweet-ime/licenses/dictionary-oss.txt"

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Sweet IME Settings
+Name[ja]=Sweet IME の設定
+Comment=Configure the Sweet IME input method
+Comment[ja]=Sweet IME の入力設定を変更します
+Exec=sweet-settings
+Icon=sweet-ime
+Categories=Settings;
+Keywords=IME;Japanese;fcitx;

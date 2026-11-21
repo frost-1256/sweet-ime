@@ -4,6 +4,12 @@
 pub use eframe;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Stroke, Vec2};
 
+/// The app icon for window title bars and taskbars.
+pub fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon/sweet-ime-64.png"))
+        .expect("bundled icon")
+}
+
 /// Applies fonts and spacing. Call once from the app constructor.
 pub fn setup(ctx: &egui::Context) {
     install_fonts(ctx);

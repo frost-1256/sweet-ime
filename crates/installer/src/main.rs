@@ -66,6 +66,7 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(title)
+            .with_icon(sweet_ui::app_icon())
             .with_inner_size([640.0, 600.0])
             .with_resizable(false)
             .with_maximize_button(false),

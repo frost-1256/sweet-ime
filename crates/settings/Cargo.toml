@@ -12,3 +12,6 @@ path = "src/main.rs"
 [dependencies]
 sweet-engine = { path = "../engine" }
 sweet-ui = { path = "../ui" }
+
+[build-dependencies]
+embed-resource = "3.0.12"

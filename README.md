@@ -216,6 +216,9 @@ to the file right away.
   Set `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
   `crates\cli\data\terms.tsv` checks technical terms, internet slang and
   numbers in context.
+- `python scripts/make-icon.py` redraws the app icon in `assets/icon/`. It
+  needs Pillow and the Zen Maru Gothic Black font (SIL OFL); set
+  `SWEET_ICON_FONT` to the font file.
 
 ## Licenses
 

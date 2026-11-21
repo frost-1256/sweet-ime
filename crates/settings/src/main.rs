@@ -23,6 +23,9 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sweet IME の設定")
+            .with_icon(sweet_ui::app_icon())
+            // Matches sweet-settings.desktop (Wayland uses it to find the icon).
+            .with_app_id("sweet-settings")
             .with_inner_size([820.0, 600.0])
             .with_min_inner_size([560.0, 400.0]),
         ..Default::default()

@@ -44,3 +44,12 @@ install(TARGETS sweetime DESTINATION "${CMAKE_INSTALL_LIBDIR}/fcitx5")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sweetime-addon.conf"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/fcitx5/addon" RENAME sweetime.conf)
 install(FILES data/sweetime.conf DESTINATION "${CMAKE_INSTALL_DATADIR}/fcitx5/inputmethod")
+
+# App icon for the settings app's desktop entry. The input method itself
+# keeps the theme's keyboard icon.
+set(SWEET_ICON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon")
+foreach(size 16 24 32 48 64 128 256 512)
+    install(FILES "${SWEET_ICON_DIR}/sweet-ime-${size}.png"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps"
+        RENAME "sweet-ime.png")
+endforeach()
