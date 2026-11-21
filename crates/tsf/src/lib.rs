@@ -57,6 +57,10 @@ pub(crate) fn converter() -> Option<&'static Converter> {
         let mut candidates = Vec::new();
         if let Some(dir) = dll_path().parent() {
             candidates.push(dir.join("system.dict"));
+            // Install layout: <root>\x64\sweet_tsf.dll + <root>\system.dict
+            if let Some(root) = dir.parent() {
+                candidates.push(root.join("system.dict"));
+            }
             candidates.push(dir.join("data").join("system.dict"));
         }
         if let Ok(p) = std::env::var("SWEET_IME_DICT") {
@@ -79,6 +83,9 @@ fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
     }
     if let Some(dir) = dll_path().parent() {
         paths.push(dir.join("zenz.swz"));
+        if let Some(root) = dir.parent() {
+            paths.push(root.join("zenz.swz"));
+        }
         paths.push(dir.join("data").join("zenz.swz"));
     }
     paths.into_iter().find_map(|p| sweet_zenz::Zenz::load(&p).ok()).map(sweet_zenz::ZenzReranker::new)

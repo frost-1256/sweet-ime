@@ -123,3 +123,14 @@ pub fn unregister() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clsid_key_format() {
+        assert_eq!(
+            super::clsid_key(),
+            r"SOFTWARE\Classes\CLSID\{7E1D3C2A-5B8F-4C1E-9A3D-2F6B8C4E1A01}"
+        );
+    }
+}

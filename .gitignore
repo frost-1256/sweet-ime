@@ -2,3 +2,4 @@
 /third_party/mozc-data
 /data/*.dict
 /third_party/zenz
+/dist
