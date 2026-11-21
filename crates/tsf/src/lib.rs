@@ -9,6 +9,7 @@ mod candidate_window;
 mod display_attr;
 mod edit;
 mod keys;
+mod langbar;
 mod register;
 mod service;
 

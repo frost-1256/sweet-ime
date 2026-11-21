@@ -471,6 +471,31 @@ fn main() -> Result<()> {
         let eaten = h.key(0x41);
         check("on again", format!("{eaten}"), "true", &mut fails);
         h.key(0x1B);
+        h.key(0x1B);
+        // The taskbar mode indicator can only be added for a registered TIP.
+        {
+            use windows::Win32::UI::TextServices::{ITfLangBarItemButton, ITfLangBarItemMgr, TF_LANGBARITEMINFO};
+            let mgr = tm.cast::<ITfLangBarItemMgr>()?;
+            let en = mgr.EnumItems()?;
+            let mut found = None;
+            loop {
+                let mut items = [None];
+                let mut n = 0;
+                if en.Next(&mut items, &mut n).is_err() || n == 0 {
+                    break;
+                }
+                if let Some(item) = items[0].take() {
+                    let mut info = TF_LANGBARITEMINFO::default();
+                    if item.GetInfo(&mut info).is_ok() && info.clsidService == CLSID_SWEET_IME {
+                        found = item.cast::<ITfLangBarItemButton>().ok();
+                    }
+                }
+            }
+            match found {
+                Some(b) => check("mode indicator", b.GetText()?.to_string(), "あ", &mut fails),
+                None => println!("skip mode indicator (TIP not registered)"),
+            }
+        }
 
         tip.Deactivate()?;
         tm.Deactivate()?;

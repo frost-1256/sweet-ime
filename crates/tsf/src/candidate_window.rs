@@ -70,7 +70,7 @@ fn rgb(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a }
 }
 
-fn read_dword(path: PCWSTR, name: PCWSTR) -> Option<u32> {
+pub(crate) fn read_dword(path: PCWSTR, name: PCWSTR) -> Option<u32> {
     let mut v = 0u32;
     let mut size = 4u32;
     let r = unsafe {

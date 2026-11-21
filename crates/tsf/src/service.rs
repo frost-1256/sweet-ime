@@ -11,7 +11,7 @@ use windows::Win32::UI::TextServices::{
     IEnumTfDisplayAttributeInfo, ITfCategoryMgr, ITfCompartmentMgr, ITfComposition,
     ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
-    ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
+    ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
     ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr,
     TF_AE_NONE, TF_ANCHOR_END, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
@@ -21,6 +21,7 @@ use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, 
 
 use crate::candidate_window::CandidateWindow;
 use crate::keys::{self, Toggle};
+use crate::langbar::ModeButton;
 use crate::{GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED, GUID_ATTR_INPUT, display_attr, edit};
 
 #[derive(Default)]
@@ -35,6 +36,8 @@ struct State {
     atoms: [i32; 3],
     /// Context of the last key event (target for mouse selections).
     ctx: Option<ITfContext>,
+    /// Taskbar input mode indicator.
+    mode_button: Option<ComObject<ModeButton>>,
 }
 
 #[implement(
@@ -120,16 +123,43 @@ impl TextService_Impl {
     }
 
     fn set_open(&self, open: bool) {
-        let st = self.st.borrow();
-        let Some(tm) = &st.thread_mgr else { return };
-        unsafe {
-            if let Ok(c) = tm
-                .cast::<ITfCompartmentMgr>()
-                .and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE))
-            {
-                let _ = c.SetValue(st.tid, &VARIANT::from(open as i32));
+        let button = {
+            let st = self.st.borrow();
+            let Some(tm) = &st.thread_mgr else { return };
+            unsafe {
+                if let Ok(c) = tm
+                    .cast::<ITfCompartmentMgr>()
+                    .and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE))
+                {
+                    let _ = c.SetValue(st.tid, &VARIANT::from(open as i32));
+                }
             }
+            st.mode_button.clone()
+        };
+        if let Some(b) = button {
+            b.set_open(open);
         }
+    }
+
+    /// The taskbar mode indicator was clicked.
+    fn on_mode_click(&self) {
+        let _ = crate::guard(|| {
+            let open = !self.is_open();
+            if !open {
+                let (active, ctx, tid) = {
+                    let st = self.st.borrow();
+                    (st.session.is_active(), st.ctx.clone(), st.tid)
+                };
+                if let (true, Some(ctx)) = (active, ctx) {
+                    self.st.borrow_mut().session.commit_all();
+                    let this: ComObject<TextService> = self.to_object();
+                    let ctx2 = ctx.clone();
+                    edit::request_any(&ctx, tid, move |ec| update_document(&this, ec, &ctx2))?;
+                }
+            }
+            self.set_open(open);
+            Ok(())
+        });
     }
 
     /// Whether the key-down event would be consumed.
@@ -299,6 +329,15 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
     fn Deactivate(&self) -> Result<()> {
         crate::guard(|| {
             let mut st = self.st.borrow_mut();
+            if let Some(button) = st.mode_button.take() {
+                if let Some(mgr) = st.thread_mgr.as_ref().and_then(|tm| tm.cast::<ITfLangBarItemMgr>().ok()) {
+                    let item: ITfLangBarItem = button.to_interface();
+                    unsafe {
+                        let _ = mgr.RemoveItem(&item);
+                    }
+                }
+                button.detach();
+            }
             if let Some(tm) = st.thread_mgr.take() {
                 unsafe {
                     if let Ok(km) = tm.cast::<ITfKeystrokeMgr>() {
@@ -366,6 +405,25 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                         let this: ComObject<TextService> = self.to_object();
                         w.set_on_click(move |i| this.on_candidate_click(i));
                     }
+                }
+            }
+            // Taskbar indicator ("あ" / "A"). The handler holds the service;
+            // Deactivate detaches it.
+            {
+                let this: ComObject<TextService> = self.to_object();
+                let button = ComObject::new(ModeButton::new(true, move || this.on_mode_click()));
+                let tm = self.st.borrow().thread_mgr.clone();
+                if let Some(mgr) = tm.and_then(|tm| tm.cast::<ITfLangBarItemMgr>().ok()) {
+                    let item: ITfLangBarItem = button.to_interface();
+                    match unsafe { mgr.AddItem(&item) } {
+                        Ok(()) => self.st.borrow_mut().mode_button = Some(button),
+                        Err(e) => {
+                            button.detach();
+                            crate::debug_log!("AddItem: {e}");
+                        }
+                    }
+                } else {
+                    button.detach();
                 }
             }
             self.set_open(true);
