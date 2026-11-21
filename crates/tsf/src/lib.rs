@@ -14,7 +14,6 @@ mod live;
 mod mode_indicator;
 mod register;
 mod service;
-mod terminal_keys;
 
 use std::ffi::c_void;
 use std::path::PathBuf;

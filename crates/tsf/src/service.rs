@@ -25,7 +25,6 @@ use crate::candidate_window::CandidateWindow;
 use crate::keys::{self, Input, Toggle};
 use crate::mode_indicator::ModeIndicator;
 use crate::langbar::ModeButton;
-use crate::terminal_keys::TerminalHotkey;
 use crate::{GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED, GUID_ATTR_INPUT, display_attr, edit};
 
 #[derive(Default)]
@@ -54,7 +53,6 @@ struct State {
     openclose_sink: Option<(ITfSource, u32)>,
     /// Registered preserved keys for IME mode changes.
     preserved: Vec<(GUID, TF_PRESERVEDKEY, Toggle)>,
-    terminal_hotkey: Option<TerminalHotkey>,
 }
 
 /// GUID of the `i`-th preserved key.
@@ -322,26 +320,6 @@ impl TextService_Impl {
         matches!(key, sweet_engine::Key::Char(_) | sweet_engine::Key::Space)
     }
 
-    fn terminal_toggle(&self, vk: u32, lparam: isize) -> bool {
-        let Ok(st) = self.st.try_borrow() else { return false };
-        let Some(tm) = st.thread_mgr.clone() else { return false };
-        drop(st);
-        let owns_input = unsafe {
-            tm.IsThreadFocus().is_ok_and(|focused| focused.as_bool())
-                && tm.cast::<ITfKeystrokeMgr>().and_then(|km| km.GetForeground())
-                    .is_ok_and(|id| id == crate::CLSID_SWEET_IME)
-        };
-        if !owns_input {
-            return false;
-        }
-        let Some(Input::Toggle(toggle)) = self.translate(vk, lparam) else { return false };
-        // Eat autorepeat without switching back on every repeat.
-        if lparam & (1 << 30) == 0 {
-            self.handle_toggle(None, toggle);
-        }
-        true
-    }
-
     /// Starts refining the live conversion in the background (reranker only).
     fn request_live_refinement(&self) {
         let Some(conv) = crate::converter() else { return };
@@ -584,7 +562,6 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
     fn Deactivate(&self) -> Result<()> {
         crate::guard(|| {
             let mut st = self.st.borrow_mut();
-            st.terminal_hotkey = None;
             if let Some(button) = st.mode_button.take() {
                 if let Some(mgr) = st.thread_mgr.as_ref().and_then(|tm| tm.cast::<ITfLangBarItemMgr>().ok()) {
                     let item: ITfLangBarItem = button.to_interface();
@@ -713,9 +690,6 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 }
             }
             self.update_preserved_keys();
-            let this: ComObject<TextService> = self.to_object();
-            let hotkey = TerminalHotkey::install(move |vk, lparam| this.terminal_toggle(vk, lparam));
-            self.st.borrow_mut().terminal_hotkey = hotkey;
             // Switched to Sweet IME (e.g. Win+Space): show the mode.
             self.show_mode_indicator(self.is_open());
             Ok(())
