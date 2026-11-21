@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::converter::{Conversion, Converter};
-use crate::dict::{TECH_TERMS, VRCHAT_TERMS};
+use crate::english;
 use crate::romaji::{self, Composer};
 use crate::{typo, width};
 
@@ -187,6 +187,8 @@ struct Composing {
     /// Store a temporary English word verbatim in before/after.
     literal: bool,
     live: Option<LiveConversion>,
+    /// `live` shows the typed keys as an English word (see `Composing::english`).
+    live_english: bool,
     /// Live conversion turned off for this composition (Esc / caret moves).
     live_off: bool,
     /// The last background-refined live conversion. While the reading only
@@ -211,28 +213,40 @@ impl Composing {
         self.before.is_empty() && self.composer.is_empty() && self.after.is_empty()
     }
 
+    /// Whether `raw` holds the keys of the whole composition, in order.
+    fn raw_spells(&self, reading: &str) -> bool {
+        self.before.is_empty() && self.after.is_empty() && romaji::to_hiragana(&self.raw) == reading
+    }
+
     fn bundled_candidates(&self, reading: &str) -> Option<Vec<String>> {
-        if !self.before.is_empty() || !self.after.is_empty() {
+        if !self.raw_spells(reading) {
             return None;
         }
         let mut candidates = Vec::new();
-        for line in TECH_TERMS
-            .lines()
-            .chain(VRCHAT_TERMS.lines())
-            .filter(|line| !line.starts_with('#'))
-        {
-            let mut fields = line.split('\t').skip(1);
-            let Some(spelling) = fields.next().filter(|s| s.eq_ignore_ascii_case(&self.raw)) else {
-                continue;
-            };
-            let kana = fields.nth(1).filter(|s| !s.is_empty());
+        for (spelling, kana) in english::spellings().filter(|(s, _)| english::spells(s, &self.raw)) {
             for surface in std::iter::once(spelling).chain(kana) {
                 if !candidates.iter().any(|c| c == surface) {
                     candidates.push(surface.to_owned());
                 }
             }
         }
-        (!candidates.is_empty() && romaji::to_hiragana(&self.raw) == reading).then_some(candidates)
+        (!candidates.is_empty()).then_some(candidates)
+    }
+
+    /// The typed keys as an English word, for keys that are not romaji
+    /// ("github" would otherwise read ぎtふb): a bundled spelling, or the
+    /// keys themselves unless `corrected` (a typo fix reads as Japanese).
+    fn english(&self, reading: &str, corrected: bool) -> Option<String> {
+        if !self.raw.bytes().all(|b| b.is_ascii_alphabetic()) {
+            return None;
+        }
+        if let Some(c) = self.bundled_candidates(reading) {
+            return c.into_iter().next();
+        }
+        // A word, not Japanese after a stray letter ("vrchatdeasobu" reads
+        // vrちゃtであそぶ): little kana follows the last letter that isn't romaji.
+        let tail = reading.chars().rev().take_while(|c| !c.is_ascii_alphabetic()).count();
+        (!corrected && tail <= 2 && self.raw_spells(reading)).then(|| self.raw.clone())
     }
 
     fn typo_input(&self, reading: &str) -> Option<&str> {
@@ -344,7 +358,9 @@ impl Session {
         }
         let c = &self.comp;
         if let Some(live) = &c.live {
-            let text = format!("{}{}", live.surface, c.composer.pending());
+            // An English word already includes the pending keys.
+            let pending = if c.live_english { "" } else { c.composer.pending() };
+            let text = format!("{}{}", live.surface, pending);
             let spans = if text.is_empty() { vec![] } else { vec![(0, text.len(), SpanAttr::Input)] };
             return Preedit { caret: text.len(), text, spans };
         }
@@ -357,7 +373,7 @@ impl Session {
     /// The reading and left context of the live conversion shown now, for
     /// refining it in the background (e.g. with a neural reranker).
     pub fn live_request(&self) -> Option<(String, String)> {
-        let live = self.comp.live.as_ref()?;
+        let live = self.comp.live.as_ref().filter(|_| !self.comp.live_english)?;
         Some((live.reading.clone(), self.left_context.clone()))
     }
 
@@ -365,7 +381,7 @@ impl Session {
     /// is being typed. Returns whether the display changed.
     pub fn apply_live(&mut self, reading: &str, surface: &str) -> bool {
         let Some(live) = &mut self.comp.live else { return false };
-        if live.reading != reading {
+        if live.reading != reading || self.comp.live_english {
             return false;
         }
         self.comp.refined = Some(LiveConversion { reading: reading.to_string(), surface: surface.to_string() });
@@ -380,6 +396,7 @@ impl Session {
     fn refresh(&mut self, conv: &Converter) {
         let c = &mut self.comp;
         c.live = None;
+        c.live_english = false;
         c.suggestions.clear();
         if c.is_empty() {
             c.literal = false;
@@ -402,7 +419,28 @@ impl Session {
                 correction = typo::correct(conv, raw, 1000, TYPO_SUGGESTION_BUDGET);
             }
         }
+        // Keys that are not romaji ("github", "discord") show as typed. While
+        // a typo fix is still possible (few stray letters, more keys to come)
+        // keep the conversion, so a fix doesn't flash the keys first.
+        // A bundled spelling also counts its pending keys ("github" settles
+        // as ぎてゅ until the last "b" resolves).
+        let kana = c.kana();
+        let english = if live && typo::has_unresolved_romaji(&kana) {
+            let bundled = c.bundled_candidates(&kana).map(|b| b[0].clone());
+            let typo_possible = c.typo_input(&settled).is_some() && !c.composer.pending().is_empty();
+            bundled.or_else(|| c.english(&kana, correction.is_some()).filter(|_| unresolved && !typo_possible))
+        } else {
+            None
+        };
         let mut live_best = None;
+        if let Some(text) = english {
+            c.live = Some(LiveConversion { reading: settled.clone(), surface: text });
+            c.live_english = true;
+            if let Some(fix) = correction.filter(|_| suggest) {
+                c.suggestions.push(fix.surface);
+            }
+            return;
+        }
         if live {
             // Lattice only: this runs on every keystroke.
             c.live = match correction.take_if(|_| unresolved) {
@@ -552,7 +590,9 @@ impl Session {
                 let kana = self.comp.kana();
                 let text = match &self.comp.live {
                     // Commit exactly what is shown.
-                    Some(live) if self.comp.composer.pending().is_empty() => live.surface.clone(),
+                    Some(live) if self.comp.live_english || self.comp.composer.pending().is_empty() => {
+                        live.surface.clone()
+                    }
                     // Pending romaji resolves to more kana: convert again.
                     Some(_) => conv.convert(&kana, &[], 1).first().map(|r| r.surface()).unwrap_or(kana),
                     None => kana,
@@ -668,6 +708,29 @@ impl Session {
         } else {
             None
         };
+        if typo::has_unresolved_romaji(&kana) {
+            if let Some(word) = self.comp.english(&kana, correction.is_some()) {
+                // Keys that are not romaji: the word as typed, capitalized,
+                // then the kana reading's conversion.
+                let mut cands = vec![word.clone()];
+                let mut chars = word.chars();
+                let capitalized: String =
+                    chars.next().map(|c| c.to_ascii_uppercase()).into_iter().chain(chars).collect();
+                let kana_text = conv.convert_best(&kana, &[], &self.left_context).first().map(|r| r.surface());
+                for c in std::iter::once(capitalized).chain(kana_text) {
+                    if !cands.contains(&c) {
+                        cands.push(c);
+                    }
+                }
+                self.conv = Some(Converting {
+                    segs: vec![SegState { reading: kana, cands, expanded: false, selected: 0, predicted: false }],
+                    focus: 0,
+                    window: false,
+                    corrected: false,
+                });
+                return;
+            }
+        }
         let reading = correction.as_ref().map_or(kana.as_str(), |fix| fix.reading.as_str());
         let result = conv.convert_best(reading, &[], &self.left_context);
         self.conv = Some(Converting {

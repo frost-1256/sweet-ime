@@ -2,6 +2,7 @@
 
 pub mod converter;
 pub mod dict;
+pub mod english;
 pub mod keymap;
 pub mod learning;
 pub mod number;

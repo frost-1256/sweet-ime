@@ -569,3 +569,42 @@ fn user_dictionary_words_convert_and_connect() {
     assert_ne!(best("ぽむがきた"), "ぽむ太郎が来た");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn english_words_typed_by_spelling_show_as_words() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        // Bundled spellings, also while the last key is still pending.
+        ("github", "GitHub"),
+        ("linux", "Linux"),
+        ("iphone", "iPhone"),
+        ("vscode", "VS Code"),
+        // Keys that are not romaji, shown as typed.
+        ("discord", "Discord"),
+        ("server", "server"),
+        // Inside a sentence.
+        ("vrchatdeasobu", "VRChatで遊ぶ"),
+        ("githubnipusshusuru", "GitHubにプッシュする"),
+        ("kyouhadiscorddehanasu", "今日はDiscordで話す"),
+        // Japanese is unchanged, typos included.
+        ("kyouhaiitenkidesu", "今日はいい天気です"),
+        ("arigatpu", "ありがとう"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert_eq!(s.preedit().text, expected, "live {typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected, "enter {typed}");
+
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "space {typed}");
+        assert!(s.handle(&c, Key::Escape));
+        assert!(s.handle(&c, Key::Escape));
+        s.take_commit();
+    }
+    // Typing on past an unresolved letter keeps the kana while a typo fix is possible.
+    let mut s = Session::new();
+    type_str(&mut s, &c, "kak");
+    assert_eq!(s.preedit().text, "かk");
+}

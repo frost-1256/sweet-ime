@@ -181,7 +181,10 @@ impl sweet_engine::Reranker for ZenzReranker {
             VRCHAT_TERMS.lines().chain(TECH_TERMS.lines()).filter(|line| !line.starts_with('#')).filter_map(|line| {
                 let mut fields = line.split('\t');
                 Some((fields.next()?, fields.next()?))
-            }).collect()
+            })
+            // English words typed by their spelling (ぎてゅb -> GitHub).
+            .chain(sweet_engine::english::romaji_readings().iter().map(|(r, s)| (r.as_str(), *s)))
+            .collect()
         });
         // Preserve dictionary spellings such as IME and UdonSharp when the model
         // prefers spelling them phonetically. Still rerank the surrounding text.

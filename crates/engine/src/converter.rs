@@ -63,6 +63,8 @@ enum Origin {
     User,
     /// A number read out in kana (see [`crate::number`]).
     Number,
+    /// An English word typed by its spelling (see [`crate::english`]).
+    Spelling,
 }
 
 /// A word placed into the lattice in addition to the system dictionary.
@@ -88,6 +90,9 @@ const NUMBER_ARABIC_EXTRA: i32 = 900;
 const NUMBER_WORD_PENALTY: i32 = 800;
 /// Extra cost for a number ending in に, which is usually the particle.
 const NUMBER_PARTICLE_PENALTY: i32 = 1500;
+/// Cost of an English word typed by its spelling (ぎてゅb -> GitHub). The
+/// letters around it would otherwise be unknown runs, which cost more.
+const SPELLING_COST: i32 = 2600;
 
 #[derive(Clone, Copy)]
 struct Node<'a> {
@@ -262,7 +267,30 @@ impl Converter {
         let mut out = self.learned_extras(text);
         self.user_extras(text, &mut out);
         self.number_extras(text, &mut out);
+        self.spelling_extras(text, &mut out);
         out
+    }
+
+    /// English words typed by their spelling in `text` (ぎてゅb), as
+    /// lattice extras with that spelling (GitHub).
+    fn spelling_extras(&self, text: &str, out: &mut Vec<Extra>) {
+        if !text.bytes().any(|b| b.is_ascii_alphabetic()) {
+            return;
+        }
+        let id = self.dict.pos_id("名詞,一般,*,*,*,*,*").unwrap_or(self.dict.unknown_id());
+        for (reading, spelling) in crate::english::romaji_readings() {
+            for (start, _) in text.match_indices(reading.as_str()) {
+                out.push(Extra {
+                    start,
+                    end: start + reading.len(),
+                    lid: id,
+                    rid: id,
+                    cost: SPELLING_COST,
+                    surface: (*spelling).to_string(),
+                    origin: Origin::Spelling,
+                });
+            }
+        }
     }
 
     /// Remembers that the user chose `surface` for `reading`.

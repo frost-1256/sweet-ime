@@ -1,0 +1,56 @@
+# Spelling	Kana candidate (optional)
+# English words typed as their spelling ("google", "iphone"). Typed letters
+# are matched case-insensitively, ignoring spaces, dots and hyphens in the
+# spelling. These are not dictionary entries: they are only offered when the
+# typed keys spell the word. Leave out words whose spelling is also ordinary
+# romaji (amazon, line, ruby), so Japanese input is not taken over.
+Google	グーグル
+Gmail	ジーメール
+Twitter	ツイッター
+Facebook	フェイスブック
+Instagram	インスタグラム
+Twitch	ツイッチ
+Reddit	レディット
+Wikipedia	ウィキペディア
+pixiv	ピクシブ
+BOOTH	ブース
+Netflix	ネットフリックス
+Spotify	スポティファイ
+Apple	アップル
+iPhone	アイフォン
+iPad	アイパッド
+Android	アンドロイド
+Microsoft	マイクロソフト
+Windows	ウィンドウズ
+Chrome	クローム
+Firefox	ファイアフォックス
+Edge	エッジ
+Outlook	アウトルック
+Excel	エクセル
+Word	ワード
+PowerPoint	パワーポイント
+OneDrive	ワンドライブ
+Teams	チームズ
+Copilot	コパイロット
+Dropbox	ドロップボックス
+Slack	スラック
+Zoom	ズーム
+Claude	クロード
+Obsidian	オブシディアン
+Canva	キャンバ
+Photoshop	フォトショップ
+Illustrator	イラストレーター
+Blender	ブレンダー
+Unity	ユニティ
+Unreal Engine	アンリアルエンジン
+Steam	スチーム
+PlayStation	プレイステーション
+Xbox	エックスボックス
+Switch	スイッチ
+Minecraft	マインクラフト
+Fortnite	フォートナイト
+Apex	エーペックス
+VALORANT	ヴァロラント
+npm
+Svelte	スベルト
+Perl	パール
