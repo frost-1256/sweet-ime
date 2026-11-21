@@ -93,6 +93,8 @@ const NUMBER_PARTICLE_PENALTY: i32 = 1500;
 /// Cost of an English word typed by its spelling (ぎてゅb -> GitHub). The
 /// letters around it would otherwise be unknown runs, which cost more.
 const SPELLING_COST: i32 = 2600;
+/// Cost of a word from the English word list typed by its spelling.
+const WORD_LIST_COST: i32 = 3000;
 
 #[derive(Clone, Copy)]
 struct Node<'a> {
@@ -158,6 +160,7 @@ pub struct Converter {
     /// Runtime switches (see [`Converter::configure`]).
     rerank_on: std::sync::atomic::AtomicBool,
     learning_on: std::sync::atomic::AtomicBool,
+    english_on: std::sync::atomic::AtomicBool,
     /// Recent reranker decisions: (reading, left context, candidates) -> index.
     rerank: Mutex<RerankState>,
     /// Signalled when a reranker run finishes (see `cached_choice`).
@@ -188,11 +191,17 @@ fn is_kana(c: char) -> bool {
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
         let number_pos = dict.pos_id("名詞,数,*,*,*,*,*").zip(dict.pos_id("名詞,数,アラビア数字,*,*,*,*"));
+        // Building the English word index takes tens of milliseconds; do it
+        // now so the first English word typed doesn't wait for it.
+        let _ = std::thread::Builder::new().name("sweet-english".into()).spawn(|| {
+            crate::english::word_index();
+        });
         Self { dict, reranker: None, history: Mutex::new(UserHistory::new()),
             user_dict: Mutex::new(UserDictionary::new()),
             number_pos,
             rerank_on: std::sync::atomic::AtomicBool::new(true),
             learning_on: std::sync::atomic::AtomicBool::new(true),
+            english_on: std::sync::atomic::AtomicBool::new(true),
             rerank: Mutex::new(RerankState::default()),
             rerank_done: std::sync::Condvar::new() }
     }
@@ -309,6 +318,40 @@ impl Converter {
                 });
             }
         }
+        if !self.english_words_enabled() {
+            return;
+        }
+        // Common English words ("kinoutestwo" reads きのうてstを).
+        let index = crate::english::word_index();
+        for (start, _) in text.char_indices() {
+            let rest = &text[start..];
+            for (i, c) in rest.char_indices() {
+                let end = i + c.len_utf8();
+                if end > index.max_len {
+                    break;
+                }
+                if let Some(word) = index.get(&rest[..end]) {
+                    out.push(Extra {
+                        start,
+                        end: start + end,
+                        lid: id,
+                        rid: id,
+                        cost: WORD_LIST_COST,
+                        surface: word.to_string(),
+                        origin: Origin::Spelling,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Turns the English word list on or off (bundled spellings stay).
+    pub fn set_english_words(&self, on: bool) {
+        self.english_on.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn english_words_enabled(&self) -> bool {
+        self.english_on.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Remembers that the user chose `surface` for `reading`.

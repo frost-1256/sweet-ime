@@ -179,6 +179,12 @@ input. Escape cancels the word. For common technical terms, type `ime`,
 `ieee`, or `github` and press Space to convert to `IME`, `IEEE`, or
 `GitHub`. Japanese readings such as `あいえむいー` also work.
 
+Common English words whose keys are not romaji convert inside a sentence
+too: `korehabestdesu` gives `これはbestです`. The words come from a bundled
+list (SCOWL). Words that are not on it, such as one fixed with F10 after a
+typo correction, are learned when committed and convert the same way next
+time. To turn this off, set `english_words = off`.
+
 ## Settings
 
 Open the settings app, `sweet-settings.exe`, in any of these ways:
@@ -214,6 +220,7 @@ emoji = on             # えがお -> 😊, かお -> kaomoji
 calculator = on        # 1+2*3= -> 7
 undo_commit = on       # Ctrl+Backspace right after a commit restores the reading
 private_fields = on    # learn nothing in password fields and private windows
+english_words = on     # common English words convert inside sentences
 ```
 
 Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one
@@ -256,5 +263,8 @@ to the file right away.
 - **Dictionary** (`system.dict`, bundled): derived from the Mozc OSS
   dictionary. It includes IPAdic and the Okinawa dictionary, which keep
   their own licenses; see `dist\licenses\dictionary-oss.txt`.
+- **English word list** (`crates/engine/src/english_words.txt`, bundled):
+  generated from SCOWL / ESDB by Kevin Atkinson; see
+  `dist\licenses\english-words.txt`.
 - **zenz model** (not bundled): by Miwa Keita, licensed under
   CC BY-SA 4.0. Users download it themselves with `get-zenz.ps1`.

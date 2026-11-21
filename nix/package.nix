@@ -37,6 +37,7 @@ stdenv.mkDerivation (finalAttrs: {
       ../Cargo.lock
       ../crates
       ../assets/icon
+      ../assets/licenses
       ../scripts/get-zenz.sh
       ../LICENSE
     ];
@@ -80,6 +81,7 @@ stdenv.mkDerivation (finalAttrs: {
       --replace-fail "Exec=sweet-settings" "Exec=$out/bin/sweet-settings"
     install -Dm755 ../scripts/get-zenz.sh "$out/share/sweet-ime/get-zenz.sh"
     install -Dm644 ../LICENSE "$out/share/sweet-ime/licenses/sweet-ime.txt"
+    install -Dm644 ../assets/licenses/english-words.txt "$out/share/sweet-ime/licenses/english-words.txt"
     install -Dm644 ${mozc}/src/data/dictionary_oss/README.txt "$out/share/sweet-ime/licenses/dictionary-oss.txt"
     wrapProgram "$out/bin/sweet-settings" \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiLibs} \

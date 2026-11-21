@@ -182,15 +182,17 @@ impl sweet_engine::Reranker for ZenzReranker {
                 let mut fields = line.split('\t');
                 Some((fields.next()?, fields.next()?))
             })
-            // English words typed by their spelling (ぎてゅb -> GitHub).
-            .chain(sweet_engine::english::romaji_readings().iter().map(|(r, s)| (r.as_str(), *s)))
             .collect()
         });
         // Preserve dictionary spellings such as IME and UdonSharp when the model
         // prefers spelling them phonetically. Still rerank the surrounding text.
         let coverage: Vec<usize> = cands.iter().map(|c| {
             c.segments.iter().flat_map(|s| &s.words)
-                .filter(|w| spellings.contains(&(w.reading.as_str(), w.surface.as_str())))
+                .filter(|w| {
+                    spellings.contains(&(w.reading.as_str(), w.surface.as_str()))
+                        // English words typed by their spelling (ぎてゅb -> GitHub, てst -> test).
+                        || sweet_engine::english::is_spelling(&w.reading, &w.surface)
+                })
                 .map(|w| w.reading.len())
                 .sum()
         }).collect();

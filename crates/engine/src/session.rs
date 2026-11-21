@@ -108,6 +108,9 @@ pub struct Options {
     pub undo_commit: bool,
     /// Learn nothing in password fields and private browser windows.
     pub private_fields: bool,
+    /// Recognize common English words typed as their spelling, also inside
+    /// a sentence, and learn words fixed with F10.
+    pub english_words: bool,
 }
 
 impl Default for Options {
@@ -125,6 +128,7 @@ impl Default for Options {
             calculator: true,
             undo_commit: true,
             private_fields: true,
+            english_words: true,
         }
     }
 }
@@ -150,6 +154,7 @@ impl Options {
                 "calculator" => o.calculator = on,
                 "undo_commit" => o.undo_commit = on,
                 "private_fields" => o.private_fields = on,
+                "english_words" => o.english_words = on,
                 _ => {}
             }
         }
@@ -173,6 +178,7 @@ impl Options {
              calculator = {}
              undo_commit = {}
              private_fields = {}
+             english_words = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -186,6 +192,7 @@ impl Options {
             b(self.calculator),
             b(self.undo_commit),
             b(self.private_fields),
+            b(self.english_words),
         )
     }
 }
@@ -483,7 +490,8 @@ impl Session {
         let suggest = self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2;
         let unresolved = typo::has_unresolved_romaji(&settled);
         let mut correction = None;
-        if (suggest || (live && unresolved)) && c.composer.pending().is_empty() {
+        let words = english::covers_letters(&settled, self.options.english_words && conv.english_words_enabled());
+        if (suggest || (live && unresolved)) && c.composer.pending().is_empty() && !words {
             if let Some(raw) = c.typo_input(&settled) {
                 correction = typo::correct(conv, raw, 1000, TYPO_SUGGESTION_BUDGET);
             }
@@ -845,7 +853,8 @@ impl Session {
             });
             return;
         }
-        let correction = if typo::has_unresolved_romaji(&kana) {
+        let words = english::covers_letters(&kana, self.options.english_words && conv.english_words_enabled());
+        let correction = if typo::has_unresolved_romaji(&kana) && !words {
             self.comp.typo_input(&kana).and_then(|raw| {
                 typo::correct(conv, raw, 0, TYPO_CONVERSION_BUDGET)
             })
@@ -927,8 +936,13 @@ impl Session {
         if let Some(cv) = self.conv.take() {
             for s in &cv.segs {
                 let surface = &s.cands[s.selected];
-                // Learn explicit choices (anything but the first suggestion).
-                if s.selected != 0 && !s.predicted && !self.private {
+                // Learn explicit choices (anything but the first suggestion),
+                // and English words not on the word list ("nginx", or a word
+                // fixed with F10), so they convert inside sentences next time.
+                let new_word = self.options.english_words
+                    && english::typed_word(&s.reading, surface)
+                    && !english::is_spelling(&s.reading, surface);
+                if (s.selected != 0 || new_word) && !s.predicted && !self.private {
                     conv.learn(&s.reading, surface);
                 }
                 self.commit.push_str(surface);
@@ -1153,7 +1167,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false, english_words: true };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);

@@ -56,6 +56,7 @@ try {
     if ($LASTEXITCODE) { throw 'dictionary build failed' }
     Copy-Item LICENSE "$dist\licenses\sweet-ime.txt"
     Copy-Item (Join-Path $MozcData 'README.txt') "$dist\licenses\dictionary-oss.txt"
+    Copy-Item assets\licenses\english-words.txt "$dist\licenses\english-words.txt"
 
     Get-ChildItem -Recurse $dist | Where-Object { -not $_.PSIsContainer } |
         Format-Table FullName, Length -AutoSize

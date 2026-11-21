@@ -662,6 +662,68 @@ fn english_words_typed_by_spelling_show_as_words() {
 }
 
 #[test]
+fn listed_english_words_convert_inside_sentences() {
+    let Some(c) = converter() else { return };
+    let convert = |c: &Converter, typed: &str, on: bool| {
+        let mut s = Session::new();
+        s.options.english_words = on;
+        type_str(&mut s, c, typed);
+        let live = s.preedit().text;
+        assert!(s.handle(c, Key::Space));
+        (live, s.preedit().text)
+    };
+    for (typed, word) in [
+        ("korehabestdesu", "best"),
+        ("watashihasoftwarewotsukuru", "software"),
+        ("kyouhadesktopwokau", "desktop"),
+        // Letters that spell a word are not a typo (not 部署).
+        ("konnshuuhabusydesu", "busy"),
+        ("nginxwotsukau", "Nginx"),
+    ] {
+        let (live, space) = convert(&c, typed, true);
+        assert!(live.contains(word), "live {typed}: {live}");
+        assert!(space.contains(word), "space {typed}: {space}");
+    }
+    // Romaji and typos stay Japanese.
+    for (typed, expected) in [("tesuto", "テスト"), ("shigtoo", "仕事"), ("arigatpu", "ありがとう")] {
+        assert_eq!(convert(&c, typed, true).1, expected, "{typed}");
+    }
+    // Off: only bundled spellings are words.
+    c.set_english_words(false);
+    let (_, space) = convert(&c, "korehabestdesu", false);
+    assert!(!space.contains("best"), "{space}");
+    c.set_english_words(true);
+}
+
+#[test]
+fn english_words_not_on_the_list_are_learned() {
+    let Some(c) = converter() else { return };
+    let sentence = |c: &Converter| {
+        let mut s = Session::new();
+        type_str(&mut s, c, "kyouhazigbeewotsukau");
+        assert!(s.handle(c, Key::Space));
+        s.preedit().text
+    };
+    assert!(!sentence(&c).contains("zigbee"));
+    let mut s = Session::new();
+    // A typo fix reads it as 地下絵; F10 gives the keys back.
+    type_str(&mut s, &c, "zigbee");
+    assert!(s.handle(&c, Key::ToHalfAscii));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "zigbee");
+    assert!(sentence(&c).contains("zigbee"), "{}", sentence(&c));
+    // Romaji fixed with F10 is not learned as English.
+    let mut s = Session::new();
+    type_str(&mut s, &c, "kore");
+    assert!(s.handle(&c, Key::ToHalfAscii));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "kore");
+    type_str(&mut s, &c, "kore");
+    assert!(s.handle(&c, Key::Space));
+    assert_ne!(s.preedit().text, "kore");
+}
+
+#[test]
 fn special_readings_offer_dates_emoji_and_arithmetic() {
     let Some(c) = converter() else { return };
     // The candidate list for `typed` (Space twice) with `options`.
