@@ -91,7 +91,7 @@ only.
 | Shift+← / Shift+→        | —                                 | Shrink or extend the segment     |
 | 1–9                      | —                                 | Select candidate                 |
 | F6 / F7 / F8 / F9 / F10  | Hiragana / katakana / half-width katakana / full-width ASCII / ASCII | same |
-| 半角/全角, 変換, 無変換   | Toggle / on / off                 |                                  |
+| 半角/全角 or Alt+`, 変換, 無変換 | Toggle / on / off              |                                  |
 
 These are the default bindings. You can change them on the **キー** page of
 the settings app, which saves them to `%APPDATA%\SweetIME\keymap.txt`. A

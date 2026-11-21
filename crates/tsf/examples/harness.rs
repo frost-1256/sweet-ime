@@ -301,16 +301,24 @@ fn own_candidate_window() -> Option<HWND> {
     own_window(windows_core::w!("SweetImeCandidateWindow"))
 }
 
+/// Module handle of the DLL under test. An installed Sweet IME may also be
+/// loaded into this process (by the system) with windows of the same
+/// classes; only windows created by the tested DLL count.
+static TESTED_MODULE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
 fn own_window(class: PCWSTR) -> Option<HWND> {
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowExW, GWLP_HINSTANCE, GetWindowLongPtrW, GetWindowThreadProcessId,
+    };
     let pid = std::process::id();
+    let module = TESTED_MODULE.load(std::sync::atomic::Ordering::Relaxed);
     let mut after: Option<HWND> = None;
     unsafe {
         loop {
             let h = FindWindowExW(None, after, class, None).ok()?;
             let mut p = 0;
             GetWindowThreadProcessId(h, Some(&mut p));
-            if p == pid {
+            if p == pid && (module == 0 || GetWindowLongPtrW(h, GWLP_HINSTANCE) == module) {
                 return Some(h);
             }
             after = Some(h);
@@ -350,6 +358,7 @@ fn main() -> Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         let module = LoadLibraryW(&HSTRING::from(dll.as_str()))?;
+        TESTED_MODULE.store(module.0 as isize, std::sync::atomic::Ordering::Relaxed);
         let proc = GetProcAddress(module, s!("DllGetClassObject")).expect("DllGetClassObject");
         let get: GetClassObject = std::mem::transmute(proc);
         let mut factory: *mut c_void = std::ptr::null_mut();
@@ -367,7 +376,7 @@ fn main() -> Result<()> {
             windows_core::w!("STATIC"),
             windows_core::w!("harness app"),
             windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW,
-            0, 0, 200, 100, None, None, None, None,
+            0, 0, 800, 600, None, None, None, None,
         )?;
         let store = windows_core::ComObject::new(TextStore {
             text: RefCell::new(Vec::new()),
@@ -614,6 +623,18 @@ fn main() -> Result<()> {
         with_ctrl(false);
         let eaten = h.key(0x41);
         check("keymap ctrl+space turned on", format!("{eaten}"), "true", &mut fails);
+        h.key(0x1B);
+        h.key(0x1B);
+
+        // 7. Alt+` arrives as a preserved key (the first modifier toggle).
+        h.clear();
+        let alt_grave = GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1b00);
+        let eaten = h.sink.OnPreservedKey(&h.ctx, &alt_grave).map(|b| b.as_bool()).unwrap_or(false);
+        pump();
+        check("alt+` preserved key eaten", format!("{eaten}"), "true", &mut fails);
+        check("alt+` turned off", format!("{}", h.key(0x41)), "false", &mut fails);
+        let _ = h.sink.OnPreservedKey(&h.ctx, &alt_grave);
+        check("alt+` turned on", format!("{}", h.key(0x41)), "true", &mut fails);
         h.key(0x1B);
         h.key(0x1B);
         // The taskbar mode indicator can only be added for a registered TIP.

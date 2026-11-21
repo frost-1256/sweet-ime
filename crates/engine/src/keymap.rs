@@ -75,6 +75,7 @@ pub const KEYS: &[(&str, &str, u16)] = &[
     ("Eisu", "英数", 0xF0),
     ("ImeOn", "IME オン", 0x16),
     ("ImeOff", "IME オフ", 0x1A),
+    ("Backquote", "` (日本語配列では @)", 0xC0),
     ("F1", "F1", 0x70),
     ("F2", "F2", 0x71),
     ("F3", "F3", 0x72),
@@ -187,6 +188,20 @@ pub fn action_label(a: Action) -> &'static str {
     ACTIONS.iter().find(|x| x.2 == a).map_or("?", |x| x.1)
 }
 
+/// IME on/off bindings with Ctrl or Alt. Frontends register these with the
+/// system (e.g. TSF preserved keys) because applications may not pass Alt
+/// chords to the IME as ordinary keystrokes.
+pub fn modifier_toggles(map: &Keymap) -> Vec<(Chord, Action)> {
+    let mut out: Vec<(Chord, Action)> = Vec::new();
+    for b in &map.bindings {
+        let toggle = matches!(b.action, Action::ImeToggle | Action::ImeOn | Action::ImeOff);
+        if toggle && b.when == When::Always && (b.chord.ctrl || b.chord.alt) && !out.iter().any(|(c, _)| *c == b.chord) {
+            out.push((b.chord, b.action));
+        }
+    }
+    out
+}
+
 pub fn when_label(w: When) -> &'static str {
     WHENS.iter().find(|x| x.2 == w).map_or("?", |x| x.1)
 }
@@ -259,6 +274,8 @@ impl Default for Keymap {
         Self {
             bindings: vec![
                 b(k(0x19), ImeToggle),
+                // Alt+` (US keyboards), as in Microsoft IME.
+                b(Chord { vk: 0xC0, ctrl: false, shift: false, alt: true }, ImeToggle),
                 b(k(0x16), ImeOn),
                 b(k(0x1C), ImeOn),
                 b(k(0xF2), ImeOn),
@@ -388,6 +405,8 @@ mod tests {
         // Letters are typed, Shift+letter too.
         assert_eq!(m.lookup(Chord::key(0x41), true), None);
         assert_eq!(m.lookup(Chord::shift(0x41), true), None);
+        // Alt+` toggles.
+        assert_eq!(m.lookup(Chord { alt: true, ..Chord::key(0xC0) }, false), Some(Action::ImeToggle));
         // Ctrl chords are not bound by default.
         assert_eq!(m.lookup(Chord { ctrl: true, ..Chord::key(0x20) }, false), None);
     }

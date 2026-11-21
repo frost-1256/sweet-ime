@@ -7,6 +7,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 /// Keys that toggle the IME on/off.
+#[derive(Clone, Copy)]
 pub enum Toggle {
     Toggle,
     On,

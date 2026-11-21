@@ -15,7 +15,7 @@ use windows::Win32::UI::TextServices::{
     ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
     ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, TF_TMF_IMMERSIVEMODE,
-    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
+    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_MOD_ALT, TF_MOD_CONTROL, TF_MOD_SHIFT, TF_PRESERVEDKEY, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
     TF_SELECTIONSTYLE,
 };
 use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, implement};
@@ -47,6 +47,13 @@ struct State {
     settings_stamp: [Option<std::time::SystemTime>; 2],
     /// Open/close compartment event sink: (compartment source, cookie).
     openclose_sink: Option<(ITfSource, u32)>,
+    /// Registered preserved keys (IME on/off chords with Ctrl / Alt).
+    preserved: Vec<(GUID, TF_PRESERVEDKEY, Toggle)>,
+}
+
+/// GUID of the `i`-th preserved key.
+pub(crate) fn preserved_guid(i: usize) -> GUID {
+    GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1b00 + i as u128)
 }
 
 #[implement(
@@ -161,6 +168,56 @@ impl TextService_Impl {
             st.settings_stamp = stamp;
             st.session.options = crate::load_options();
             st.keymap = sweet_engine::paths::load_keymap();
+            drop(st);
+            self.update_preserved_keys();
+        }
+    }
+
+    /// Registers the keymap's IME on/off chords that use Ctrl or Alt as
+    /// preserved keys: applications deliver Alt chords as system keys,
+    /// which do not reach the key event sink.
+    fn update_preserved_keys(&self) {
+        use sweet_engine::keymap::{Action, modifier_toggles};
+        let (tm, tid, old, wanted) = {
+            let Ok(mut st) = self.st.try_borrow_mut() else { return };
+            (st.thread_mgr.clone(), st.tid, std::mem::take(&mut st.preserved), modifier_toggles(&st.keymap))
+        };
+        let Some(km) = tm.and_then(|tm| tm.cast::<ITfKeystrokeMgr>().ok()) else { return };
+        let mut now = Vec::new();
+        unsafe {
+            for (g, k, _) in &old {
+                let _ = km.UnpreserveKey(g, k);
+            }
+            for (i, (chord, action)) in wanted.into_iter().enumerate() {
+                let mut mods = 0u32;
+                if chord.alt {
+                    mods |= TF_MOD_ALT;
+                }
+                if chord.ctrl {
+                    mods |= TF_MOD_CONTROL;
+                }
+                if chord.shift {
+                    mods |= TF_MOD_SHIFT;
+                }
+                let key = TF_PRESERVEDKEY { uVKey: chord.vk as u32, uModifiers: mods };
+                let g = preserved_guid(i);
+                let desc: Vec<u16> = "IME オン/オフ".encode_utf16().collect();
+                match km.PreserveKey(tid, &g, &key, &desc) {
+                    Ok(()) => {}
+                    Err(e) => crate::debug_log!("PreserveKey {}: {e}", chord.label()),
+                }
+                // Keep it even if registration failed (unregistered test
+                // hosts call OnPreservedKey directly).
+                let t = match action {
+                    Action::ImeOn => Toggle::On,
+                    Action::ImeOff => Toggle::Off,
+                    _ => Toggle::Toggle,
+                };
+                now.push((g, key, t));
+            }
+        }
+        if let Ok(mut st) = self.st.try_borrow_mut() {
+            st.preserved = now;
         }
     }
 
@@ -170,8 +227,10 @@ impl TextService_Impl {
             let Ok(st) = self.st.try_borrow() else { return };
             (st.session.options.mode_indicator, st.thread_mgr.clone(), st.tid)
         };
+        crate::debug_log!("mode badge: open={open} enabled={enabled}");
         let Some(tm) = tm.filter(|_| enabled) else { return };
         let ctx = unsafe { tm.GetFocus().and_then(|d| d.GetTop()).ok() };
+        crate::debug_log!("mode badge: focus context={}", ctx.is_some());
         let this: ComObject<TextService> = self.to_object();
         let Some(ctx) = ctx else {
             if let Some((rc, owner)) = gui_caret() {
@@ -180,19 +239,26 @@ impl TextService_Impl {
             return;
         };
         let ctx2 = ctx.clone();
-        let _ = edit::request_any(&ctx, tid, move |ec| {
-            let found = unsafe { document_caret(ec, &ctx2) }.or_else(gui_caret);
+        let r = edit::request_any(&ctx, tid, move |ec| {
+            let doc = unsafe { document_caret(ec, &ctx2) };
+            crate::debug_log!("mode badge: document caret {doc:?}");
+            let found = doc.or_else(gui_caret);
+            crate::debug_log!("mode badge: caret {found:?}");
             if let Some((rc, owner)) = found {
                 this.indicator_at(open, rc, owner);
             }
             Ok(())
         });
+        crate::debug_log!("mode badge: edit session {r:?}");
     }
 
     fn indicator_at(&self, open: bool, caret: RECT, owner: Option<HWND>) {
-        let Ok(mut st) = self.st.try_borrow_mut() else { return };
+        let Ok(mut st) = self.st.try_borrow_mut() else {
+            crate::debug_log!("mode badge: state busy");
+            return;
+        };
         if st.indicator.is_none() {
-            st.indicator = ModeIndicator::new().ok();
+            st.indicator = ModeIndicator::new().inspect_err(|e| crate::debug_log!("mode badge: window {e}")).ok();
         }
         if let Some(i) = &st.indicator {
             i.show(open, caret, owner);
@@ -474,6 +540,13 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                     }
                 }
             }
+            if let Some(km) = st.thread_mgr.as_ref().and_then(|tm| tm.cast::<ITfKeystrokeMgr>().ok()) {
+                for (g, k, _) in st.preserved.drain(..) {
+                    unsafe {
+                        let _ = km.UnpreserveKey(&g, &k);
+                    }
+                }
+            }
             if let Some((src, cookie)) = st.openclose_sink.take() {
                 unsafe {
                     let _ = src.UnadviseSink(cookie);
@@ -575,6 +648,7 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                     }
                 }
             }
+            self.update_preserved_keys();
             // Switched to Sweet IME (e.g. Win+Space): show the mode.
             self.show_mode_indicator(self.is_open());
             Ok(())
@@ -619,6 +693,16 @@ unsafe fn document_caret(ec: u32, ctx: &ITfContext) -> Option<(RECT, Option<HWND
             return None;
         }
         let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
+        // Some documents report a bogus position before they have focus or
+        // layout; ignore one that is outside the window holding the text.
+        if let Some(w) = owner {
+            let mut wr = RECT::default();
+            if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(w, &mut wr).is_ok()
+                && (rc.left < wr.left - 8 || rc.left > wr.right + 8 || rc.bottom < wr.top - 8 || rc.top > wr.bottom + 8)
+            {
+                return None;
+            }
+        }
         Some((rc, owner))
     }
 }
@@ -688,8 +772,19 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         Ok(BOOL(0))
     }
 
-    fn OnPreservedKey(&self, _pic: Ref<ITfContext>, _rguid: *const GUID) -> Result<BOOL> {
-        Ok(BOOL(0))
+    fn OnPreservedKey(&self, pic: Ref<ITfContext>, rguid: *const GUID) -> Result<BOOL> {
+        crate::guard(|| {
+            if rguid.is_null() {
+                return Ok(BOOL(0));
+            }
+            let g = unsafe { *rguid };
+            let t = self.st.borrow().preserved.iter().find(|(x, _, _)| *x == g).map(|(_, _, t)| *t);
+            let (Some(t), Ok(ctx)) = (t, pic.ok()) else { return Ok(BOOL(0)) };
+            let ctx = ctx.clone();
+            self.st.borrow_mut().ctx = Some(ctx.clone());
+            self.handle_toggle(&ctx, t)?;
+            Ok(BOOL(1))
+        })
     }
 }
 
