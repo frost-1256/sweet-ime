@@ -109,6 +109,13 @@ otherwise.
 When the IME is turned on or off, "あ" or "A" appears briefly next to the
 text cursor.
 
+While the IME is on, start a word with Shift+letter to type it in English.
+Release Shift to continue typing the word. Space commits it with a
+half-width space, and Enter commits the word alone. Both return to Japanese
+input. Escape cancels the word. For common technical terms, type `ime`,
+`ieee`, or `github` and press Space to convert to `IME`, `IEEE`, or
+`GitHub`. Japanese readings such as `あいえむいー` also work.
+
 ## Settings
 
 Open the settings app, `sweet-settings.exe`, in any of these ways:

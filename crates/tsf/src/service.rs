@@ -317,7 +317,12 @@ impl TextService_Impl {
         if self.st.borrow().session.is_active() {
             return true;
         }
-        matches!(key, sweet_engine::Key::Char(_) | sweet_engine::Key::Space)
+        matches!(
+            key,
+            sweet_engine::Key::Char(_)
+                | sweet_engine::Key::ShiftedLetter(_)
+                | sweet_engine::Key::Space
+        )
     }
 
     /// Starts refining the live conversion in the background (reranker only).

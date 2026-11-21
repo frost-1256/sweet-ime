@@ -13,7 +13,9 @@ use windows::Win32::System::Com::{
     IClassFactory, IDataObject,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC, MapVirtualKeyW};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyboardState, MAPVK_VK_TO_VSC, MapVirtualKeyW, SetKeyboardState, VK_CAPITAL, VK_SHIFT,
+};
 use windows::Win32::UI::TextServices::*;
 use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
 use windows_core::{BOOL, GUID, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, Ref, Result, implement, s};
@@ -636,7 +638,6 @@ fn main() -> Result<()> {
         h.key(0x1B);
         h.clear();
         let with_ctrl = |down: bool| {
-            use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
             let mut ks = [0u8; 256];
             let _ = GetKeyboardState(&mut ks);
             ks[0x11] = if down { 0x80 } else { 0 };
@@ -695,6 +696,49 @@ fn main() -> Result<()> {
         check("on types Japanese again", h.key(0x41).to_string(), "true", &mut fails);
         h.key(0x1B);
         h.key(0x1B);
+
+        // Shift on the first letter starts a temporary English word.
+        h.clear();
+        let mut original = [0u8; 256];
+        GetKeyboardState(&mut original)?;
+        let mut keyboard = original;
+        keyboard[VK_CAPITAL.0 as usize] = 0;
+        keyboard[VK_SHIFT.0 as usize] = 0x80;
+        SetKeyboardState(&keyboard)?;
+        let eaten = h.key(b'T' as u16);
+        keyboard[VK_SHIFT.0 as usize] = 0;
+        SetKeyboardState(&keyboard)?;
+        h.type_str("est");
+        h.key(0x20);
+        check(
+            "shift starts English input",
+            eaten.to_string(),
+            "true",
+            &mut fails,
+        );
+        check(
+            "space commits the English word",
+            h.text(),
+            "Test ",
+            &mut fails,
+        );
+        h.type_str("kana");
+        check(
+            "Japanese resumes after English",
+            h.text(),
+            "Test かな",
+            &mut fails,
+        );
+        h.key(0x1B);
+        h.key(0x1B);
+        for (typed, expected) in [("ime", "IME"), ("ieee", "IEEE")] {
+            h.clear();
+            h.type_str(typed);
+            h.key(0x20);
+            h.key(0x0D);
+            check("technical spelling", h.text(), expected, &mut fails);
+        }
+        SetKeyboardState(&original)?;
         // The taskbar mode indicator can only be added for a registered TIP.
         {
             use windows::Win32::UI::TextServices::{ITfLangBarItemButton, ITfLangBarItemMgr, TF_LANGBARITEMINFO};

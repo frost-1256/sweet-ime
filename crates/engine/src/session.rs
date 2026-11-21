@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use crate::converter::{Conversion, Converter};
+use crate::dict::TECH_TERMS;
 use crate::romaji::{self, Composer};
 use crate::{typo, width};
 
@@ -15,6 +16,8 @@ const TYPO_CONVERSION_BUDGET: Duration = Duration::from_millis(12);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
+    /// A letter typed with Shift held, which starts a temporary English word.
+    ShiftedLetter(char),
     Space,
     Enter,
     Backspace,
@@ -170,6 +173,8 @@ struct Composing {
     composer: Composer,
     after: String,
     raw: String,
+    /// Store a temporary English word verbatim in before/after.
+    literal: bool,
     live: Option<LiveConversion>,
     /// Live conversion turned off for this composition (Esc / caret moves).
     live_off: bool,
@@ -189,6 +194,18 @@ impl Composing {
     }
     fn is_empty(&self) -> bool {
         self.before.is_empty() && self.composer.is_empty() && self.after.is_empty()
+    }
+
+    fn technical_spelling(&self, reading: &str) -> Option<&'static str> {
+        if !self.before.is_empty() || !self.after.is_empty() {
+            return None;
+        }
+        let surface = TECH_TERMS
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| line.split('\t').nth(1))
+            .find(|surface| surface.eq_ignore_ascii_case(&self.raw))?;
+        (romaji::to_hiragana(&self.raw) == reading).then_some(surface)
     }
 
     fn typo_input(&self, reading: &str) -> Option<&str> {
@@ -302,7 +319,11 @@ impl Session {
         let c = &mut self.comp;
         c.live = None;
         c.suggestions.clear();
-        if self.conv.is_some() || c.is_empty() {
+        if c.is_empty() {
+            c.literal = false;
+            return;
+        }
+        if c.literal || self.conv.is_some() {
             return;
         }
         let settled = format!("{}{}", c.before, c.composer.kana());
@@ -412,6 +433,19 @@ impl Session {
 
     /// Handles a key. Returns whether the key was consumed.
     pub fn handle(&mut self, conv: &Converter, key: Key) -> bool {
+        let key = if let Key::ShiftedLetter(ch) = key {
+            if !self.comp.literal {
+                if self.conv.is_some() {
+                    self.commit_conversion(conv);
+                } else if !self.comp.is_empty() {
+                    self.handle_composing(conv, Key::Enter);
+                }
+                self.comp.literal = true;
+            }
+            Key::Char(ch)
+        } else {
+            key
+        };
         let consumed = if self.conv.is_some() {
             self.handle_converting(conv, key)
         } else {
@@ -424,6 +458,10 @@ impl Session {
     fn handle_composing(&mut self, conv: &Converter, key: Key) -> bool {
         let empty = self.comp.is_empty();
         match key {
+            Key::Char(ch) if self.comp.literal && !ch.is_control() => {
+                self.comp.before.push(ch);
+                true
+            }
             Key::Char(c) if !c.is_control() => {
                 self.comp.composer.push(c);
                 self.comp.raw.push(c);
@@ -434,6 +472,12 @@ impl Session {
                 true
             }
             _ if empty => false,
+            Key::Space if self.comp.literal => {
+                self.commit_all();
+                self.commit.push(' ');
+                true
+            }
+            Key::Down if self.comp.literal => false,
             Key::Space | Key::Down => {
                 self.start_conversion(conv);
                 true
@@ -515,6 +559,9 @@ impl Session {
                 true
             }
             Key::ToHiragana | Key::ToKatakana | Key::ToHalfKatakana | Key::ToFullAscii | Key::ToHalfAscii => {
+                if self.comp.literal {
+                    return false;
+                }
                 let kana = self.comp.kana();
                 let raw = self.comp.raw.clone();
                 // Collapse to a single segment showing the transliteration.
@@ -533,6 +580,21 @@ impl Session {
 
     fn start_conversion(&mut self, conv: &Converter) {
         let kana = self.comp.kana();
+        if let Some(spelling) = self.comp.technical_spelling(&kana) {
+            self.conv = Some(Converting {
+                segs: vec![SegState {
+                    reading: kana,
+                    cands: vec![spelling.to_string()],
+                    expanded: false,
+                    selected: 0,
+                    predicted: false,
+                }],
+                focus: 0,
+                window: false,
+                corrected: false,
+            });
+            return;
+        }
         let correction = if typo::has_unresolved_romaji(&kana) {
             self.comp.typo_input(&kana).and_then(|raw| {
                 typo::correct(conv, raw, 0, TYPO_CONVERSION_BUDGET)

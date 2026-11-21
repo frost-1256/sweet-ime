@@ -31,6 +31,8 @@ const ENTRY_LEN: usize = 12;
 
 /// Bundled spellings shared by the dictionary compiler and neural reranker.
 pub const VRCHAT_TERMS: &str = include_str!("vrchat.tsv");
+/// Canonical technical spellings and their Japanese readings.
+pub const TECH_TERMS: &str = include_str!("tech_terms.tsv");
 
 /// Coarse part-of-speech class used for bunsetsu segmentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

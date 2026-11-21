@@ -13,7 +13,7 @@ use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use sweet_engine::dict::VRCHAT_TERMS;
+use sweet_engine::dict::{TECH_TERMS, VRCHAT_TERMS};
 
 pub use model::{KvCache, Model};
 pub use tokenizer::Tokenizer;
@@ -178,12 +178,12 @@ impl sweet_engine::Reranker for ZenzReranker {
     fn choose(&self, reading: &str, left_context: &str, cands: &[sweet_engine::Conversion]) -> Option<usize> {
         static SPELLINGS: OnceLock<HashSet<(&str, &str)>> = OnceLock::new();
         let spellings = SPELLINGS.get_or_init(|| {
-            VRCHAT_TERMS.lines().filter(|line| !line.starts_with('#')).filter_map(|line| {
+            VRCHAT_TERMS.lines().chain(TECH_TERMS.lines()).filter(|line| !line.starts_with('#')).filter_map(|line| {
                 let mut fields = line.split('\t');
                 Some((fields.next()?, fields.next()?))
             }).collect()
         });
-        // Preserve dictionary spellings such as UdonSharp when the model
+        // Preserve dictionary spellings such as IME and UdonSharp when the model
         // prefers spelling them phonetically. Still rerank the surrounding text.
         let coverage: Vec<usize> = cands.iter().map(|c| {
             c.segments.iter().flat_map(|s| &s.words)

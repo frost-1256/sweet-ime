@@ -57,7 +57,12 @@ pub fn translate(keymap: &Keymap, vk: u32, lparam: isize, composing: bool) -> Op
     if c.is_control() || !c.is_ascii() || c == ' ' {
         return None;
     }
-    Some(Input::Key(Key::Char(c)))
+    let key = if chord.shift && c.is_ascii_alphabetic() {
+        Key::ShiftedLetter(c)
+    } else {
+        Key::Char(c)
+    };
+    Some(Input::Key(key))
 }
 
 #[cfg(test)]

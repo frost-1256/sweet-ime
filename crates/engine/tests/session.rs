@@ -22,6 +22,84 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
+fn shift_starts_english_until_space_or_enter() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "kana");
+    assert!(s.handle(&c, Key::ShiftedLetter('G')));
+    assert_eq!(s.take_commit(), "かな");
+    type_str(&mut s, &c, "it");
+    assert!(s.handle(&c, Key::ShiftedLetter('H')));
+    type_str(&mut s, &c, "ub");
+    assert_eq!(s.preedit().text, "GitHub");
+    assert!(s.candidates().is_none());
+    assert!(s.live_request().is_none());
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.take_commit(), "GitHub ");
+    assert!(!s.is_active());
+
+    type_str(&mut s, &c, "kana");
+    assert_eq!(s.preedit().text, "かな");
+    assert!(s.handle(&c, Key::Escape));
+    assert!(s.handle(&c, Key::ShiftedLetter('I')));
+    assert!(s.handle(&c, Key::ShiftedLetter('M')));
+    assert!(s.handle(&c, Key::ShiftedLetter('E')));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "かなIME");
+    assert!(!s.is_active());
+}
+
+#[test]
+fn temporary_english_supports_editing_and_cancellation() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    assert!(s.handle(&c, Key::ShiftedLetter('T')));
+    type_str(&mut s, &c, "oo");
+    assert!(s.handle(&c, Key::Left));
+    assert!(s.handle(&c, Key::Delete));
+    type_str(&mut s, &c, "ol");
+    assert_eq!(s.preedit().text, "Tool");
+    assert!(s.handle(&c, Key::Escape));
+    assert_eq!(s.take_commit(), "");
+
+    assert!(s.handle(&c, Key::ShiftedLetter('A')));
+    assert!(s.handle(&c, Key::Backspace));
+    assert!(!s.is_active());
+    type_str(&mut s, &c, "a");
+    assert_eq!(s.preedit().text, "あ");
+}
+
+#[test]
+fn japanese_readings_convert_to_case_sensitive_technical_terms() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    for (reading, spelling) in [("aiemui-", "IME"), ("gittohabu", "GitHub")] {
+        type_str(&mut s, &c, reading);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, spelling);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), spelling);
+    }
+}
+
+#[test]
+fn lowercase_technical_terms_convert_to_their_canonical_spelling() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    for (typed, expected) in [("ime", "IME"), ("ieee", "IEEE"), ("github", "GitHub")] {
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+
+    type_str(&mut s, &c, "ime-ji");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "イメージ");
+}
+
+#[test]
 fn compose_convert_commit() {
     let Some(c) = converter() else { return };
     let mut s = plain();

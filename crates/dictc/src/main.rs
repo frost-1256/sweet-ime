@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::BufWriter;
 use std::path::Path;
-use sweet_engine::dict::{SourceEntry, VRCHAT_TERMS, build};
+use sweet_engine::dict::{SourceEntry, TECH_TERMS, VRCHAT_TERMS, build};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -71,20 +71,27 @@ fn main() -> Result<()> {
         });
     }
     if let Some(noun) = features.iter().position(|f| f == "名詞,一般,*,*,*,*,*") {
-        for (i, line) in VRCHAT_TERMS.lines().enumerate() {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+        for (file, terms) in [("vrchat.tsv", VRCHAT_TERMS), ("tech_terms.tsv", TECH_TERMS)] {
+            for (i, line) in terms.lines().enumerate() {
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let mut fields = line.split('\t');
+                let (Some(reading), Some(surface), Some(cost), None) =
+                    (fields.next(), fields.next(), fields.next(), fields.next())
+                else {
+                    bail!("{file}:{}: expected reading, surface and cost", i + 1);
+                };
+                entries.push(SourceEntry {
+                    reading: reading.into(),
+                    lid: noun as u16,
+                    rid: noun as u16,
+                    cost: cost
+                        .parse()
+                        .with_context(|| format!("{file}:{}: invalid cost", i + 1))?,
+                    surface: surface.into(),
+                });
             }
-            let [reading, surface, cost] = line.split('\t').collect::<Vec<_>>()[..] else {
-                bail!("vrchat.tsv:{}: expected reading, surface and cost", i + 1);
-            };
-            entries.push(SourceEntry {
-                reading: reading.into(),
-                lid: noun as u16,
-                rid: noun as u16,
-                cost: cost.parse().with_context(|| format!("vrchat.tsv:{}: invalid cost", i + 1))?,
-                surface: surface.into(),
-            });
         }
     }
     let count = entries.len();
