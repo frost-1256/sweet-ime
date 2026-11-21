@@ -158,6 +158,15 @@ impl Setup {
 
     fn start(&mut self, ctx: &egui::Context) {
         if self.preview {
+            // Sample progress screen, every icon state.
+            use StepState::*;
+            self.steps = [Done, Done, Failed, Skipped, Running, Pending]
+                .into_iter()
+                .zip(["完了", "完了", "失敗", "スキップ", "実行中", "待機中"])
+                .map(|(st, l)| (l, st))
+                .collect();
+            self.detail = "プレビュー(何も変更していません)".into();
+            self.page = Page::Progress;
             return;
         }
         let (tx, rx) = channel();
@@ -276,23 +285,45 @@ fn run_uninstall(target: &std::path::Path, remove_data: bool, r: &Reporter) {
 fn step_row(ui: &mut egui::Ui, label: &str, state: StepState) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        let (icon, color) = match state {
-            StepState::Pending => ("○", ui.visuals().weak_text_color()),
-            StepState::Running => ("", ui.visuals().text_color()),
-            StepState::Done => ("✔", Color32::from_rgb(16, 160, 80)),
-            StepState::Skipped => ("–", ui.visuals().weak_text_color()),
-            StepState::Failed => ("✖", ui.visuals().error_fg_color),
-        };
-        ui.allocate_ui(Vec2::new(22.0, 22.0), |ui| {
-            if state == StepState::Running {
-                ui.spinner();
-            } else {
-                ui.label(RichText::new(icon).color(color));
-            }
-        });
+        // Icons are painted: the UI font (Yu Gothic) has no check-mark glyphs.
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), egui::Sense::hover());
+        if state == StepState::Running {
+            egui::Spinner::new().size(16.0).paint_at(ui, rect.shrink(3.0));
+        } else {
+            paint_step_icon(ui.painter(), rect, state, ui.visuals());
+        }
         let text = RichText::new(label);
         ui.label(if matches!(state, StepState::Pending | StepState::Skipped) { text.weak() } else { text });
     });
+}
+
+fn paint_step_icon(p: &egui::Painter, rect: egui::Rect, state: StepState, v: &egui::Visuals) {
+    use egui::{Stroke, pos2};
+    let c = rect.center();
+    let r = 8.0;
+    let at = |x: f32, y: f32| pos2(c.x + x, c.y + y);
+    match state {
+        StepState::Pending => {
+            p.circle_stroke(c, r - 1.0, Stroke::new(1.5, v.weak_text_color()));
+        }
+        StepState::Skipped => {
+            p.circle_stroke(c, r - 1.0, Stroke::new(1.5, v.weak_text_color()));
+            p.line_segment([at(-3.5, 0.0), at(3.5, 0.0)], Stroke::new(1.5, v.weak_text_color()));
+        }
+        StepState::Done => {
+            p.circle_filled(c, r, Color32::from_rgb(16, 150, 80));
+            let s = Stroke::new(2.0, Color32::WHITE);
+            p.line_segment([at(-4.0, 0.2), at(-1.2, 3.0)], s);
+            p.line_segment([at(-1.2, 3.0), at(4.2, -2.8)], s);
+        }
+        StepState::Failed => {
+            p.circle_filled(c, r, v.error_fg_color);
+            let s = Stroke::new(2.0, Color32::WHITE);
+            p.line_segment([at(-3.0, -3.0), at(3.0, 3.0)], s);
+            p.line_segment([at(-3.0, 3.0), at(3.0, -3.0)], s);
+        }
+        StepState::Running => {}
+    }
 }
 
 impl eframe::App for Setup {
