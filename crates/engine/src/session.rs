@@ -80,11 +80,13 @@ pub struct Options {
     pub neural: bool,
     /// Learn from chosen candidates and prefer them later.
     pub learning: bool,
+    /// Show "あ" / "A" near the caret when the input mode changes.
+    pub mode_indicator: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { live_conversion: true, suggestions: true, neural: true, learning: true }
+        Self { live_conversion: true, suggestions: true, neural: true, learning: true, mode_indicator: true }
     }
 }
 
@@ -101,6 +103,7 @@ impl Options {
                 "suggestions" => o.suggestions = on,
                 "neural" => o.neural = on,
                 "learning" => o.learning = on,
+                "mode_indicator" => o.mode_indicator = on,
                 _ => {}
             }
         }
@@ -116,11 +119,13 @@ impl Options {
              suggestions = {}
              neural = {}
              learning = {}
+             mode_indicator = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
             b(self.neural),
             b(self.learning),
+            b(self.mode_indicator),
         )
     }
 }
@@ -728,7 +733,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false };
         assert_eq!(Options::parse(&o.to_text()), o);
     }
 }

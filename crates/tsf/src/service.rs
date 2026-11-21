@@ -2,8 +2,8 @@
 
 use std::cell::RefCell;
 
-use sweet_engine::{Session, SpanAttr};
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use sweet_engine::{Keymap, Session, SpanAttr};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::Variant::VARIANT;
@@ -12,16 +12,17 @@ use windows::Win32::UI::TextServices::{
     IEnumTfDisplayAttributeInfo, ITfCategoryMgr, ITfCompartmentMgr, ITfComposition,
     ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
-    ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
+    ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
     ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, TF_TMF_IMMERSIVEMODE,
-    TF_AE_NONE, TF_ANCHOR_END, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
+    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
     TF_SELECTIONSTYLE,
 };
 use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, implement};
 
 use crate::candidate_window::CandidateWindow;
-use crate::keys::{self, Toggle};
+use crate::keys::{self, Input, Toggle};
+use crate::mode_indicator::ModeIndicator;
 use crate::langbar::ModeButton;
 use crate::{GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED, GUID_ATTR_INPUT, display_attr, edit};
 
@@ -39,6 +40,13 @@ struct State {
     ctx: Option<ITfContext>,
     /// Taskbar input mode indicator.
     mode_button: Option<ComObject<ModeButton>>,
+    /// "あ" / "A" badge near the caret.
+    indicator: Option<ModeIndicator>,
+    keymap: Keymap,
+    /// Settings file times when last loaded.
+    settings_stamp: [Option<std::time::SystemTime>; 2],
+    /// Open/close compartment event sink: (compartment source, cookie).
+    openclose_sink: Option<(ITfSource, u32)>,
 }
 
 #[implement(
@@ -48,6 +56,7 @@ struct State {
     ITfCompositionSink,
     ITfThreadFocusSink,
     ITfDisplayAttributeProvider,
+    ITfCompartmentEventSink,
     ITfFnConfigure,
     ITfFunction
 )]
@@ -126,21 +135,67 @@ impl TextService_Impl {
     }
 
     fn set_open(&self, open: bool) {
-        let button = {
+        let (tm, tid, button) = {
             let st = self.st.borrow();
-            let Some(tm) = &st.thread_mgr else { return };
-            unsafe {
-                if let Ok(c) = tm
-                    .cast::<ITfCompartmentMgr>()
-                    .and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE))
-                {
-                    let _ = c.SetValue(st.tid, &VARIANT::from(open as i32));
-                }
-            }
-            st.mode_button.clone()
+            (st.thread_mgr.clone(), st.tid, st.mode_button.clone())
         };
+        let Some(tm) = tm else { return };
+        // Changing the value calls OnChange (mode badge) synchronously.
+        unsafe {
+            if let Ok(c) =
+                tm.cast::<ITfCompartmentMgr>().and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE))
+            {
+                let _ = c.SetValue(tid, &VARIANT::from(open as i32));
+            }
+        }
         if let Some(b) = button {
             b.set_open(open);
+        }
+    }
+
+    /// Re-reads options and key bindings if the settings app changed them.
+    fn reload_settings_if_changed(&self) {
+        let stamp = crate::settings_stamp();
+        let Ok(mut st) = self.st.try_borrow_mut() else { return };
+        if st.settings_stamp != stamp {
+            st.settings_stamp = stamp;
+            st.session.options = crate::load_options();
+            st.keymap = sweet_engine::paths::load_keymap();
+        }
+    }
+
+    /// Shows "あ" / "A" at the caret of the focused document.
+    fn show_mode_indicator(&self, open: bool) {
+        let (enabled, tm, tid) = {
+            let Ok(st) = self.st.try_borrow() else { return };
+            (st.session.options.mode_indicator, st.thread_mgr.clone(), st.tid)
+        };
+        let Some(tm) = tm.filter(|_| enabled) else { return };
+        let ctx = unsafe { tm.GetFocus().and_then(|d| d.GetTop()).ok() };
+        let this: ComObject<TextService> = self.to_object();
+        let Some(ctx) = ctx else {
+            if let Some((rc, owner)) = gui_caret() {
+                this.indicator_at(open, rc, owner);
+            }
+            return;
+        };
+        let ctx2 = ctx.clone();
+        let _ = edit::request_any(&ctx, tid, move |ec| {
+            let found = unsafe { document_caret(ec, &ctx2) }.or_else(gui_caret);
+            if let Some((rc, owner)) = found {
+                this.indicator_at(open, rc, owner);
+            }
+            Ok(())
+        });
+    }
+
+    fn indicator_at(&self, open: bool, caret: RECT, owner: Option<HWND>) {
+        let Ok(mut st) = self.st.try_borrow_mut() else { return };
+        if st.indicator.is_none() {
+            st.indicator = ModeIndicator::new().ok();
+        }
+        if let Some(i) = &st.indicator {
+            i.show(open, caret, owner);
         }
     }
 
@@ -165,15 +220,21 @@ impl TextService_Impl {
         });
     }
 
+    fn translate(&self, vk: u32, lparam: isize) -> Option<Input> {
+        let st = self.st.borrow();
+        keys::translate(&st.keymap, vk, lparam, st.session.is_active())
+    }
+
     /// Whether the key-down event would be consumed.
     fn wants_key(&self, vk: u32, lparam: isize) -> bool {
-        if keys::toggle_key(vk).is_some() {
-            return true;
-        }
+        let key = match self.translate(vk, lparam) {
+            None => return false,
+            Some(Input::Toggle(_)) => return true,
+            Some(Input::Key(k)) => k,
+        };
         if crate::converter().is_none() || !self.is_open() {
             return false;
         }
-        let Some(key) = keys::translate(vk, lparam) else { return false };
         if self.st.borrow().session.is_active() {
             return true;
         }
@@ -413,9 +474,15 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                     }
                 }
             }
+            if let Some((src, cookie)) = st.openclose_sink.take() {
+                unsafe {
+                    let _ = src.UnadviseSink(cookie);
+                }
+            }
             st.composition = None;
             st.session.reset();
             st.window = None;
+            st.indicator = None;
             st.ctx = None;
             Ok(())
         })
@@ -464,6 +531,8 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 let this: ComObject<TextService> = self.to_object();
                 let mut st = self.st.borrow_mut();
                 st.session.options = crate::load_options();
+                st.keymap = sweet_engine::paths::load_keymap();
+                st.settings_stamp = crate::settings_stamp();
                 let imm = st.thread_mgr.as_ref().is_some_and(immersive);
                 crate::debug_log!("activate: immersive={imm}");
                 if st.window.is_none() && !imm {
@@ -490,8 +559,86 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 }
             }
             self.set_open(true);
+            // Watch the open/close state (changed by keys, the taskbar or
+            // other components) to show the mode badge.
+            unsafe {
+                let tm = self.st.borrow().thread_mgr.clone();
+                let src = tm
+                    .and_then(|tm| tm.cast::<ITfCompartmentMgr>().ok())
+                    .and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE).ok())
+                    .and_then(|c| c.cast::<ITfSource>().ok());
+                if let Some(src) = src {
+                    let sink: ITfCompartmentEventSink = self.to_interface();
+                    match src.AdviseSink(&ITfCompartmentEventSink::IID, &sink) {
+                        Ok(cookie) => self.st.borrow_mut().openclose_sink = Some((src, cookie)),
+                        Err(e) => crate::debug_log!("AdviseSink(compartment): {e}"),
+                    }
+                }
+            }
+            // Switched to Sweet IME (e.g. Win+Space): show the mode.
+            self.show_mode_indicator(self.is_open());
             Ok(())
         })
+    }
+}
+
+impl ITfCompartmentEventSink_Impl for TextService_Impl {
+    fn OnChange(&self, rguid: *const GUID) -> Result<()> {
+        if rguid.is_null() || unsafe { *rguid } != GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
+            return Ok(());
+        }
+        let _ = crate::guard(|| {
+            let open = self.is_open();
+            let button = self.st.try_borrow().ok().and_then(|st| st.mode_button.clone());
+            if let Some(b) = button {
+                b.set_open(open);
+            }
+            self.show_mode_indicator(open);
+            Ok(())
+        });
+        Ok(())
+    }
+}
+
+/// Screen rectangle of the selection (caret) in `ctx`, and the window
+/// that shows it.
+unsafe fn document_caret(ec: u32, ctx: &ITfContext) -> Option<(RECT, Option<HWND>)> {
+    unsafe {
+        let mut sel = [TF_SELECTION::default()];
+        let mut fetched = 0u32;
+        ctx.GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched).ok()?;
+        if fetched == 0 {
+            return None;
+        }
+        let range = std::mem::ManuallyDrop::into_inner(std::mem::take(&mut sel[0].range))?;
+        let view = ctx.GetActiveView().ok()?;
+        let mut rc = RECT::default();
+        let mut clipped = BOOL(0);
+        view.GetTextExt(ec, &range, &mut rc, &mut clipped).ok()?;
+        if rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0 {
+            return None;
+        }
+        let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
+        Some((rc, owner))
+    }
+}
+
+/// The Win32 caret of this thread (apps without TSF text ranges).
+fn gui_caret() -> Option<(RECT, Option<HWND>)> {
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{GUITHREADINFO, GetGUIThreadInfo};
+    unsafe {
+        let mut gi = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+        GetGUIThreadInfo(GetCurrentThreadId(), &mut gi).ok()?;
+        if gi.hwndCaret.is_invalid() {
+            return None;
+        }
+        let mut tl = POINT { x: gi.rcCaret.left, y: gi.rcCaret.top };
+        let mut br = POINT { x: gi.rcCaret.right, y: gi.rcCaret.bottom };
+        let _ = ClientToScreen(gi.hwndCaret, &mut tl);
+        let _ = ClientToScreen(gi.hwndCaret, &mut br);
+        Some((RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y }, Some(gi.hwndCaret)))
     }
 }
 
@@ -513,18 +660,23 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             let vk = wparam.0 as u32;
             let ctx = pic.ok()?.clone();
             self.st.borrow_mut().ctx = Some(ctx.clone());
-            if let Some(t) = keys::toggle_key(vk) {
-                self.handle_toggle(&ctx, t)?;
-                return Ok(BOOL(1));
-            }
+            let key = match self.translate(vk, lparam.0) {
+                None => return Ok(BOOL(0)),
+                Some(Input::Toggle(t)) => {
+                    self.handle_toggle(&ctx, t)?;
+                    return Ok(BOOL(1));
+                }
+                Some(Input::Key(k)) => k,
+            };
             if !self.wants_key(vk, lparam.0) {
                 return Ok(BOOL(0));
             }
-            let (Some(conv), Some(key)) = (crate::converter(), keys::translate(vk, lparam.0)) else {
-                return Ok(BOOL(0));
-            };
+            let Some(conv) = crate::converter() else { return Ok(BOOL(0)) };
             let consumed = self.st.borrow_mut().session.handle(conv, key);
             if consumed {
+                if let Some(i) = &self.st.borrow().indicator {
+                    i.hide();
+                }
                 self.update(&ctx)?;
                 self.request_live_refinement();
             }
@@ -558,6 +710,7 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 
 impl ITfThreadFocusSink_Impl for TextService_Impl {
     fn OnSetThreadFocus(&self) -> Result<()> {
+        self.reload_settings_if_changed();
         Ok(())
     }
 
@@ -565,6 +718,9 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         if let Ok(st) = self.st.try_borrow() {
             if let Some(w) = &st.window {
                 w.hide();
+            }
+            if let Some(i) = &st.indicator {
+                i.hide();
             }
         }
         Ok(())

@@ -11,6 +11,7 @@ mod edit;
 mod keys;
 mod langbar;
 mod live;
+mod mode_indicator;
 mod register;
 mod service;
 
@@ -113,6 +114,13 @@ pub(crate) fn load_options() -> sweet_engine::Options {
         c.configure(o.neural, o.learning);
     }
     o
+}
+
+/// Modification times of the settings files; a change means the settings
+/// app saved something and the service should reload.
+pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 2] {
+    let mtime = |p: Option<PathBuf>| p.and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+    [mtime(sweet_engine::paths::config_file()), mtime(sweet_engine::paths::keymap_file())]
 }
 
 /// Optional neural reranker. Not bundled (the model is CC BY-SA 4.0); the

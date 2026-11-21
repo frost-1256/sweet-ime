@@ -246,10 +246,15 @@ impl Harness {
 
 /// Saves the candidate window's screen area as a 32-bit BMP.
 fn screenshot(path: &str) {
+    screenshot_of(own_candidate_window(), path)
+}
+
+/// Saves a window's screen area (plus a margin) as a 32-bit BMP.
+fn screenshot_of(hwnd: Option<HWND>, path: &str) {
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
     unsafe {
-        let Some(hwnd) = own_candidate_window() else {
+        let Some(hwnd) = hwnd else {
             println!("FAIL screenshot: window not found");
             return;
         };
@@ -293,12 +298,16 @@ fn screenshot(path: &str) {
 /// The candidate window of this process (an installed IME may have others
 /// in other processes).
 fn own_candidate_window() -> Option<HWND> {
+    own_window(windows_core::w!("SweetImeCandidateWindow"))
+}
+
+fn own_window(class: PCWSTR) -> Option<HWND> {
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId};
     let pid = std::process::id();
     let mut after: Option<HWND> = None;
     unsafe {
         loop {
-            let h = FindWindowExW(None, after, windows_core::w!("SweetImeCandidateWindow"), None).ok()?;
+            let h = FindWindowExW(None, after, class, None).ok()?;
             let mut p = 0;
             GetWindowThreadProcessId(h, Some(&mut p));
             if p == pid {
@@ -325,6 +334,19 @@ fn main() -> Result<()> {
     // Keep learning history out of the real profile.
     let appdata = std::env::temp_dir().join(format!("sweet-ime-harness-{}", std::process::id()));
     unsafe { std::env::set_var("APPDATA", &appdata) };
+    // Custom key bindings: Ctrl+Space toggles, 変換 converts while composing.
+    {
+        use sweet_engine::keymap::{Action, Binding, Chord, When};
+        let mut km = sweet_engine::Keymap::default();
+        km.bindings.push(Binding {
+            chord: Chord { vk: 0x20, ctrl: true, shift: false, alt: false },
+            action: Action::ImeToggle,
+            when: When::Always,
+        });
+        km.bindings.push(Binding { chord: Chord::key(0x1C), action: Action::Key(sweet_engine::Key::Space), when: When::Composing });
+        std::fs::create_dir_all(appdata.join("SweetIME")).unwrap();
+        std::fs::write(appdata.join("SweetIME").join("keymap.txt"), km.to_text()).unwrap();
+    }
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         let module = LoadLibraryW(&HSTRING::from(dll.as_str()))?;
@@ -530,9 +552,68 @@ fn main() -> Result<()> {
         h.key(0xF3); // 半角/全角
         let eaten = h.key(0x41);
         check("off passthrough", format!("{eaten}"), "false", &mut fails);
+        // The mode badge appeared at the caret ("A").
+        {
+            use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
+            pump();
+            let badge = own_window(windows_core::w!("SweetImeModeIndicator"));
+            let visible = badge.is_some_and(|b| IsWindowVisible(b).as_bool());
+            check("mode badge shown", format!("{visible}"), "true", &mut fails);
+            if let Some(b) = badge {
+                let mut rc = RECT::default();
+                let _ = GetWindowRect(b, &mut rc);
+                // The caret is at (200, 224) bottom in the fake text store.
+                check("mode badge below caret", format!("{}", rc.top >= 224 && rc.top < 240), "true", &mut fails);
+                if let Ok(dir) = std::env::var("SWEET_SHOT_DIR") {
+                    screenshot_of(Some(b), &format!("{dir}\\badge-off.bmp"));
+                }
+            }
+        }
         h.key(0xF3);
+        pump();
+        if let Ok(dir) = std::env::var("SWEET_SHOT_DIR") {
+            screenshot_of(own_window(windows_core::w!("SweetImeModeIndicator")), &format!("{dir}\\badge-on.bmp"));
+        }
         let eaten = h.key(0x41);
         check("on again", format!("{eaten}"), "true", &mut fails);
+        // Typing hides the badge.
+        {
+            let visible = own_window(windows_core::w!("SweetImeModeIndicator"))
+                .is_some_and(|b| windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(b).as_bool());
+            check("mode badge hidden while typing", format!("{visible}"), "false", &mut fails);
+        }
+        h.key(0x1B);
+        h.key(0x1B);
+
+        // 6. custom key bindings (keymap.txt)
+        h.clear();
+        h.type_str("kinou");
+        h.key(0x1C); // 変換 -> convert while composing
+        let converted = h.store.text.borrow().len() > 0 && h.text() != "きのう";
+        check("keymap henkan converts", format!("{converted}"), "true", &mut fails);
+        h.key(0x1B);
+        h.key(0x1B);
+        h.key(0x1B);
+        h.clear();
+        let with_ctrl = |down: bool| {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
+            let mut ks = [0u8; 256];
+            let _ = GetKeyboardState(&mut ks);
+            ks[0x11] = if down { 0x80 } else { 0 };
+            ks[0xA2] = ks[0x11];
+            let _ = SetKeyboardState(&ks);
+        };
+        with_ctrl(true);
+        let eaten = h.key(0x20);
+        with_ctrl(false);
+        check("keymap ctrl+space eaten", format!("{eaten}"), "true", &mut fails);
+        let eaten = h.key(0x41);
+        check("keymap ctrl+space turned off", format!("{eaten}"), "false", &mut fails);
+        with_ctrl(true);
+        h.key(0x20);
+        with_ctrl(false);
+        let eaten = h.key(0x41);
+        check("keymap ctrl+space turned on", format!("{eaten}"), "true", &mut fails);
         h.key(0x1B);
         h.key(0x1B);
         // The taskbar mode indicator can only be added for a registered TIP.

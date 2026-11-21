@@ -93,6 +93,15 @@ only.
 | F6 / F7 / F8 / F9 / F10  | Hiragana / katakana / half-width katakana / full-width ASCII / ASCII | same |
 | 半角/全角, 変換, 無変換   | Toggle / on / off                 |                                  |
 
+These are the default bindings. You can change them on the **キー** page of
+the settings app, which saves them to `%APPDATA%\SweetIME\keymap.txt`. A
+binding can apply always, only while composing, or only while not
+composing. For example, 変換 can convert while composing and turn the IME on
+otherwise.
+
+When the IME is turned on or off, "あ" or "A" appears briefly next to the
+text cursor.
+
 ## Settings
 
 Open the settings app, `sweet-settings.exe`, in any of these ways:
@@ -101,12 +110,13 @@ Open the settings app, `sweet-settings.exe`, in any of these ways:
 - By right-clicking the "あ" / "A" indicator in the taskbar
 - From Windows language settings: Sweet IME → Keyboard options
 
-The app saves changes immediately. They apply the next time the IME is
-activated, for example when you switch to another app.
+The app saves changes immediately. They apply the next time an app gets
+focus.
 
 In the app you can:
 
-- Turn live conversion and suggestions on or off
+- Turn live conversion, suggestions and the "あ" / "A" indicator on or off
+- Change key bindings
 - Turn AI conversion on or off, and download or remove the zenz model
 - Turn learning on or off, and review, delete or clear learned words
 

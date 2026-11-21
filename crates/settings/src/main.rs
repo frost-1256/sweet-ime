@@ -1,9 +1,12 @@
 //! Sweet IME settings.
 //!
-//! Edits `%APPDATA%\SweetIME\config.txt` (saved on every change), manages
-//! the learning history and downloads the optional neural model.
+//! Edits `%APPDATA%\SweetIME\config.txt` and `keymap.txt` (saved on every
+//! change), manages the learning history and downloads the optional neural
+//! model.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod keys_page;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -18,7 +21,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sweet IME の設定")
-            .with_inner_size([760.0, 540.0])
+            .with_inner_size([820.0, 600.0])
             .with_min_inner_size([560.0, 400.0]),
         ..Default::default()
     };
@@ -28,17 +31,19 @@ fn main() -> eframe::Result<()> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Input,
+    Keys,
     Neural,
     Learning,
     About,
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Input, Page::Neural, Page::Learning, Page::About];
+    const ALL: [Page; 5] = [Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::About];
 
     fn label(self) -> &'static str {
         match self {
             Page::Input => "入力",
+            Page::Keys => "キー",
             Page::Neural => "AI 変換",
             Page::Learning => "学習",
             Page::About => "情報",
@@ -63,6 +68,7 @@ struct App {
     confirm_clear: bool,
     model: &'static str,
     download: Option<Download>,
+    keys: keys_page::KeysPage,
 }
 
 const MODELS: [(&str, &str); 2] = [
@@ -77,6 +83,7 @@ impl App {
         let history = paths::history_file().map(UserHistory::with_file);
         let page = match std::env::args().skip_while(|a| a != "--page").nth(1).as_deref() {
             Some("neural") => Page::Neural,
+            Some("keys") => Page::Keys,
             Some("learning") => Page::Learning,
             Some("about") => Page::About,
             _ => Page::Input,
@@ -91,6 +98,7 @@ impl App {
             confirm_clear: false,
             model: MODELS[0].0,
             download: None,
+            keys: keys_page::KeysPage::new(),
         };
         app.reload_history();
         app
@@ -196,6 +204,7 @@ impl eframe::App for App {
                 ui.add_space(6.0);
                 match self.page {
                     Page::Input => self.input_page(ui),
+                    Page::Keys => self.keys.ui(ui, &mut self.status),
                     Page::Neural => self.neural_page(ui),
                     Page::Learning => self.learning_page(ui),
                     Page::About => about_page(ui),
@@ -218,6 +227,9 @@ impl App {
         });
         card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
             changed |= toggle(ui, &mut self.opts.suggestions).changed();
+        });
+        card(ui, "入力モードを表示", "IME のオン/オフを切り替えたとき、文字カーソルの近くに「あ」「A」を表示します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.mode_indicator).changed();
         });
         if changed {
             self.save();
