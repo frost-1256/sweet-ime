@@ -12,7 +12,7 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, S
 use windows::Win32::Graphics::Gdi::{
     ANTIALIASED_QUALITY, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
     CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DIB_RGB_COLORS,
-    DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FW_SEMIBOLD, GetMonitorInfoW,
+    DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FW_NORMAL, GetMonitorInfoW,
     HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, OUT_DEFAULT_PRECIS, SelectObject,
     SetBkMode, SetTextColor, TRANSPARENT,
 };
@@ -34,6 +34,7 @@ const FADE_MS: f32 = 250.0;
 const SIZE_DIP: f32 = 28.0;
 const RADIUS_DIP: f32 = 6.0;
 const GAP_DIP: f32 = 4.0;
+const TEXT_GAMMA: f32 = 1.8;
 
 thread_local! {
     /// Fade start per indicator window.
@@ -196,8 +197,8 @@ fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()>
         let old_bmp = SelectObject(dc, HGDIOBJ(bmp.0));
         // Text coverage: white on black (GDI has no alpha).
         let font = CreateFontW(
-            -((size as f32 * 0.6).round() as i32), 0, 0, 0, FW_SEMIBOLD.0 as i32, 0, 0, 0, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, w!("Yu Gothic UI"),
+            -((size as f32 * 0.56).round() as i32), 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, w!("Yu Gothic UI Semilight"),
         );
         let old_font = SelectObject(dc, HGDIOBJ(font.0));
         SetBkMode(dc, TRANSPARENT);
@@ -212,7 +213,9 @@ fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()>
             for x in 0..size {
                 let i = (y * size + x) as usize;
                 let p = px[i];
-                let cov = (((p >> 16) & 0xFF).max((p >> 8) & 0xFF).max(p & 0xFF)) as f32 / 255.0;
+                // GDI coverage is gamma-boosted, which makes light-on-dark text
+                // look bold; undo some of it.
+                let cov = ((((p >> 16) & 0xFF).max((p >> 8) & 0xFF).max(p & 0xFF)) as f32 / 255.0).powf(TEXT_GAMMA);
                 let shape = rounded_coverage(x, y, size as f32, radius, 0.0);
                 if shape <= 0.0 {
                     px[i] = 0;
