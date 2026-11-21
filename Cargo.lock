@@ -2316,12 +2316,20 @@ dependencies = [
 name = "sweet-tsf"
 version = "0.1.4"
 dependencies = [
- "embed-resource",
  "sweet-engine",
  "sweet-zenz",
  "windows",
  "windows-core",
  "windows-numerics",
+]
+
+[[package]]
+name = "sweet-tsf-shim"
+version = "0.1.4"
+dependencies = [
+ "embed-resource",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

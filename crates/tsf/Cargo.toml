@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "sweet_tsf"
+name = "sweet_tsf_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
@@ -40,5 +40,3 @@ features = [
     "Win32_UI_WindowsAndMessaging",
 ]
 
-[build-dependencies]
-embed-resource = "3.0.12"

@@ -20,13 +20,21 @@ $Source = Resolve-Path $Source
 
 foreach ($arch in 'x64', 'x86') {
     New-Item -ItemType Directory -Force "$Target\$arch" | Out-Null
-    $dll = "$Target\$arch\sweet_tsf.dll"
-    if (Test-Path $dll) {
-        # A loaded DLL cannot be overwritten but can be renamed.
-        $old = "$dll.$([DateTime]::Now.ToString('yyyyMMddHHmmss')).old"
-        Move-Item $dll $old
+    # The entry DLL and the core; core.txt last, since running applications
+    # switch to the core it names.
+    $files = Get-ChildItem "$Source\$arch" -File | Sort-Object { $_.Name -eq 'core.txt' }
+    foreach ($f in $files) {
+        $dst = "$Target\$arch\$($f.Name)"
+        if (Test-Path $dst) {
+            # A loaded DLL cannot be overwritten but can be renamed.
+            $old = "$dst.$([DateTime]::Now.ToString('yyyyMMddHHmmss')).old"
+            Move-Item $dst $old
+        }
+        Copy-Item $f.FullName $dst
     }
-    Copy-Item "$Source\$arch\sweet_tsf.dll" $dll
+    $current = (Get-Content -Raw "$Target\$arch\core.txt").Trim()
+    Get-ChildItem "$Target\$arch" -Filter 'sweet_tsf_core-*.dll' | Where-Object Name -NE $current |
+        ForEach-Object { try { Remove-Item $_.FullName -ErrorAction Stop } catch { } }
 }
 foreach ($f in 'system.dict', 'sweet-settings.exe', 'get-zenz.ps1', 'tools\sweet-zenz-pack.exe') {
     if (Test-Path "$Source\$f") {

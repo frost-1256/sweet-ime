@@ -2,7 +2,7 @@
 
 ## Project Structure
 
-Sweet IME is a Rust 2024 workspace for Windows and Linux (fcitx5). The platform-independent conversion engine and input session live in `crates/engine`. The Windows Text Services Framework integration and candidate window live in `crates/tsf`. The Linux fcitx5 addon lives in `crates/fcitx5`: a Rust C ABI (`src/`) and a small C++ frontend (`cpp/`) built with CMake, packaged by `flake.nix`. Neural reranking lives in `crates/zenz`. The `dictc` and `cli` crates compile the dictionary and evaluate conversions. The `settings`, `ui`, and `installer` crates provide the configuration app and Windows installer. Unit tests live alongside source, integration tests under `crates/*/tests`, and the TSF harness under `crates/tsf/examples`.
+Sweet IME is a Rust 2024 workspace for Windows and Linux (fcitx5). The platform-independent conversion engine and input session live in `crates/engine`. The Windows Text Services Framework integration and candidate window live in `crates/tsf` (built as `sweet_tsf_core.dll`); `crates/tsf-shim` is the small registered entry DLL (`sweet_tsf.dll`) that loads the core named in `core.txt` and switches running applications to a new core on focus. The Linux fcitx5 addon lives in `crates/fcitx5`: a Rust C ABI (`src/`) and a small C++ frontend (`cpp/`) built with CMake, packaged by `flake.nix`. Neural reranking lives in `crates/zenz`. The `dictc` and `cli` crates compile the dictionary and evaluate conversions. The `settings`, `ui`, and `installer` crates provide the configuration app and Windows installer. Unit tests live alongside source, integration tests under `crates/*/tests`, and the TSF harness under `crates/tsf/examples`.
 
 ## Build and Development
 

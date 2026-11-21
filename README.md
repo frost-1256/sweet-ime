@@ -221,8 +221,14 @@ to the file right away.
 ## Development
 
 - `cargo test --workspace`
-- `target\release\examples\harness.exe` drives the real TSF DLL in-process
-  without registering it.
+- `target\release\examples\harness.exe` drives the real TSF core
+  (`sweet_tsf_core.dll`) in-process without registering it, and checks
+  that the entry DLL (`sweet_tsf.dll`) switches cores on focus.
+- Applications load the small entry DLL `sweet_tsf.dll` (`crates/tsf-shim`),
+  which loads the core named in `core.txt` next to it
+  (`sweet_tsf_core-<version>.dll`, from `crates/tsf`). An update installs a
+  new core and `core.txt`; running applications move to it the next time
+  they get focus, without a restart.
 - `crates/fcitx5/tests/run-dbus-harness.sh result` drives the fcitx5 addon
   through a private fcitx5 over D-Bus (Linux, after `nix build`).
 - `sweet-cli data\system.dict eval <evaluation.tsv>` measures accuracy.

@@ -468,6 +468,12 @@ fn immersive(tm: &ITfThreadMgr) -> bool {
 fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> Result<()> {
     let Ok(mut st) = this.st.try_borrow_mut() else { return Ok(()) };
     let st = &mut *st;
+    let r = update_document_inner(this, st, ec, ctx);
+    crate::set_busy(st.composition.is_some());
+    r
+}
+
+fn update_document_inner(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
     let commit = st.session.take_commit();
     let pre = st.session.preedit();
     unsafe {
@@ -603,6 +609,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 }
             }
             st.composition = None;
+            crate::set_busy(false);
             st.session.reset();
             st.window = None;
             st.indicator = None;
@@ -613,7 +620,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
 }
 
 impl ITfTextInputProcessorEx_Impl for TextService_Impl {
-    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, _flags: u32) -> Result<()> {
+    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, flags: u32) -> Result<()> {
+        let hot_swap = flags & crate::ACTIVATE_HOT_SWAP != 0;
         crate::guard(|| {
             let tm = ptim.ok()?.clone();
             {
@@ -682,7 +690,14 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                     button.detach();
                 }
             }
-            self.set_open(true);
+            if hot_swap {
+                // Replacing an older core: keep the user's input mode.
+                if let Some(b) = self.st.borrow().mode_button.clone() {
+                    b.set_open(self.is_open());
+                }
+            } else {
+                self.set_open(true);
+            }
             // Watch the open/close state (changed by keys, the taskbar or
             // other components) to show the mode badge.
             unsafe {
@@ -701,7 +716,9 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             }
             self.update_preserved_keys();
             // Switched to Sweet IME (e.g. Win+Space): show the mode.
-            self.show_mode_indicator(self.is_open());
+            if !hot_swap {
+                self.show_mode_indicator(self.is_open());
+            }
             Ok(())
         })
     }
@@ -855,6 +872,7 @@ impl ITfCompositionSink_Impl for TextService_Impl {
         // The text stays in the document as-is.
         if let Ok(mut st) = self.st.try_borrow_mut() {
             st.composition = None;
+            crate::set_busy(false);
             st.session.reset();
             if let Some(w) = &st.window {
                 w.hide();

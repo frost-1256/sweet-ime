@@ -1,6 +1,8 @@
-//! sweet-ime Text Services Framework (TSF) text input processor.
+//! sweet-ime Text Services Framework (TSF) text input processor: the core.
 //!
-//! Build as a cdylib and register with `regsvr32 sweet_tsf.dll` (elevated).
+//! Applications load the registered entry point `sweet_tsf.dll`
+//! (`crates/tsf-shim`), which loads this DLL (`sweet_tsf_core-<version>.dll`
+//! when installed) and switches to a newer one after an update.
 
 #![cfg(windows)]
 #![allow(non_snake_case)]
@@ -12,7 +14,6 @@ mod keys;
 mod langbar;
 mod live;
 mod mode_indicator;
-mod register;
 mod service;
 
 use std::ffi::c_void;
@@ -36,8 +37,9 @@ pub const GUID_ATTR_INPUT: GUID = GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b
 pub const GUID_ATTR_CONVERTED: GUID = GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1a04);
 pub const GUID_ATTR_FOCUSED: GUID = GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1a05);
 
-pub const DISPLAY_NAME: &str = "Sweet IME";
-pub const LANGID_JAPANESE: u16 = 0x0411;
+/// Private `ActivateEx` flag from the entry point: this core replaces an
+/// older one in a running application. Keep the input mode and stay quiet.
+pub const ACTIVATE_HOT_SWAP: u32 = 0x4000_0000;
 
 static DLL_INSTANCE: AtomicIsize = AtomicIsize::new(0);
 static LOCKS: AtomicI32 = AtomicI32::new(0);
@@ -236,23 +238,20 @@ extern "system" fn DllCanUnloadNow() -> HRESULT {
     if LOCKS.load(Ordering::SeqCst) == 0 { S_OK } else { S_FALSE }
 }
 
-#[unsafe(no_mangle)]
-extern "system" fn DllRegisterServer() -> HRESULT {
-    match register::register() {
-        Ok(()) => S_OK,
-        Err(e) => {
-            let _ = register::unregister();
-            e.code()
-        }
-    }
+thread_local! {
+    static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Records whether the text service on this thread has a composition.
+pub(crate) fn set_busy(busy: bool) {
+    BUSY.with(|b| b.set(busy));
+}
+
+/// Whether text is being composed on the calling thread. The entry point
+/// asks before replacing this core with a newer one.
 #[unsafe(no_mangle)]
-extern "system" fn DllUnregisterServer() -> HRESULT {
-    match register::unregister() {
-        Ok(()) => S_OK,
-        Err(e) => e.code(),
-    }
+extern "system" fn SweetCoreBusy() -> BOOL {
+    BOOL(BUSY.with(|b| b.get()) as i32)
 }
 
 pub(crate) fn debug_enabled() -> bool {

@@ -1,0 +1,5 @@
+LIBRARY sweet_tsf_core
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
+    SweetCoreBusy

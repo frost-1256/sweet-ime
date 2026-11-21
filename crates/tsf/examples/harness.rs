@@ -1,8 +1,8 @@
-//! End-to-end TSF harness: loads sweet_tsf.dll without registration, hosts it
+//! End-to-end TSF harness: loads sweet_tsf_core.dll without registration, hosts it
 //! on a real ITfThreadMgr with an in-memory ITextStoreACP, sends keystrokes
 //! through ITfKeystrokeMgr and checks the resulting document text.
 //!
-//!   cargo run --release -p sweet-tsf --example harness -- [path\to\sweet_tsf.dll]
+//!   cargo run --release -p sweet-tsf --example harness -- [path\to\sweet_tsf_core.dll]
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -345,9 +345,71 @@ fn check(name: &str, got: String, want: &str, fails: &mut u32) {
     }
 }
 
+/// The entry point DLL (`sweet_tsf.dll`) switches a running text service
+/// to the core that `core.txt` names when the thread gets focus again.
+unsafe fn hot_swap(tm: &ITfThreadMgr, tid: u32, core: &str, appdata: &std::path::Path, fails: &mut u32) -> Result<()> {
+    use windows::Win32::UI::TextServices::{ITfFunction, ITfThreadFocusSink};
+    let core = std::path::Path::new(core);
+    let dir = core.parent().unwrap();
+    let shim = dir.join("sweet_tsf.dll");
+    if !shim.exists() {
+        println!("skip hot swap ({} not built)", shim.display());
+        return Ok(());
+    }
+    // The copies don't sit next to the dictionary: point them at it.
+    if std::env::var_os("SWEET_IME_DICT").is_none() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dict = [dir.join("system.dict"), dir.join("../system.dict"), dir.join("data/system.dict"), root.join("data/system.dict")]
+            .into_iter()
+            .find(|p| p.exists());
+        if let Some(d) = dict {
+            unsafe { std::env::set_var("SWEET_IME_DICT", d) };
+        }
+    }
+    let td = appdata.join("swap");
+    std::fs::create_dir_all(&td).unwrap();
+    std::fs::copy(&shim, td.join("sweet_tsf.dll")).unwrap();
+    for name in ["sweet_tsf_core-a.dll", "sweet_tsf_core-b.dll"] {
+        std::fs::copy(core, td.join(name)).unwrap();
+    }
+    std::fs::write(td.join("core.txt"), "sweet_tsf_core-a.dll\n").unwrap();
+    type CoreName = unsafe extern "system" fn(*mut u16, u32) -> u32;
+    unsafe {
+        let module = LoadLibraryW(&HSTRING::from(td.join("sweet_tsf.dll").as_os_str()))?;
+        let get: GetClassObject = std::mem::transmute(GetProcAddress(module, s!("DllGetClassObject")).unwrap());
+        let core_name: CoreName = std::mem::transmute(GetProcAddress(module, s!("SweetShimCoreName")).unwrap());
+        let name = || {
+            let mut buf = [0u16; 128];
+            let n = core_name(buf.as_mut_ptr(), 128) as usize;
+            String::from_utf16_lossy(&buf[..n.min(128)])
+        };
+        let mut factory: *mut c_void = std::ptr::null_mut();
+        get(&CLSID_SWEET_IME, &IClassFactory::IID, &mut factory).ok()?;
+        let factory = IClassFactory::from_raw(factory);
+        let tip: ITfTextInputProcessor = factory.CreateInstance(None)?;
+        tip.Activate(tm, tid)?;
+        pump();
+        check("shim loads the named core", name(), "sweet_tsf_core-a.dll", fails);
+        check("shim forwards settings name", tip.cast::<ITfFunction>()?.GetDisplayName()?.to_string(), "Sweet IME の設定", fails);
+        // An update installs core b; focus returns to the application.
+        std::fs::write(td.join("core.txt"), "sweet_tsf_core-b.dll\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        tip.cast::<ITfThreadFocusSink>()?.OnSetThreadFocus()?;
+        let t = std::time::Instant::now();
+        while name() != "sweet_tsf_core-b.dll" && t.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            pump();
+        }
+        check("focus switches to the new core", name(), "sweet_tsf_core-b.dll", fails);
+        check("new core answers", tip.cast::<ITfFunction>()?.GetDisplayName()?.to_string(), "Sweet IME の設定", fails);
+        tip.Deactivate()?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let dll = std::env::args().nth(1).unwrap_or_else(|| {
-        concat!(env!("CARGO_MANIFEST_DIR"), "\\..\\..\\target\\release\\sweet_tsf.dll").to_string()
+        concat!(env!("CARGO_MANIFEST_DIR"), "\\..\\..\\target\\release\\sweet_tsf_core.dll").to_string()
     });
     // Keep learning history out of the real profile.
     let appdata = std::env::temp_dir().join(format!("sweet-ime-harness-{}", std::process::id()));
@@ -773,6 +835,7 @@ fn main() -> Result<()> {
         }
 
         tip.Deactivate()?;
+        hot_swap(&tm, tip_tid, &dll, &appdata, &mut fails)?;
         tm.Deactivate()?;
         let _ = std::fs::remove_dir_all(&appdata);
         println!("{}", if fails == 0 { "ALL PASSED" } else { "FAILURES" });

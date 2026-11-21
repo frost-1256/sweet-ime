@@ -81,12 +81,34 @@ fn delete_later(p: &Path) {
 }
 
 pub fn copy_files(files: &[Entry], target: &Path) -> Result<()> {
-    for f in files {
+    // core.txt last: running applications switch to the core it names, so
+    // that core must already be in place.
+    let is_core_txt = |f: &&Entry| Path::new(&f.name).file_name().is_some_and(|n| n == "core.txt");
+    for f in files.iter().filter(|f| !is_core_txt(f)).chain(files.iter().filter(is_core_txt)) {
         replace_file(&target.join(&f.name), &f.data)?;
     }
     // Leftovers from earlier updates that are no longer in use.
     remove_old_files(target);
+    for arch in ["x64", "x86"] {
+        remove_old_cores(&target.join(arch));
+    }
     Ok(())
+}
+
+/// Deletes the TSF cores that `core.txt` no longer names. Applications that
+/// have not switched to the new core yet keep theirs loaded, so those go at
+/// the next restart.
+fn remove_old_cores(dir: &Path) {
+    let Ok(current) = std::fs::read_to_string(dir.join("core.txt")) else { return };
+    let current = current.trim();
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let lower = name.to_ascii_lowercase();
+        if lower.starts_with("sweet_tsf_core-") && lower.ends_with(".dll") && !name.eq_ignore_ascii_case(current) {
+            delete_later(&e.path());
+        }
+    }
 }
 
 fn remove_old_files(dir: &Path) {
@@ -352,6 +374,13 @@ mod tests {
         assert_eq!(std::fs::read(target.join("system.dict")).unwrap(), vec![3; 5]);
         drop(held);
         write_uninstaller(&target).unwrap();
+        // An update names a new core; the previous one is removed.
+        let core = |v: &str| Entry { name: format!(r"x64\sweet_tsf_core-{v}.dll"), data: vec![4; 8] };
+        let txt = |v: &str| Entry { name: r"x64\core.txt".into(), data: format!("sweet_tsf_core-{v}.dll").into_bytes() };
+        copy_files(&[core("0.1.0"), txt("0.1.0")], &target).unwrap();
+        copy_files(&[core("0.2.0"), txt("0.2.0")], &target).unwrap();
+        assert!(!target.join(r"x64\sweet_tsf_core-0.1.0.dll").exists());
+        assert!(target.join(r"x64\sweet_tsf_core-0.2.0.dll").exists());
         assert!(target.join("uninstall.exe").exists());
         assert!(remove_files(&target) || !target.join("system.dict").exists());
         assert!(!target.join("system.dict").exists());

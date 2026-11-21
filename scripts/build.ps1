@@ -2,7 +2,10 @@
 .SYNOPSIS
   Builds Sweet IME and stages a distributable tree in dist\.
 
-  dist\x64\sweet_tsf.dll, dist\x86\sweet_tsf.dll, dist\system.dict,
+  dist\{x64,x86}\sweet_tsf.dll (the registered entry DLL),
+  dist\{x64,x86}\sweet_tsf_core-<version>.dll and core.txt naming it (the
+  core the entry DLL loads; running apps switch to a new one on focus),
+  dist\system.dict,
   dist\sweet-settings.exe, dist\tools\sweet-zenz-pack.exe,
   dist\get-zenz.ps1, dist\licenses\*
 
@@ -19,9 +22,9 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 
 Push-Location $root
 try {
-    cargo build --locked --release -p sweet-tsf -p sweet-dictc -p sweet-zenz -p sweet-settings -p sweet-installer
+    cargo build --locked --release -p sweet-tsf -p sweet-tsf-shim -p sweet-dictc -p sweet-zenz -p sweet-settings -p sweet-installer
     if ($LASTEXITCODE) { throw 'x64 build failed' }
-    cargo build --locked --release -p sweet-tsf --target i686-pc-windows-msvc
+    cargo build --locked --release -p sweet-tsf -p sweet-tsf-shim --target i686-pc-windows-msvc
     if ($LASTEXITCODE) { throw 'x86 build failed' }
 
     if (Test-Path -LiteralPath $dist) {
@@ -33,8 +36,18 @@ try {
         Remove-Item -LiteralPath $dist -Recurse -Force
     }
     New-Item -ItemType Directory -Force "$dist\x64", "$dist\x86", "$dist\tools", "$dist\licenses" | Out-Null
-    Copy-Item target\release\sweet_tsf.dll "$dist\x64\"
-    Copy-Item target\i686-pc-windows-msvc\release\sweet_tsf.dll "$dist\x86\"
+    $version = ((cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages |
+        Where-Object name -EQ 'sweet-tsf').version
+    if (!$version) { throw 'could not read the sweet-tsf version' }
+    # A new core file name per version lets running applications load it
+    # beside the old one; core.txt tells the entry DLL which to use.
+    $core = "sweet_tsf_core-$version.dll"
+    foreach ($pair in @(@('x64', 'target\release'), @('x86', 'target\i686-pc-windows-msvc\release'))) {
+        $arch, $out = $pair
+        Copy-Item "$out\sweet_tsf.dll" "$dist\$arch\"
+        Copy-Item "$out\sweet_tsf_core.dll" "$dist\$arch\$core"
+        [IO.File]::WriteAllText("$dist\$arch\core.txt", $core)
+    }
     Copy-Item target\release\sweet-zenz-pack.exe "$dist\tools\"
     Copy-Item target\release\sweet-settings.exe "$dist\"
     Copy-Item scripts\get-zenz.ps1 "$dist\"
