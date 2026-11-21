@@ -52,7 +52,7 @@ pub fn matmul(x: &[f32], w: &[f32], y: &mut [f32], m: usize, k: usize, n: usize,
 }
 
 unsafe fn matmul_cols(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: usize, j0: usize, j1: usize) {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
             unsafe { matmul_avx2(x, w, y, m, k, n, j0, j1) };
@@ -74,7 +74,7 @@ unsafe fn matmul_generic(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, 
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn matmul_avx2(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: usize, j0: usize, j1: usize) {
     // Register-blocked micro-kernel: R rows x 16 columns of y live in
@@ -85,6 +85,9 @@ unsafe fn matmul_avx2(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: 
         let mut j = j0;
         while j < jend {
             let mut i = 0;
+            // x86_64 has 16 YMM registers (6 rows x 2 accumulators + 2 w +
+            // 1 broadcast); 32-bit x86 only has 8, so use 2 rows there.
+            #[cfg(target_arch = "x86_64")]
             while i < m {
                 match m - i {
                     1 => micro::<1>(x, w, y, i, j, k, n),
@@ -96,16 +99,27 @@ unsafe fn matmul_avx2(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: 
                 }
                 i += 6;
             }
+            #[cfg(target_arch = "x86")]
+            while i < m {
+                match m - i {
+                    1 => micro::<1>(x, w, y, i, j, k, n),
+                    _ => micro::<2>(x, w, y, i, j, k, n),
+                }
+                i += 2;
+            }
             j += 16;
         }
         matmul_generic(x, w, y, m, k, n, jend, j1);
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
 unsafe fn micro<const R: usize>(x: &[f32], w: &[f32], y: *mut f32, i: usize, j: usize, k: usize, n: usize) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
     unsafe {
         let mut acc0 = [_mm256_setzero_ps(); R];

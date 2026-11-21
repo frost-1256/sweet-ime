@@ -4,6 +4,9 @@
 use crate::dict::{Dictionary, PosClass};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
+use std::sync::Mutex;
+
+use crate::learning::UserHistory;
 
 /// Cost of a single-character unknown word (hiragana passthrough).
 const UNKNOWN_CHAR_COST: i32 = 12_000;
@@ -17,6 +20,8 @@ pub struct Word {
     pub lid: u16,
     pub rid: u16,
     pub cost: i32,
+    /// Came from the user's learning history.
+    pub learned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +41,21 @@ impl Conversion {
     pub fn surface(&self) -> String {
         self.segments.iter().map(|s| s.surface.as_str()).collect()
     }
+
+    /// Number of words taken from the user's learning history.
+    pub fn learned_words(&self) -> usize {
+        self.segments.iter().flat_map(|s| &s.words).filter(|w| w.learned).count()
+    }
+}
+
+/// A learned word placed into the lattice.
+struct Extra {
+    start: usize,
+    end: usize,
+    lid: u16,
+    rid: u16,
+    cost: i32,
+    surface: String,
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +68,7 @@ struct Node<'a> {
     surface: &'a str,
     /// Best cost from BOS through this node (inclusive).
     best: i32,
+    learned: bool,
 }
 
 struct Lattice<'a> {
@@ -75,6 +96,7 @@ pub trait Reranker: Send + Sync {
 pub struct Converter {
     dict: Dictionary,
     reranker: Option<Box<dyn Reranker>>,
+    history: Mutex<UserHistory>,
 }
 
 fn is_kana(c: char) -> bool {
@@ -83,7 +105,79 @@ fn is_kana(c: char) -> bool {
 
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
-        Self { dict, reranker: None }
+        Self { dict, reranker: None, history: Mutex::new(UserHistory::new()) }
+    }
+
+    pub fn with_history(self, h: UserHistory) -> Self {
+        *self.history.lock().unwrap_or_else(|e| e.into_inner()) = h;
+        self
+    }
+
+    fn history(&self) -> std::sync::MutexGuard<'_, UserHistory> {
+        self.history.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Remembers that the user chose `surface` for `reading`.
+    pub fn learn(&self, reading: &str, surface: &str) {
+        if reading == surface {
+            return; // plain hiragana needs no learning
+        }
+        // Left/right POS ids: from a lattice path producing exactly this
+        // surface, else a dictionary entry, else the unknown-word id.
+        let (mut lid, mut rid) = (self.dict.unknown_id(), self.dict.unknown_id());
+        let mut lat = self.build_lattice(reading, &[], &[]);
+        self.viterbi(&mut lat);
+        let mut found = false;
+        for (_, path) in self.nbest_paths(&lat, 30) {
+            let s: String = path.iter().map(|&i| lat.nodes[i as usize].surface).collect();
+            if s == surface && !path.is_empty() {
+                lid = lat.nodes[path[0] as usize].lid;
+                rid = lat.nodes[*path.last().unwrap() as usize].rid;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            if let Some(e) = self.dict.lookup(reading).into_iter().find(|e| e.surface == surface) {
+                lid = e.lid;
+                rid = e.rid;
+            }
+        }
+        self.history().learn(reading, surface, lid, rid);
+    }
+
+    pub fn forget(&self, reading: &str, surface: &str) {
+        self.history().forget(reading, surface);
+    }
+
+    /// Learned words that occur in `text`, as lattice extras.
+    fn learned_extras(&self, text: &str) -> Vec<Extra> {
+        let mut h = self.history();
+        h.reload_if_changed();
+        let mut out = Vec::new();
+        for (pos, _) in text.char_indices() {
+            h.common_prefix(&text[pos..], |l, e| {
+                let base = self
+                    .dict
+                    .lookup(&text[pos..pos + l])
+                    .into_iter()
+                    .filter(|d| d.surface == e.surface)
+                    .map(|d| d.cost as i32)
+                    .min()
+                    .unwrap_or(4000)
+                    .min(4000);
+                let bonus = 1500.0 + 300.0 * (1.0 + e.count as f32).ln();
+                out.push(Extra {
+                    start: pos,
+                    end: pos + l,
+                    lid: e.lid,
+                    rid: e.rid,
+                    cost: (base as f32 - bonus).max(0.0) as i32,
+                    surface: e.surface.clone(),
+                });
+            });
+        }
+        out
     }
 
     pub fn with_reranker(mut self, r: Box<dyn Reranker>) -> Self {
@@ -101,6 +195,10 @@ impl Converter {
         let n = self.reranker.as_ref().map_or(1, |r| r.candidates().max(1));
         let mut res = self.convert(text, boundaries, n);
         if let Some(r) = &self.reranker {
+            // Don't let the model override what the user taught us.
+            if res.first().is_some_and(|c| c.learned_words() > 0) {
+                return res;
+            }
             if res.len() > 1 {
                 if let Some(i) = r.choose(text, left_context, &res) {
                     if i < res.len() {
@@ -117,7 +215,7 @@ impl Converter {
         &self.dict
     }
 
-    fn build_lattice<'a>(&'a self, text: &'a str, boundaries: &[usize]) -> Lattice<'a> {
+    fn build_lattice<'a>(&'a self, text: &'a str, boundaries: &[usize], extras: &'a [Extra]) -> Lattice<'a> {
         let len = text.len();
         let mut lat = Lattice {
             nodes: Vec::with_capacity(len * 8),
@@ -131,9 +229,9 @@ impl Converter {
             lat.nodes.push(n);
         };
         // BOS / EOS
-        lat.nodes.push(Node { start: 0, end: 0, lid: 0, rid: 0, wcost: 0, surface: "", best: 0 });
+        lat.nodes.push(Node { start: 0, end: 0, lid: 0, rid: 0, wcost: 0, surface: "", best: 0, learned: false });
         lat.ends[0].push(BOS);
-        lat.nodes.push(Node { start: len, end: len, lid: 0, rid: 0, wcost: 0, surface: "", best: i32::MAX });
+        lat.nodes.push(Node { start: len, end: len, lid: 0, rid: 0, wcost: 0, surface: "", best: i32::MAX, learned: false });
 
         let crosses = |s: usize, e: usize| boundaries.iter().any(|&b| s < b && b < e);
         let unk = self.dict.unknown_id();
@@ -155,7 +253,7 @@ impl Converter {
                 }
                 push(&mut lat, Node {
                     start: pos, end: e, lid: unk, rid: unk,
-                    wcost: UNKNOWN_RUN_COST, surface: &text[pos..e], best: i32::MAX,
+                    wcost: UNKNOWN_RUN_COST, surface: &text[pos..e], best: i32::MAX, learned: false,
                 });
                 pos = e;
                 continue;
@@ -168,16 +266,24 @@ impl Converter {
                 }
                 push(&mut lat, Node {
                     start: pos, end: pos + l, lid: e.lid, rid: e.rid,
-                    wcost: e.cost as i32, surface: e.surface, best: i32::MAX,
+                    wcost: e.cost as i32, surface: e.surface, best: i32::MAX, learned: false,
                 });
             }
             // Always allow a single-character fallback to keep the lattice connected.
             let cl = c.len_utf8();
             push(&mut lat, Node {
                 start: pos, end: pos + cl, lid: unk, rid: unk,
-                wcost: UNKNOWN_CHAR_COST, surface: &text[pos..pos + cl], best: i32::MAX,
+                wcost: UNKNOWN_CHAR_COST, surface: &text[pos..pos + cl], best: i32::MAX, learned: false,
             });
             pos += cl;
+        }
+        for x in extras {
+            if !crosses(x.start, x.end) {
+                push(&mut lat, Node {
+                    start: x.start, end: x.end, lid: x.lid, rid: x.rid,
+                    wcost: x.cost, surface: &x.surface, best: i32::MAX, learned: true,
+                });
+            }
         }
         lat.begins[len].push(EOS);
         lat
@@ -264,6 +370,7 @@ impl Converter {
                     lid: n.lid,
                     rid: n.rid,
                     cost: n.wcost,
+                    learned: n.learned,
                 }
             })
             .collect()
@@ -312,7 +419,8 @@ impl Converter {
         if text.is_empty() {
             return Vec::new();
         }
-        let mut lat = self.build_lattice(text, boundaries);
+        let extras = self.learned_extras(text);
+        let mut lat = self.build_lattice(text, boundaries, &extras);
         self.viterbi(&mut lat);
         let mut seen = HashSet::new();
         let mut res = Vec::new();
@@ -339,7 +447,11 @@ impl Converter {
                 out.push(s);
             }
         };
-        let mut lat = self.build_lattice(reading, &[]);
+        // Learned surfaces for this exact reading come first (most recent first).
+        for e in self.history().lookup(reading) {
+            add(e.surface.clone(), &mut out);
+        }
+        let mut lat = self.build_lattice(reading, &[], &[]);
         self.viterbi(&mut lat);
         for (_, path) in self.nbest_paths(&lat, n * 2) {
             // Drop paths that fall back to single unknown characters

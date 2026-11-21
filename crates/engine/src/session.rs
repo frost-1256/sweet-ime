@@ -303,10 +303,15 @@ impl Session {
         }
     }
 
-    fn commit_conversion(&mut self) {
+    fn commit_conversion(&mut self, conv: &Converter) {
         if let Some(cv) = self.conv.take() {
             for s in &cv.segs {
-                self.commit.push_str(&s.cands[s.selected]);
+                let surface = &s.cands[s.selected];
+                // Learn explicit choices (anything but the first suggestion).
+                if s.selected != 0 {
+                    conv.learn(&s.reading, surface);
+                }
+                self.commit.push_str(surface);
             }
         }
         self.comp = Composing::default();
@@ -360,13 +365,13 @@ impl Session {
                     if cv.focus + 1 < cv.segs.len() {
                         cv.focus += 1;
                     } else {
-                        self.commit_conversion();
+                        self.commit_conversion(conv);
                     }
                 }
                 true
             }
             Key::Char(c) if !c.is_control() => {
-                self.commit_conversion();
+                self.commit_conversion(conv);
                 self.handle_composing(conv, key)
             }
             Key::Space | Key::Down | Key::Tab => {
@@ -404,7 +409,7 @@ impl Session {
                 true
             }
             Key::Enter => {
-                self.commit_conversion();
+                self.commit_conversion(conv);
                 true
             }
             Key::Escape => {

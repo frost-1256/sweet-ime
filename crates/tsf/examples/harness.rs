@@ -301,6 +301,9 @@ fn main() -> Result<()> {
     let dll = std::env::args().nth(1).unwrap_or_else(|| {
         concat!(env!("CARGO_MANIFEST_DIR"), "\\..\\..\\target\\release\\sweet_tsf.dll").to_string()
     });
+    // Keep learning history out of the real profile.
+    let appdata = std::env::temp_dir().join(format!("sweet-ime-harness-{}", std::process::id()));
+    unsafe { std::env::set_var("APPDATA", &appdata) };
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         let module = LoadLibraryW(&HSTRING::from(dll.as_str()))?;
@@ -404,6 +407,7 @@ fn main() -> Result<()> {
 
         tip.Deactivate()?;
         tm.Deactivate()?;
+        let _ = std::fs::remove_dir_all(&appdata);
         println!("{}", if fails == 0 { "ALL PASSED" } else { "FAILURES" });
         std::process::exit(fails as i32);
     }

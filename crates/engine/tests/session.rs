@@ -89,3 +89,27 @@ fn transliterate_keys() {
     s.handle(&c, Key::Enter);
     assert_eq!(s.take_commit(), "ko-hi-");
 }
+
+#[test]
+fn learns_selected_candidate() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "kisha");
+    s.handle(&c, Key::Space);
+    let first = s.preedit().text;
+    s.handle(&c, Key::Space); // open window, select 2nd
+    let second = s.candidates().unwrap().items[1].clone();
+    assert_ne!(first, second);
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), second);
+
+    // Now the learned word wins, alone and inside a sentence.
+    type_str(&mut s, &c, "kisha");
+    s.handle(&c, Key::Space);
+    assert_eq!(s.preedit().text, second);
+    s.handle(&c, Key::Enter);
+    s.take_commit();
+    type_str(&mut s, &c, "ashitakishaninarimasu");
+    s.handle(&c, Key::Space);
+    assert!(s.preedit().text.contains(&second), "{}", s.preedit().text);
+}

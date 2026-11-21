@@ -66,7 +66,10 @@ pub(crate) fn converter() -> Option<&'static Converter> {
         if let Ok(p) = std::env::var("SWEET_IME_DICT") {
             candidates.insert(0, PathBuf::from(p));
         }
-        let conv = candidates.into_iter().find_map(|p| Dictionary::open(&p).ok()).map(Converter::new)?;
+        let mut conv = candidates.into_iter().find_map(|p| Dictionary::open(&p).ok()).map(Converter::new)?;
+        if let Some(dir) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            conv = conv.with_history(sweet_engine::UserHistory::with_file(dir.join("SweetIME").join("history.tsv")));
+        }
         Some(match load_zenz() {
             Some(r) => conv.with_reranker(Box::new(r)),
             None => conv,
