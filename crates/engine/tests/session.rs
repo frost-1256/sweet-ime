@@ -159,3 +159,24 @@ fn suggestions_tab_select() {
     s.handle(&c, Key::Enter);
     assert_eq!(s.take_commit(), first);
 }
+
+#[test]
+fn click_selects_candidate() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "kisha");
+    s.handle(&c, Key::Space);
+    s.handle(&c, Key::Space);
+    let third = s.candidates().unwrap().items[2].clone();
+    assert!(s.select_candidate(&c, 2));
+    assert_eq!(s.take_commit(), third);
+    assert!(!s.is_active());
+
+    let mut s = Session::new();
+    s.options.live_conversion = false;
+    type_str(&mut s, &c, "arigat");
+    let first = s.candidates().unwrap().items[0].clone();
+    assert!(s.select_candidate(&c, 0));
+    assert_eq!(s.take_commit(), first);
+    assert!(!s.select_candidate(&c, 0));
+}

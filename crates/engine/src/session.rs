@@ -241,7 +241,7 @@ impl Session {
         if self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2 {
             let shown = c.live.clone().unwrap_or_else(|| settled.clone());
             c.suggestions = conv
-                .predict(&settled, 5)
+                .predict_sentence(&settled, 5)
                 .into_iter()
                 .filter(|s| *s != shown)
                 .collect();
@@ -270,6 +270,46 @@ impl Session {
             page_size: self.page_size,
             kind: ListKind::Conversion,
         })
+    }
+
+    /// Picks entry `index` of the list returned by [`Session::candidates`]
+    /// (e.g. a mouse click). Returns whether anything changed.
+    pub fn select_candidate(&mut self, conv: &Converter, index: usize) -> bool {
+        let changed = if self.conv.is_none() {
+            // Suggestion list: commit the prediction directly.
+            match self.comp.suggestions.get(index).cloned() {
+                Some(text) => {
+                    self.commit.push_str(&text);
+                    self.reset();
+                    true
+                }
+                None => false,
+            }
+        } else if self.conv.as_ref().is_some_and(|cv| cv.window) {
+            self.choose(conv, index)
+        } else {
+            false
+        };
+        self.refresh(conv);
+        changed
+    }
+
+    /// Selects candidate `idx` of the focused segment, closes the window and
+    /// moves on (committing after the last segment).
+    fn choose(&mut self, conv: &Converter, idx: usize) -> bool {
+        let cv = self.conv.as_mut().unwrap();
+        let s = &mut cv.segs[cv.focus];
+        if idx >= s.cands.len() {
+            return false;
+        }
+        s.selected = idx;
+        cv.window = false;
+        if cv.focus + 1 < cv.segs.len() {
+            cv.focus += 1;
+        } else {
+            self.commit_conversion(conv);
+        }
+        true
     }
 
     /// Handles a key. Returns whether the key was consumed.
@@ -475,18 +515,7 @@ impl Session {
         match key {
             Key::Char(c) if window && ('1'..='9').contains(&c) => {
                 let page = self.candidates().unwrap().page_start();
-                let cv = self.conv.as_mut().unwrap();
-                let s = &mut cv.segs[cv.focus];
-                let idx = page + (c as usize - '1' as usize);
-                if idx < s.cands.len() {
-                    s.selected = idx;
-                    cv.window = false;
-                    if cv.focus + 1 < cv.segs.len() {
-                        cv.focus += 1;
-                    } else {
-                        self.commit_conversion(conv);
-                    }
-                }
+                self.choose(conv, page + (c as usize - '1' as usize));
                 true
             }
             Key::Char(c) if !c.is_control() => {

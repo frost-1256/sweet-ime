@@ -3,3 +3,4 @@
 /data/*.dict
 /third_party/zenz
 /dist
+/data/*.swz

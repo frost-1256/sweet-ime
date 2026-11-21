@@ -28,9 +28,10 @@ foreach ($arch in 'x64', 'x86') {
     }
     Copy-Item "$Source\$arch\sweet_tsf.dll" $dll
 }
-foreach ($f in 'system.dict', 'zenz.swz') {
+foreach ($f in 'system.dict', 'get-zenz.ps1', 'tools\sweet-zenz-pack.exe') {
     if (Test-Path "$Source\$f") {
         $dst = "$Target\$f"
+        New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
         if (Test-Path $dst) {
             $old = "$dst.$([DateTime]::Now.ToString('yyyyMMddHHmmss')).old"
             Move-Item $dst $old
@@ -63,3 +64,4 @@ if ($AddToLanguageList) {
     }
 }
 Write-Host "Sweet IME installed to $Target"
+Write-Host "Optional neural reranking: run $Target\get-zenz.ps1 (no admin needed)"

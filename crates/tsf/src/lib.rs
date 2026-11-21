@@ -89,11 +89,16 @@ pub(crate) fn load_options() -> sweet_engine::Options {
         .unwrap_or_default()
 }
 
-/// Optional neural reranker: `zenz.swz` next to the DLL (or `SWEET_IME_ZENZ`).
+/// Optional neural reranker. Not bundled (the model is CC BY-SA 4.0); the
+/// user installs it with get-zenz.ps1 into `%LOCALAPPDATA%\SweetIME`.
+/// Also looked up via `SWEET_IME_ZENZ` and next to the DLL (development).
 fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
     let mut paths = Vec::new();
     if let Ok(p) = std::env::var("SWEET_IME_ZENZ") {
         paths.push(PathBuf::from(p));
+    }
+    if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+        paths.push(PathBuf::from(d).join("SweetIME").join("zenz.swz"));
     }
     if let Some(dir) = dll_path().parent() {
         paths.push(dir.join("zenz.swz"));

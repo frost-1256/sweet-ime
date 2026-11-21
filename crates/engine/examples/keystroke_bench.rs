@@ -19,9 +19,9 @@ fn main() {
         let n = text.len() as f64;
         println!("live={live:5} sugg={sugg:5}: mean {:.3}ms worst {:.3}ms", t.elapsed().as_secs_f64() * 1e3 / n, worst);
     }
-    for p in ["あ", "あり", "ありが", "きょうは"] {
+    for p in ["あ", "あり", "ありが", "きょうは", "どうもありが", "わたしはでんしゃで", "きのうのかいぎのしりょ"] {
         let t = Instant::now();
-        let r = c.predict(p, 5);
+        let r = c.predict_sentence(p, 5);
         println!("predict {p}: {:.3}ms {:?}", t.elapsed().as_secs_f64() * 1e3, r);
     }
 }

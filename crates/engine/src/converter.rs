@@ -473,6 +473,30 @@ impl Converter {
         out
     }
 
+    /// Suggestions for text being typed: completions of the whole reading,
+    /// then the best conversion of all but the last bunsetsu followed by
+    /// completions of the last one (so predictions keep working mid-sentence).
+    pub fn predict_sentence(&self, text: &str, n: usize) -> Vec<String> {
+        let mut out = self.predict(text, n);
+        let best = self.convert(text, &[], 1);
+        if let Some(conv) = best.first() {
+            if conv.segments.len() >= 2 {
+                let (last, head) = conv.segments.split_last().unwrap();
+                let head: String = head.iter().map(|s| s.surface.as_str()).collect();
+                if last.reading.chars().count() >= 2 {
+                    for p in self.predict(&last.reading, n) {
+                        let full = format!("{head}{p}");
+                        if !out.contains(&full) {
+                            out.push(full);
+                        }
+                    }
+                }
+            }
+        }
+        out.truncate(n);
+        out
+    }
+
     /// Candidate surfaces for a single bunsetsu reading, best first.
     pub fn segment_candidates(&self, reading: &str, n: usize) -> Vec<String> {
         let mut seen = HashSet::new();
