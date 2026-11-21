@@ -18,8 +18,9 @@ A Japanese input method written from scratch in Rust.
   `input-method-v2` (such as niri, Sway and Hyprland) and with fcitx5's
   other frontends. fcitx5 draws the candidate window.
 - **Features**: live conversion, predictive suggestions (including
-  mid-sentence), romaji typo correction, per-user learning, bunsetsu
-  resizing, and F6–F10 transliteration.
+  mid-sentence), romaji typo correction, per-user learning, a user
+  dictionary, numbers read out in kana (さんぜんえん → 三千円 / 3000円),
+  bunsetsu resizing, and F6–F10 transliteration.
 
 ## Accuracy
 
@@ -27,9 +28,9 @@ Top-1 results on Mozc's `evaluation.tsv` (397 cases):
 
 | Configuration                    | Top-1 | Mean latency |
 |----------------------------------|-------|--------------|
-| Lattice only                     | 69.5% | ~0.1 ms      |
-| + zenz v3.1 xsmall (default)     | 82.4% | ~11 ms       |
-| + zenz v3.1 small                | 84.9% | ~37 ms       |
+| Lattice only                     | 70.8% | ~0.1 ms      |
+| + zenz v3.1 xsmall (default)     | 82.6% | ~13 ms       |
+| + zenz v3.1 small                | 85.9% | ~41 ms       |
 | Mozc OSS (reference)             | 74.6% | —            |
 
 ## Build
@@ -184,6 +185,7 @@ In the app you can:
 - Change key bindings
 - Turn AI conversion on or off, and download or remove the zenz model
 - Turn learning on or off, and review, delete or clear learned words
+- Register, edit and delete your own words, and import or export them
 
 Settings are stored in `%APPDATA%\SweetIME\config.txt`:
 
@@ -197,6 +199,12 @@ theme = default        # default, light, dark, sakura, matcha, midnight, lavende
 
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
 
+Your own words are stored in `%APPDATA%\SweetIME\user_dict.tsv`, one per
+line as `reading<TAB>word<TAB>part of speech<TAB>comment`. Mozc and Google
+Japanese Input export the same format, so their files (and Microsoft IME
+exports) can be imported from the settings app. The IME picks up changes
+to the file right away.
+
 ## Development
 
 - `cargo test --workspace`
@@ -206,6 +214,8 @@ Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
   through a private fcitx5 over D-Bus (Linux, after `nix build`).
 - `sweet-cli data\system.dict eval <evaluation.tsv>` measures accuracy.
   Set `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
+  `crates\cli\data\terms.tsv` checks technical terms, internet slang and
+  numbers in context.
 
 ## Licenses
 

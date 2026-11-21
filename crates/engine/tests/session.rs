@@ -539,3 +539,33 @@ fn neural_and_learning_switches() {
     c.learn("きしゃ", &other);
     assert_eq!(c.convert("きしゃ", &[], 1)[0].surface(), other);
 }
+
+#[test]
+fn user_dictionary_words_convert_and_connect() {
+    let Some(c) = converter() else { return };
+    let dir = std::env::temp_dir().join(format!("sweet-ime-userdict-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("user_dict.tsv");
+    let mut d = sweet_engine::UserDictionary::with_file(&path);
+    d.add("ぽむ", "ぽむ太郎", "人名", "").unwrap();
+    d.add("さとう", "佐東", "姓", "").unwrap();
+    d.add("すいあい", "Sweet IME の設定", "サジェストのみ", "").unwrap();
+    let c = c.with_user_dict(sweet_engine::UserDictionary::with_file(&path));
+
+    let best = |s: &str| c.convert_best(s, &[], "")[0].surface();
+    assert_eq!(best("ぽむがきた"), "ぽむ太郎が来た");
+    assert!(best("さとうさんにあう").starts_with("佐東さんに"));
+    assert!(c.segment_candidates("さとう", 10).contains(&"砂糖".to_string()));
+    assert_eq!(c.segment_candidates("さとう", 10)[0], "佐東");
+    // Suggestion-only words are offered while typing but never converted.
+    assert!(c.predict("すいあ", 5).contains(&"Sweet IME の設定".to_string()));
+    assert_ne!(best("すいあい"), "Sweet IME の設定");
+
+    // Edits from another process (the settings app) are picked up.
+    let mut d = sweet_engine::UserDictionary::with_file(&path);
+    d.remove(0).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let _ = std::fs::OpenOptions::new().append(true).open(&path).and_then(|f| f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)));
+    assert_ne!(best("ぽむがきた"), "ぽむ太郎が来た");
+    let _ = std::fs::remove_dir_all(&dir);
+}

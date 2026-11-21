@@ -1,11 +1,12 @@
 //! Sweet IME settings.
 //!
 //! Edits `config.txt` and `keymap.txt` (saved on every
-//! change), manages the learning history and downloads the optional neural
-//! model.
+//! change), manages the learning history and the user dictionary, and
+//! downloads the optional neural model.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dict_page;
 mod keys_page;
 mod theme_page;
 
@@ -36,15 +37,16 @@ enum Page {
     Theme,
     Neural,
     Learning,
+    Dictionary,
     About,
 }
 
 impl Page {
     #[cfg(windows)]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
     /// Elsewhere the candidate window is drawn by the input method framework.
     #[cfg(not(windows))]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
 
     fn label(self) -> &'static str {
         match self {
@@ -53,6 +55,7 @@ impl Page {
             Page::Theme => "テーマ",
             Page::Neural => "AI 変換",
             Page::Learning => "学習",
+            Page::Dictionary => "辞書",
             Page::About => "情報",
         }
     }
@@ -76,6 +79,7 @@ struct App {
     model: &'static str,
     download: Option<Download>,
     keys: keys_page::KeysPage,
+    dict: dict_page::DictPage,
 }
 
 const MODELS: [(&str, &str); 2] = [
@@ -93,6 +97,7 @@ impl App {
             Some("keys") => Page::Keys,
             Some("theme") => Page::Theme,
             Some("learning") => Page::Learning,
+            Some("dictionary") => Page::Dictionary,
             Some("about") => Page::About,
             _ => Page::Input,
         };
@@ -107,6 +112,7 @@ impl App {
             model: MODELS[0].0,
             download: None,
             keys: keys_page::KeysPage::new(),
+            dict: dict_page::DictPage::new(),
         };
         app.reload_history();
         app
@@ -248,6 +254,7 @@ impl eframe::App for App {
                     }
                     Page::Neural => self.neural_page(ui),
                     Page::Learning => self.learning_page(ui),
+                    Page::Dictionary => self.dict.ui(ui, &mut self.status),
                     Page::About => about_page(ui),
                 }
                 if let Some((msg, ok)) = &self.status {

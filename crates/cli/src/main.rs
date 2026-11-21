@@ -16,6 +16,9 @@ fn main() -> Result<()> {
     }
     let t0 = Instant::now();
     let mut conv = Converter::new(Dictionary::open(&args[1])?);
+    if let Ok(path) = std::env::var("SWEET_USER_DICT") {
+        conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(path));
+    }
     if let Ok(path) = std::env::var("SWEET_ZENZ") {
         let t = Instant::now();
         let mut r = sweet_zenz::ZenzReranker::new(sweet_zenz::Zenz::load(&path)?);

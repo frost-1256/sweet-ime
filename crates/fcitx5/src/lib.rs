@@ -61,6 +61,9 @@ pub fn converter() -> Option<&'static Converter> {
         if let Some(p) = paths::history_file() {
             conv = conv.with_history(sweet_engine::UserHistory::with_file(p));
         }
+        if let Some(p) = sweet_engine::paths::user_dict_file() {
+            conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(p));
+        }
         Some(match load_zenz() {
             Some(r) => conv.with_reranker(Box::new(r)),
             None => conv,

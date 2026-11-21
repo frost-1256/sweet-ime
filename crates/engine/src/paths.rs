@@ -45,6 +45,11 @@ pub fn history_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("history.tsv"))
 }
 
+/// Words the user registered by hand.
+pub fn user_dict_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("user_dict.tsv"))
+}
+
 /// User-installed neural model (`zenz.swz` in [`data_dir`]).
 pub fn zenz_file() -> Option<PathBuf> {
     data_dir().map(|d| d.join("zenz.swz"))

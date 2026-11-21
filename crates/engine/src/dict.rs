@@ -11,8 +11,9 @@
 //!   fst_off    u64, fst_len u64
 //!   ent_off    u64, ent_count u64
 //!   str_off    u64, str_len u64
-//!   (connection matrix follows at conn_off = header end of other sections,
-//!    stored as dim*dim i16, then dim bytes of PosClass)
+//!   conn_off   u64      connection matrix: dim*dim i16, then dim bytes of PosClass
+//!   feat_off   u64      POS feature strings (0 in older files): dim times
+//!                       u16 length + UTF-8 bytes
 //! ```
 //!
 //! The FST maps each reading to `(first_entry << 24) | count`.
@@ -118,6 +119,8 @@ pub struct Dictionary {
     str_off: usize,
     conn_off: usize,
     class_off: usize,
+    /// id.def feature strings, when the file has them.
+    features: Vec<Box<str>>,
 }
 
 fn rd_u64(b: &[u8], o: usize) -> u64 {
@@ -164,7 +167,27 @@ impl Dictionary {
         }
         let fst = fst::Map::new(Bytes(map.clone(), fst_off, fst_len))
             .map_err(|e| invalid(&e.to_string()))?;
-        Ok(Self { map, fst, dim, unk_id, ent_off, ent_count, str_off, conn_off, class_off })
+        let feat_off = rd_u64(b, 72) as usize;
+        let mut features = Vec::new();
+        if feat_off != 0 {
+            let mut o = feat_off;
+            for _ in 0..dim {
+                if o + 2 > b.len() {
+                    return Err(invalid("truncated POS features"));
+                }
+                let n = rd_u16(b, o) as usize;
+                let s = b.get(o + 2..o + 2 + n).ok_or_else(|| invalid("truncated POS features"))?;
+                features.push(std::str::from_utf8(s).map_err(|_| invalid("bad POS feature"))?.into());
+                o += 2 + n;
+            }
+        }
+        Ok(Self { map, fst, dim, unk_id, ent_off, ent_count, str_off, conn_off, class_off, features })
+    }
+
+    /// The POS id whose id.def feature is exactly `feature`, if the
+    /// dictionary records features.
+    pub fn pos_id(&self, feature: &str) -> Option<u16> {
+        self.features.iter().position(|f| &**f == feature).map(|i| i as u16)
     }
 
     pub fn pos_count(&self) -> usize {
@@ -365,5 +388,11 @@ pub fn build(
     for f in pos_features {
         buf.push(PosClass::classify(f) as u8);
     }
+    let feat_off = buf.len();
+    for f in pos_features {
+        buf.extend_from_slice(&(f.len() as u16).to_le_bytes());
+        buf.extend_from_slice(f.as_bytes());
+    }
+    buf[72..80].copy_from_slice(&(feat_off as u64).to_le_bytes());
     out.write_all(&buf)
 }

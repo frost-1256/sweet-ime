@@ -7,6 +7,7 @@ use std::collections::{BinaryHeap, HashSet};
 use std::sync::Mutex;
 
 use crate::learning::UserHistory;
+use crate::user_dict::UserDictionary;
 
 /// Cost of a single-character unknown word (hiragana passthrough).
 const UNKNOWN_CHAR_COST: i32 = 12_000;
@@ -22,6 +23,8 @@ pub struct Word {
     pub cost: i32,
     /// Came from the user's learning history.
     pub learned: bool,
+    /// Came from the user dictionary.
+    pub user: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,9 +49,23 @@ impl Conversion {
     pub fn learned_words(&self) -> usize {
         self.segments.iter().flat_map(|s| &s.words).filter(|w| w.learned).count()
     }
+
+    /// Number of words taken from the user dictionary.
+    pub fn user_words(&self) -> usize {
+        self.segments.iter().flat_map(|s| &s.words).filter(|w| w.user).count()
+    }
 }
 
-/// A learned word placed into the lattice.
+/// Where an extra lattice word came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Learned,
+    User,
+    /// A number read out in kana (see [`crate::number`]).
+    Number,
+}
+
+/// A word placed into the lattice in addition to the system dictionary.
 struct Extra {
     start: usize,
     end: usize,
@@ -56,7 +73,21 @@ struct Extra {
     rid: u16,
     cost: i32,
     surface: String,
+    origin: Origin,
 }
+
+/// Base cost of a user dictionary word whose spelling the system dictionary
+/// does not have for that reading (a cheaper system cost is used instead).
+const USER_WORD_COST: i32 = 3000;
+/// How much cheaper a user word is than its base cost.
+const USER_WORD_BONUS: i32 = 1000;
+/// Cost of a number written in kanji (三千); the Arabic forms cost more.
+const NUMBER_COST: i32 = 2000;
+const NUMBER_ARABIC_EXTRA: i32 = 900;
+/// Extra cost when the reading is also a dictionary word.
+const NUMBER_WORD_PENALTY: i32 = 800;
+/// Extra cost for a number ending in に, which is usually the particle.
+const NUMBER_PARTICLE_PENALTY: i32 = 1500;
 
 #[derive(Clone, Copy)]
 struct Node<'a> {
@@ -68,7 +99,7 @@ struct Node<'a> {
     surface: &'a str,
     /// Best cost from BOS through this node (inclusive).
     best: i32,
-    learned: bool,
+    origin: Option<Origin>,
 }
 
 struct Lattice<'a> {
@@ -115,6 +146,10 @@ pub struct Converter {
     dict: Dictionary,
     reranker: Option<Box<dyn Reranker>>,
     history: Mutex<UserHistory>,
+    user_dict: Mutex<UserDictionary>,
+    /// POS ids for numbers in kanji and in Arabic digits, when the
+    /// dictionary records POS features.
+    number_pos: Option<(u16, u16)>,
     /// Runtime switches (see [`Converter::configure`]).
     rerank_on: std::sync::atomic::AtomicBool,
     learning_on: std::sync::atomic::AtomicBool,
@@ -130,7 +165,10 @@ fn is_kana(c: char) -> bool {
 
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
+        let number_pos = dict.pos_id("名詞,数,*,*,*,*,*").zip(dict.pos_id("名詞,数,アラビア数字,*,*,*,*"));
         Self { dict, reranker: None, history: Mutex::new(UserHistory::new()),
+            user_dict: Mutex::new(UserDictionary::new()),
+            number_pos,
             rerank_on: std::sync::atomic::AtomicBool::new(true),
             learning_on: std::sync::atomic::AtomicBool::new(true),
             rerank_cache: Mutex::new(Vec::new()) }
@@ -143,6 +181,88 @@ impl Converter {
 
     fn history(&self) -> std::sync::MutexGuard<'_, UserHistory> {
         self.history.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn with_user_dict(self, d: UserDictionary) -> Self {
+        *self.user_dict.lock().unwrap_or_else(|e| e.into_inner()) = d;
+        self
+    }
+
+    /// The user dictionary, re-read if its file changed.
+    fn user_dict(&self) -> std::sync::MutexGuard<'_, UserDictionary> {
+        let mut d = self.user_dict.lock().unwrap_or_else(|e| e.into_inner());
+        d.reload_if_changed();
+        d
+    }
+
+    /// User dictionary words that occur in `text`, as lattice extras.
+    fn user_extras(&self, text: &str, out: &mut Vec<Extra>) {
+        let d = self.user_dict();
+        if d.is_empty() {
+            return;
+        }
+        for (pos, _) in text.char_indices() {
+            d.common_prefix(&text[pos..], |l, w| {
+                let Some(feature) = crate::user_dict::pos_feature(&w.pos) else { return };
+                let id = self.dict.pos_id(feature).unwrap_or(self.dict.unknown_id());
+                let base = self
+                    .dict
+                    .lookup(&text[pos..pos + l])
+                    .into_iter()
+                    .filter(|e| e.surface == w.surface)
+                    .map(|e| e.cost as i32)
+                    .min()
+                    .unwrap_or(USER_WORD_COST)
+                    .min(USER_WORD_COST);
+                out.push(Extra {
+                    start: pos,
+                    end: pos + l,
+                    lid: id,
+                    rid: id,
+                    cost: (base - USER_WORD_BONUS).max(0),
+                    surface: w.surface.clone(),
+                    origin: Origin::User,
+                });
+            });
+        }
+    }
+
+    /// Numbers read out in kana in `text` (さんぜん), as lattice extras in
+    /// kanji (三千) and Arabic digits (3000, and 10万 for large values).
+    fn number_extras(&self, text: &str, out: &mut Vec<Extra>) {
+        let Some((kanji_id, arabic_id)) = self.number_pos else { return };
+        for (pos, _) in text.char_indices() {
+            for n in crate::number::parse_prefixes(&text[pos..]) {
+                let (start, end) = (pos, pos + n.len);
+                // A reading that is also an ordinary word (さんじゅう 三重)
+                // is more often that word.
+                let word = self.dict.lookup(&text[start..end]).iter().any(|e| {
+                    !e.surface.chars().all(|c| c.is_ascii_digit() || "〇一二三四五六七八九十百千万億兆".contains(c))
+                });
+                // A trailing に is more often the particle (三重に重なる).
+                let particle = text[..end].ends_with("に") && end - start > "に".len();
+                let cost = NUMBER_COST
+                    + if word { NUMBER_WORD_PENALTY } else { 0 }
+                    + if particle { NUMBER_PARTICLE_PENALTY } else { 0 };
+                let mut push = |lid: u16, cost: i32, surface: String| {
+                    out.push(Extra { start, end, lid, rid: lid, cost, surface, origin: Origin::Number });
+                };
+                push(kanji_id, cost, crate::number::to_kanji(n.value));
+                push(arabic_id, cost + NUMBER_ARABIC_EXTRA, n.value.to_string());
+                if let Some(s) = crate::number::to_arabic_big(n.value) {
+                    push(arabic_id, cost + NUMBER_ARABIC_EXTRA - 100, s);
+                }
+            }
+        }
+    }
+
+    /// Every extra lattice word for `text`: learned and user dictionary
+    /// words, and numbers.
+    fn extras(&self, text: &str) -> Vec<Extra> {
+        let mut out = self.learned_extras(text);
+        self.user_extras(text, &mut out);
+        self.number_extras(text, &mut out);
+        out
     }
 
     /// Remembers that the user chose `surface` for `reading`.
@@ -212,6 +332,7 @@ impl Converter {
                     rid: e.rid,
                     cost: (base as f32 - bonus).max(0.0) as i32,
                     surface: e.surface.clone(),
+                    origin: Origin::Learned,
                 });
             });
         }
@@ -251,7 +372,7 @@ impl Converter {
         let mut res = self.convert(text, boundaries, n);
         if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
             // Don't let the model override what the user taught us.
-            if res.first().is_some_and(|c| c.learned_words() > 0) {
+            if res.first().is_some_and(|c| c.learned_words() > 0 || c.user_words() > 0) {
                 return res;
             }
             if res.len() > 1 {
@@ -314,9 +435,9 @@ impl Converter {
             lat.nodes.push(n);
         };
         // BOS / EOS
-        lat.nodes.push(Node { start: 0, end: 0, lid: 0, rid: 0, wcost: 0, surface: "", best: 0, learned: false });
+        lat.nodes.push(Node { start: 0, end: 0, lid: 0, rid: 0, wcost: 0, surface: "", best: 0, origin: None });
         lat.ends[0].push(BOS);
-        lat.nodes.push(Node { start: len, end: len, lid: 0, rid: 0, wcost: 0, surface: "", best: i32::MAX, learned: false });
+        lat.nodes.push(Node { start: len, end: len, lid: 0, rid: 0, wcost: 0, surface: "", best: i32::MAX, origin: None });
 
         let crosses = |s: usize, e: usize| boundaries.iter().any(|&b| s < b && b < e);
         let unk = self.dict.unknown_id();
@@ -338,7 +459,7 @@ impl Converter {
                 }
                 push(&mut lat, Node {
                     start: pos, end: e, lid: unk, rid: unk,
-                    wcost: UNKNOWN_RUN_COST, surface: &text[pos..e], best: i32::MAX, learned: false,
+                    wcost: UNKNOWN_RUN_COST, surface: &text[pos..e], best: i32::MAX, origin: None,
                 });
                 pos = e;
                 continue;
@@ -349,14 +470,14 @@ impl Converter {
                 }
                 push(&mut lat, Node {
                     start: pos, end: pos + l, lid: e.lid, rid: e.rid,
-                    wcost: e.cost as i32, surface: e.surface, best: i32::MAX, learned: false,
+                    wcost: e.cost as i32, surface: e.surface, best: i32::MAX, origin: None,
                 });
             });
             // Always allow a single-character fallback to keep the lattice connected.
             let cl = c.len_utf8();
             push(&mut lat, Node {
                 start: pos, end: pos + cl, lid: unk, rid: unk,
-                wcost: UNKNOWN_CHAR_COST, surface: &text[pos..pos + cl], best: i32::MAX, learned: false,
+                wcost: UNKNOWN_CHAR_COST, surface: &text[pos..pos + cl], best: i32::MAX, origin: None,
             });
             pos += cl;
         }
@@ -364,7 +485,7 @@ impl Converter {
             if !crosses(x.start, x.end) {
                 push(&mut lat, Node {
                     start: x.start, end: x.end, lid: x.lid, rid: x.rid,
-                    wcost: x.cost, surface: &x.surface, best: i32::MAX, learned: true,
+                    wcost: x.cost, surface: &x.surface, best: i32::MAX, origin: Some(x.origin),
                 });
             }
         }
@@ -504,7 +625,8 @@ impl Converter {
                     lid: n.lid,
                     rid: n.rid,
                     cost: n.wcost,
-                    learned: n.learned,
+                    learned: n.origin == Some(Origin::Learned),
+                    user: n.origin == Some(Origin::User),
                 }
             })
             .collect()
@@ -571,7 +693,7 @@ impl Converter {
         if text.is_empty() {
             return Vec::new();
         }
-        let extras = self.learned_extras(text);
+        let extras = self.extras(text);
         let mut lat = self.build_lattice(text, boundaries, &extras);
         self.viterbi(&mut lat);
         if n == 1 {
@@ -608,6 +730,18 @@ impl Converter {
             for (_, e) in h.predictive(prefix).into_iter().take(n) {
                 if seen.insert(e.surface.clone()) {
                     out.push(e.surface.clone());
+                }
+            }
+        }
+        // Then user dictionary words, including an exact reading (words
+        // registered as suggestion-only appear nowhere else).
+        if !prefix.is_empty() {
+            for w in self.user_dict().predictive(prefix) {
+                if out.len() >= n {
+                    break;
+                }
+                if seen.insert(w.surface.clone()) {
+                    out.push(w.surface.clone());
                 }
             }
         }
@@ -683,7 +817,14 @@ impl Converter {
                 add(e.surface.clone(), &mut out);
             }
         }
-        let mut lat = self.build_lattice(reading, &[], &[]);
+        // Then user dictionary words for exactly this reading.
+        let mut extras = Vec::new();
+        self.user_extras(reading, &mut extras);
+        for x in extras.iter().filter(|x| x.start == 0 && x.end == reading.len()) {
+            add(x.surface.clone(), &mut out);
+        }
+        self.number_extras(reading, &mut extras);
+        let mut lat = self.build_lattice(reading, &[], &extras);
         self.viterbi(&mut lat);
         for (_, path) in self.nbest_paths(&lat, n * 2) {
             // Drop paths that fall back to single unknown characters
