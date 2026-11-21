@@ -17,9 +17,9 @@ use windows::Win32::UI::TextServices::{
     ITfContextView, ITfTextLayoutSink, ITfTextLayoutSink_Impl, TfLayoutCode, TF_LC_CHANGE,
     ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, TF_TMF_IMMERSIVEMODE,
     TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_MOD_ALT, TF_MOD_CONTROL, TF_MOD_SHIFT, TF_PRESERVEDKEY, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
-    TF_SELECTIONSTYLE,
+    TF_SELECTIONSTYLE, GUID_PROP_INPUTSCOPE, ITfInputScope, InputScope, IS_PASSWORD, IS_PRIVATE,
 };
-use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, implement};
+use windows_core::{BOOL, ComObject, GUID, IUnknown, IUnknownImpl, Interface, Ref, Result, implement};
 
 use crate::candidate_window::CandidateWindow;
 use crate::keys::{self, Input, Toggle};
@@ -507,7 +507,34 @@ fn delete_before_caret(ctx: &ITfContext, ec: u32, text: &str) -> Result<bool> {
     }
 }
 
+/// Whether the field at the selection is a password or a private browser
+/// window (input scopes IS_PASSWORD, IS_PRIVATE).
+fn private_field(ctx: &ITfContext, ec: u32) -> bool {
+    let scopes = || -> Result<bool> {
+        unsafe {
+            let ins: ITfInsertAtSelection = ctx.cast()?;
+            let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
+            let value = ctx.GetProperty(&GUID_PROP_INPUTSCOPE)?.GetValue(ec, &range)?;
+            let scope: ITfInputScope = IUnknown::try_from(&value)?.cast()?;
+            let mut list: *mut InputScope = std::ptr::null_mut();
+            let mut n = 0u32;
+            scope.GetInputScopes(&mut list, &mut n)?;
+            if list.is_null() {
+                return Ok(false);
+            }
+            let private = std::slice::from_raw_parts(list, n as usize).iter().any(|s| *s == IS_PASSWORD || *s == IS_PRIVATE);
+            windows::Win32::System::Com::CoTaskMemFree(Some(list as *const std::ffi::c_void));
+            Ok(private)
+        }
+    };
+    scopes().unwrap_or(false)
+}
+
 fn update_document_inner(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
+    // A new composition: is this field private?
+    if st.composition.is_none() {
+        st.session.private = st.session.options.private_fields && private_field(ctx, ec);
+    }
     if let Some(undo) = st.session.take_undo() {
         // The caret moved or the text changed since: keep the document.
         if st.composition.is_some() || !delete_before_caret(ctx, ec, &undo).unwrap_or(false) {

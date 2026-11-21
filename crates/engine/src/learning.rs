@@ -171,6 +171,23 @@ impl UserHistory {
         v
     }
 
+    /// Forgets what was learned (or chosen again) in the last `within`.
+    /// Returns how many entries went.
+    pub fn forget_recent(&mut self, within: std::time::Duration) -> io::Result<usize> {
+        self.reload_if_changed();
+        let cutoff = now().saturating_sub(within.as_millis() as u64);
+        let before = self.len();
+        for v in self.entries.values_mut() {
+            v.retain(|e| e.last < cutoff);
+        }
+        self.entries.retain(|_, v| !v.is_empty());
+        let removed = before - self.len();
+        if removed > 0 {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
     /// Forgets everything.
     pub fn clear(&mut self) -> io::Result<()> {
         self.entries.clear();
@@ -237,5 +254,18 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|(l, _)| *l == "きしゃ".len()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forget_recent_keeps_older_entries() {
+        let mut h = UserHistory::new();
+        let day_ago = now() - 24 * 3600 * 1000;
+        h.insert("きしゃ", Learned { surface: "汽車".into(), lid: 1, rid: 1, count: 3, last: day_ago });
+        h.learn("きしゃ", "帰社", 2, 2);
+        h.learn("かんじ", "幹事", 2, 2);
+        assert_eq!(h.forget_recent(std::time::Duration::from_secs(3600)).unwrap(), 2);
+        assert_eq!(h.lookup("きしゃ").len(), 1);
+        assert_eq!(h.lookup("きしゃ")[0].surface, "汽車");
+        assert!(h.lookup("かんじ").is_empty());
     }
 }

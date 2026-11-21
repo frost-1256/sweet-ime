@@ -196,7 +196,8 @@ In the app you can:
 - Choose a color theme for the candidate window (Windows)
 - Change key bindings
 - Turn AI conversion on or off, and download or remove the zenz model
-- Turn learning on or off, and review, delete or clear learned words
+- Turn learning on or off, and review, delete or clear learned words, or
+  forget what was learned in the last hour or day
 - Register, edit and delete your own words, and import or export them
 
 Settings are stored in `%APPDATA%\SweetIME\config.txt`:
@@ -212,6 +213,7 @@ dates = on             # きょう / いま -> dates and times
 emoji = on             # えがお -> 😊, かお -> kaomoji
 calculator = on        # 1+2*3= -> 7
 undo_commit = on       # Ctrl+Backspace right after a commit restores the reading
+private_fields = on    # learn nothing in password fields and private windows
 ```
 
 Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one

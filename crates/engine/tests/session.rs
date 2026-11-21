@@ -386,6 +386,24 @@ fn learns_selected_candidate() {
 }
 
 #[test]
+fn private_field_learns_nothing() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    s.private = true;
+    type_str(&mut s, &c, "kisha");
+    s.handle(&c, Key::Space);
+    let first = s.preedit().text;
+    s.handle(&c, Key::Space);
+    let second = s.candidates().unwrap().items[1].clone();
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), second);
+
+    type_str(&mut s, &c, "kisha");
+    s.handle(&c, Key::Space);
+    assert_eq!(s.preedit().text, first);
+}
+
+#[test]
 fn live_conversion() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();

@@ -106,6 +106,8 @@ pub struct Options {
     pub calculator: bool,
     /// Ctrl+Backspace right after committing goes back to the reading.
     pub undo_commit: bool,
+    /// Learn nothing in password fields and private browser windows.
+    pub private_fields: bool,
 }
 
 impl Default for Options {
@@ -122,6 +124,7 @@ impl Default for Options {
             emoji: true,
             calculator: true,
             undo_commit: true,
+            private_fields: true,
         }
     }
 }
@@ -146,6 +149,7 @@ impl Options {
                 "emoji" => o.emoji = on,
                 "calculator" => o.calculator = on,
                 "undo_commit" => o.undo_commit = on,
+                "private_fields" => o.private_fields = on,
                 _ => {}
             }
         }
@@ -168,6 +172,7 @@ impl Options {
              emoji = {}
              calculator = {}
              undo_commit = {}
+             private_fields = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -180,6 +185,7 @@ impl Options {
             b(self.emoji),
             b(self.calculator),
             b(self.undo_commit),
+            b(self.private_fields),
         )
     }
 }
@@ -335,6 +341,9 @@ pub struct Session {
     commit: String,
     pub page_size: usize,
     pub options: Options,
+    /// The text field is private (a password, a private browser window):
+    /// nothing typed there is learned. Set by the frontend.
+    pub private: bool,
     /// Text before the composition (for context-aware conversion).
     left_context: String,
     /// The last commit, while the next key may still take it back.
@@ -365,6 +374,7 @@ impl Session {
             commit: String::new(),
             page_size: 9,
             options: Options::default(),
+            private: false,
             left_context: String::new(),
             last_commit: None,
             undo: None,
@@ -918,7 +928,7 @@ impl Session {
             for s in &cv.segs {
                 let surface = &s.cands[s.selected];
                 // Learn explicit choices (anything but the first suggestion).
-                if s.selected != 0 && !s.predicted {
+                if s.selected != 0 && !s.predicted && !self.private {
                     conv.learn(&s.reading, surface);
                 }
                 self.commit.push_str(surface);
@@ -1143,7 +1153,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);
