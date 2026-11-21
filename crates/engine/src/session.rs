@@ -172,6 +172,7 @@ struct Converting {
     corrected: bool,
 }
 
+#[derive(Clone)]
 struct LiveConversion {
     reading: String,
     surface: String,
@@ -188,6 +189,10 @@ struct Composing {
     live: Option<LiveConversion>,
     /// Live conversion turned off for this composition (Esc / caret moves).
     live_off: bool,
+    /// The last background-refined live conversion. While the reading only
+    /// grows, its text is kept so the display doesn't flip between the
+    /// lattice and the refined result on every keystroke.
+    refined: Option<LiveConversion>,
     suggestions: Vec<String>,
 }
 
@@ -246,6 +251,32 @@ impl Composing {
     }
 }
 
+/// What to show for `reading` while its refined conversion is pending:
+/// the lattice result, unless it rewrites text the refined result for an
+/// earlier part of the reading already settled. Then that text is kept,
+/// followed by the lattice's conversion of the rest, if the lattice splits
+/// the reading there. (A refined result that ended mid-word doesn't line up
+/// with a split, and the lattice result is shown.)
+fn stable_live(refined: Option<&LiveConversion>, reading: &str, lattice: &crate::Conversion) -> String {
+    let surface = lattice.surface();
+    let Some(r) = refined else { return surface };
+    if !reading.starts_with(r.reading.as_str()) || surface.starts_with(&r.surface) {
+        return surface;
+    }
+    let mut consumed = 0;
+    for (i, seg) in lattice.segments.iter().enumerate() {
+        if consumed == r.reading.len() {
+            let rest: String = lattice.segments[i..].iter().map(|s| s.surface.as_str()).collect();
+            return format!("{}{rest}", r.surface);
+        }
+        consumed += seg.reading.len();
+    }
+    if consumed == r.reading.len() {
+        return r.surface.clone();
+    }
+    surface
+}
+
 pub struct Session {
     comp: Composing,
     conv: Option<Converting>,
@@ -269,6 +300,11 @@ impl Session {
 
     pub fn is_active(&self) -> bool {
         !self.comp.is_empty() || self.conv.is_some()
+    }
+
+    /// Whether a conversion (Space) is in progress, as opposed to typing.
+    pub fn is_converting(&self) -> bool {
+        self.conv.is_some()
     }
 
     /// Sets the document text preceding the composition.
@@ -329,7 +365,11 @@ impl Session {
     /// is being typed. Returns whether the display changed.
     pub fn apply_live(&mut self, reading: &str, surface: &str) -> bool {
         let Some(live) = &mut self.comp.live else { return false };
-        if live.surface == surface || live.reading != reading {
+        if live.reading != reading {
+            return false;
+        }
+        self.comp.refined = Some(LiveConversion { reading: reading.to_string(), surface: surface.to_string() });
+        if live.surface == surface {
             return false;
         }
         live.surface = surface.to_string();
@@ -371,7 +411,7 @@ impl Session {
                     live_best = conv.convert(&settled, &[], 1).into_iter().next();
                     live_best.as_ref().map(|r| LiveConversion {
                         reading: settled.clone(),
-                        surface: r.surface(),
+                        surface: stable_live(c.refined.as_ref(), &settled, r),
                     })
                 }
             };
@@ -893,5 +933,38 @@ mod option_tests {
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::{LiveConversion, stable_live};
+    use crate::{Conversion, Segment};
+
+    fn conv(segs: &[(&str, &str)]) -> Conversion {
+        Conversion {
+            segments: segs
+                .iter()
+                .map(|(r, s)| Segment { reading: r.to_string(), surface: s.to_string(), words: Vec::new() })
+                .collect(),
+            cost: 0,
+        }
+    }
+
+    #[test]
+    fn keeps_refined_text_while_typing() {
+        let r = LiveConversion { reading: "きかい".into(), surface: "機械".into() };
+        // The lattice agrees with the refined text: use it.
+        assert_eq!(stable_live(Some(&r), "きかいが", &conv(&[("きかい", "機械"), ("が", "が")])), "機械が");
+        // The lattice would flip it back: keep it, then the lattice's rest.
+        let flip = conv(&[("きかい", "機会"), ("がこわれた", "が壊れた")]);
+        assert_eq!(stable_live(Some(&r), "きかいがこわれた", &flip), "機械が壊れた");
+        assert_eq!(stable_live(Some(&r), "きかい", &conv(&[("きかい", "機会")])), "機械");
+        // No segment boundary there: the lattice result.
+        let joined = conv(&[("きかいが", "機会が")]);
+        assert_eq!(stable_live(Some(&r), "きかいが", &joined), "機会が");
+        // A different reading (e.g. after Backspace): the lattice result.
+        assert_eq!(stable_live(Some(&r), "きか", &conv(&[("きか", "時価")])), "時価");
+        assert_eq!(stable_live(None, "きかい", &conv(&[("きかい", "機会")])), "機会");
     }
 }

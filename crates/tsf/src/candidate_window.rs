@@ -45,6 +45,12 @@ use windows_core::{HSTRING, PCWSTR, Result, w};
 
 const CLASS_NAME: PCWSTR = w!("SweetImeCandidateWindow");
 const TIMER_ID: usize = 1;
+/// Delayed hide, so that a list that disappears for a keystroke or two
+/// while typing doesn't blink.
+const HIDE_TIMER_ID: usize = 2;
+const HIDE_DELAY_MS: u32 = 160;
+/// Showing again this soon after hiding skips the fade-in.
+const REFADE_AFTER_MS: u128 = 600;
 
 // Layout in DIPs.
 const PAD: f32 = 4.0;
@@ -152,6 +158,7 @@ struct State {
     anim_from: f32,
     anim_start: Instant,
     shown_at: Instant,
+    hidden_at: Option<Instant>,
     visible: bool,
     /// Called with the absolute candidate index when a row is clicked.
     on_click: Option<std::rc::Rc<dyn Fn(usize)>>,
@@ -285,6 +292,7 @@ impl CandidateWindow {
                 anim_from: 0.0,
                 anim_start: Instant::now(),
                 shown_at: Instant::now(),
+                hidden_at: None,
                 visible: false,
                 on_click: None,
                 on_live: None,
@@ -321,7 +329,9 @@ impl CandidateWindow {
                 (list.selected - page_start) as f32
             };
             let items = &list.items[page_start..page_end];
+            let suggest = list.kind == ListKind::Suggestion;
             if st.items != items || st.rows.iter().any(Option::is_none) {
+                let prev_width = st.width;
                 st.items = items.to_vec();
                 let mut max_width: f32 = 0.0;
                 st.rows = items
@@ -340,17 +350,28 @@ impl CandidateWindow {
                 st.width = (PAD * 2.0 + INDEX_W + max_width + TEXT_PAD_R)
                     .max(MIN_W)
                     .ceil();
+                // Predictions change on every keystroke: don't let the
+                // window shrink and grow with them.
+                if was_visible && suggest && st.suggest {
+                    st.width = st.width.max(prev_width);
+                }
             }
             st.page_start = page_start;
             st.page_len = page_end - page_start;
             st.selected = list.selected;
             st.total = list.items.len();
-            st.suggest = list.kind == ListKind::Suggestion;
+            st.suggest = suggest;
             st.anim_from = prev_row;
             st.anim_start = Instant::now();
+            let mut fade = false;
             if !was_visible {
                 st.pal = palette();
-                st.shown_at = Instant::now();
+                fade = st.hidden_at.is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
+                st.shown_at = if fade {
+                    Instant::now()
+                } else {
+                    Instant::now().checked_sub(std::time::Duration::from_secs(1)).unwrap_or_else(Instant::now)
+                };
                 let border = st.pal.border;
                 let _ = DwmSetWindowAttribute(
                     hwnd,
@@ -361,10 +382,11 @@ impl CandidateWindow {
             }
             let height = PAD * 2.0 + ROW_H * st.page_len as f32 + FOOTER_H;
             st.visible = true;
-            ((st.width * st.scale) as i32, (height * st.scale) as i32, (PAD + INDEX_W) * st.scale, was_visible)
+            ((st.width * st.scale) as i32, (height * st.scale) as i32, (PAD + INDEX_W) * st.scale, was_visible, fade)
         });
-        let Some((w, h, text_x, was_visible)) = geom else { return };
+        let Some((w, h, text_x, was_visible, fade)) = geom else { return };
         unsafe {
+            let _ = KillTimer(Some(self.hwnd), HIDE_TIMER_ID);
             // Align candidate text with the composition text.
             let mut x = anchor.left - text_x as i32;
             let mut y = anchor.bottom + 4;
@@ -379,7 +401,8 @@ impl CandidateWindow {
                 y = y.max(wa.top);
             }
             if !was_visible {
-                let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), 0, LWA_ALPHA);
+                let alpha = if fade { 0 } else { 255 };
+                let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
             }
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             SetTimer(Some(self.hwnd), TIMER_ID, 8, None);
@@ -412,11 +435,32 @@ impl CandidateWindow {
     }
 
     pub fn hide(&self) {
-        if with_state(self.hwnd, |st| std::mem::replace(&mut st.visible, false)) == Some(true) {
+        hide_now(self.hwnd);
+    }
+
+    /// Hides after a short delay unless shown again first (while typing).
+    pub fn hide_soon(&self) {
+        if with_state(self.hwnd, |st| st.visible) == Some(true) {
             unsafe {
-                let _ = KillTimer(Some(self.hwnd), TIMER_ID);
-                let _ = ShowWindow(self.hwnd, SW_HIDE);
+                SetTimer(Some(self.hwnd), HIDE_TIMER_ID, HIDE_DELAY_MS, None);
             }
+        }
+    }
+}
+
+fn hide_now(hwnd: HWND) {
+    let was_visible = with_state(hwnd, |st| {
+        let v = std::mem::replace(&mut st.visible, false);
+        if v {
+            st.hidden_at = Some(Instant::now());
+        }
+        v
+    });
+    unsafe {
+        let _ = KillTimer(Some(hwnd), HIDE_TIMER_ID);
+        if was_visible == Some(true) {
+            let _ = KillTimer(Some(hwnd), TIMER_ID);
+            let _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
 }
@@ -585,6 +629,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         }
                     });
                 }));
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
+                hide_now(hwnd);
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == TIMER_ID => {

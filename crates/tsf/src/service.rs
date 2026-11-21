@@ -523,7 +523,8 @@ fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> 
 fn refresh_candidates(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
     let (Some(list), Some(comp)) = (st.session.candidates(), &st.composition) else {
         if let Some(w) = &st.window {
-            w.hide();
+            // While typing, predictions may come back on the next key.
+            if st.session.is_converting() { w.hide() } else { w.hide_soon() }
         }
         return Ok(());
     };
@@ -546,7 +547,7 @@ fn refresh_candidates(this: &ComObject<TextService>, st: &mut State, ec: u32, ct
     let Some((rc, owner)) = anchor else {
         // The host may not have laid out the composition yet.
         if let Some(w) = &st.window {
-            w.hide();
+            w.hide_soon();
         }
         return Ok(());
     };
