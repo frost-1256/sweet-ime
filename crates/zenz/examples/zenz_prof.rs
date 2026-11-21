@@ -4,6 +4,7 @@ fn main() {
     let r = "にほんちーむのえんぎはこのあとすぐです";
     let p = Zenz::prompt(r, "");
     let c: Vec<String> = ["日本チームの演技はこのあとすぐです","日本チームの演技派このあとすぐです","日本チームの縁起はこのあとすぐです","日本チームの演技はこの後すぐです","日本チームの演技はこのあと直ぐです"].iter().map(|s| s.to_string()).collect();
+    println!("{:?}", z.model.cfg);
     let pt = z.tokenizer.encode(&p).len();
     let ct: usize = c.iter().map(|s| z.tokenizer.encode(s).len()).sum();
     for _ in 0..3 {

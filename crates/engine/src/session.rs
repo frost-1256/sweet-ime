@@ -245,8 +245,11 @@ impl Composing {
         }
         // A word, not Japanese after a stray letter ("vrchatdeasobu" reads
         // vrちゃtであそぶ): little kana follows the last letter that isn't romaji.
+        // Likewise little kana comes before the first one: "kyouhadisc"
+        // is Japanese followed by a word being typed, not one word.
         let tail = reading.chars().rev().take_while(|c| !c.is_ascii_alphabetic()).count();
-        (!corrected && tail <= 2 && self.raw_spells(reading)).then(|| self.raw.clone())
+        let lead = reading.chars().take_while(|c| !c.is_ascii_alphabetic()).count();
+        (!corrected && tail <= 2 && lead <= 2 && self.raw_spells(reading)).then(|| self.raw.clone())
     }
 
     fn typo_input(&self, reading: &str) -> Option<&str> {

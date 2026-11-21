@@ -519,6 +519,34 @@ impl sweet_engine::Reranker for PickLast {
     }
 }
 
+/// A slow reranker that counts its runs.
+struct Slow(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl sweet_engine::Reranker for Slow {
+    fn choose(&self, _r: &str, _l: &str, c: &[sweet_engine::Conversion]) -> Option<usize> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        Some(c.len() - 1)
+    }
+}
+
+#[test]
+fn identical_rerank_runs_at_once_share_one_model_run() {
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
+    let Ok(d) = Dictionary::open(p) else { return };
+    let runs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = Converter::new(d).with_reranker(Box::new(Slow(runs.clone())));
+    // A background refinement and the following Space convert the same reading.
+    let results: Vec<String> = std::thread::scope(|s| {
+        let a = s.spawn(|| c.convert_best("きしゃ", &[], "")[0].surface());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let b = s.spawn(|| c.convert_best("きしゃ", &[], "")[0].surface());
+        vec![a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(results[0], results[1]);
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 #[test]
 fn neural_and_learning_switches() {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
@@ -607,4 +635,10 @@ fn english_words_typed_by_spelling_show_as_words() {
     let mut s = Session::new();
     type_str(&mut s, &c, "kak");
     assert_eq!(s.preedit().text, "かk");
+    // A word being typed after Japanese doesn't turn the sentence into keys.
+    let mut s = Session::new();
+    for (i, ch) in "kyouhadiscorddehanasu".chars().enumerate() {
+        assert!(s.handle(&c, Key::Char(ch)));
+        assert!(i < 5 || s.preedit().text.starts_with("今日は"), "{}", s.preedit().text);
+    }
 }

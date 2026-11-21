@@ -8,16 +8,19 @@ fn main() {
     for (live, sugg) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut s = Session::new();
         s.options = Options { live_conversion: live, suggestions: sugg, ..Options::default() };
-        let t = Instant::now();
-        let mut worst = 0f64;
-        let text = "kyouhaiitenkidesunearigatougozaimasu";
-        for ch in text.chars() {
-            let k = Instant::now();
-            s.handle(&c, Key::Char(ch));
-            worst = worst.max(k.elapsed().as_secs_f64() * 1e3);
+        for text in ["kyouhaiitenkidesunearigatougozaimasu", "kyouhadiscorddegithubnoissuewohanasu"] {
+            s.handle(&c, Key::Escape);
+            s.handle(&c, Key::Escape);
+            let t = Instant::now();
+            let mut worst = 0f64;
+            for ch in text.chars() {
+                let k = Instant::now();
+                s.handle(&c, Key::Char(ch));
+                worst = worst.max(k.elapsed().as_secs_f64() * 1e3);
+            }
+            let n = text.len() as f64;
+            println!("live={live:5} sugg={sugg:5} {}: mean {:.3}ms worst {:.3}ms", &text[..8], t.elapsed().as_secs_f64() * 1e3 / n, worst);
         }
-        let n = text.len() as f64;
-        println!("live={live:5} sugg={sugg:5}: mean {:.3}ms worst {:.3}ms", t.elapsed().as_secs_f64() * 1e3 / n, worst);
     }
     for p in ["あ", "あり", "ありが", "きょうは", "どうもありが", "わたしはでんしゃで", "きのうのかいぎのしりょ"] {
         let t = Instant::now();

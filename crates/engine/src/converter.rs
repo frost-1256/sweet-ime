@@ -159,8 +159,25 @@ pub struct Converter {
     rerank_on: std::sync::atomic::AtomicBool,
     learning_on: std::sync::atomic::AtomicBool,
     /// Recent reranker decisions: (reading, left context, candidates) -> index.
-    rerank_cache: Mutex<Vec<(String, String, Vec<String>, Option<usize>)>>,
+    rerank: Mutex<RerankState>,
+    /// Signalled when a reranker run finishes (see `cached_choice`).
+    rerank_done: std::sync::Condvar,
 }
+
+/// Reranker key: (reading, left context, candidate surfaces).
+type RerankKey = (String, String, Vec<String>);
+
+#[derive(Default)]
+struct RerankState {
+    /// Recent decisions, oldest first.
+    cache: Vec<(RerankKey, Option<usize>)>,
+    /// Runs in progress on some thread.
+    running: Vec<RerankKey>,
+}
+
+/// How long a conversion waits for another thread's identical reranker run
+/// before running it itself.
+const RERANK_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 const RERANK_CACHE: usize = 16;
 
@@ -176,7 +193,8 @@ impl Converter {
             number_pos,
             rerank_on: std::sync::atomic::AtomicBool::new(true),
             learning_on: std::sync::atomic::AtomicBool::new(true),
-            rerank_cache: Mutex::new(Vec::new()) }
+            rerank: Mutex::new(RerankState::default()),
+            rerank_done: std::sync::Condvar::new() }
     }
 
     pub fn with_history(self, h: UserHistory) -> Self {
@@ -426,22 +444,48 @@ impl Converter {
         res: &[Conversion],
         surfaces: Vec<String>,
     ) -> Option<usize> {
-        let lock = || self.rerank_cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hit) = lock()
-            .iter()
-            .find(|(t, l, s, _)| t == text && l == left_context && *s == surfaces)
-            .map(|e| e.3)
-        {
-            return hit;
+        let key: RerankKey = (text.to_string(), left_context.to_string(), surfaces);
+        let mut st = self.rerank.lock().unwrap_or_else(|e| e.into_inner());
+        // The same run already in progress (the live conversion worker, when
+        // Space follows the last key): wait for it rather than run the model
+        // twice at once, which would slow both down.
+        let deadline = std::time::Instant::now() + RERANK_WAIT;
+        loop {
+            if let Some(hit) = st.cache.iter().find(|(k, _)| *k == key).map(|e| e.1) {
+                return hit;
+            }
+            let now = std::time::Instant::now();
+            if !st.running.contains(&key) || now >= deadline {
+                break;
+            }
+            st = self.rerank_done.wait_timeout(st, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
         }
-        // Not holding the lock while the model runs.
+        st.running.push(key.clone());
+        drop(st);
+        // Not holding the lock while the model runs. A panic still clears the
+        // running entry, so waiters don't stall.
+        struct Done<'a>(&'a Converter, &'a RerankKey, Option<Option<usize>>);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                let mut st = self.0.rerank.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(pos) = st.running.iter().position(|k| k == self.1) {
+                    st.running.swap_remove(pos);
+                }
+                if let Some(choice) = self.2 {
+                    let (t, l, _) = self.1;
+                    st.cache.retain(|((ct, cl, _), _)| !(ct == t && cl == l));
+                    st.cache.push((self.1.clone(), choice));
+                    if st.cache.len() > RERANK_CACHE {
+                        st.cache.remove(0);
+                    }
+                }
+                drop(st);
+                self.0.rerank_done.notify_all();
+            }
+        }
+        let mut done = Done(self, &key, None);
         let choice = r.choose(text, left_context, res);
-        let mut cache = lock();
-        cache.retain(|(t, l, _, _)| !(t == text && l == left_context));
-        cache.push((text.to_string(), left_context.to_string(), surfaces, choice));
-        if cache.len() > RERANK_CACHE {
-            cache.remove(0);
-        }
+        done.2 = Some(choice);
         choice
     }
 
