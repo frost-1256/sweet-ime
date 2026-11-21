@@ -154,6 +154,23 @@ struct State {
     visible: bool,
     /// Called with the absolute candidate index when a row is clicked.
     on_click: Option<std::rc::Rc<dyn Fn(usize)>>,
+    /// Called with (reading, surface) when a background live conversion
+    /// result arrives.
+    on_live: Option<std::rc::Rc<dyn Fn(String, String)>>,
+}
+
+/// Results from the live-conversion worker, keyed by window handle.
+static LIVE_MAILBOX: std::sync::Mutex<Vec<(isize, String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Delivers a live conversion result to the window `hwnd` (any thread).
+pub fn post_live(hwnd: isize, reading: String, surface: String) {
+    let mut m = LIVE_MAILBOX.lock().unwrap_or_else(|e| e.into_inner());
+    m.retain(|(h, _, _)| *h != hwnd);
+    m.push((hwnd, reading, surface));
+    drop(m);
+    unsafe {
+        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_LIVE, WPARAM(0), LPARAM(0));
+    }
 }
 
 impl State {
@@ -263,6 +280,7 @@ impl CandidateWindow {
                 shown_at: Instant::now(),
                 visible: false,
                 on_click: None,
+                on_live: None,
             };
             STATES.with(|s| s.borrow_mut().push((hwnd.0 as isize, Box::new(state))));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
@@ -342,6 +360,16 @@ impl CandidateWindow {
     /// Sets the handler for clicks on candidate rows.
     pub fn set_on_click(&self, f: impl Fn(usize) + 'static) {
         with_state(self.hwnd, |st| st.on_click = Some(std::rc::Rc::new(f)));
+    }
+
+    /// Sets the handler for background live conversion results.
+    pub fn set_on_live(&self, f: impl Fn(String, String) + 'static) {
+        with_state(self.hwnd, |st| st.on_live = Some(std::rc::Rc::new(f)));
+    }
+
+    /// Raw window handle, for [`post_live`] from other threads.
+    pub fn raw(&self) -> isize {
+        self.hwnd.0 as isize
     }
 
     /// Runs from the message loop so activation itself stays fast.
@@ -457,6 +485,7 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
 }
 
 const WM_APP_WARM_UP: u32 = WM_APP + 1;
+const WM_APP_LIVE: u32 = WM_APP + 2;
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
@@ -488,6 +517,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 .flatten();
                 if let Some((f, index)) = hit {
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(index)));
+                }
+                LRESULT(0)
+            }
+            WM_APP_LIVE => {
+                let item = {
+                    let mut m = LIVE_MAILBOX.lock().unwrap_or_else(|e| e.into_inner());
+                    m.iter().position(|(h, _, _)| *h == hwnd.0 as isize).map(|i| m.remove(i))
+                };
+                let handler = with_state(hwnd, |st| st.on_live.clone()).flatten();
+                if let (Some((_, reading, surface)), Some(f)) = (item, handler) {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(reading, surface)));
                 }
                 LRESULT(0)
             }

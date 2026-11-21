@@ -359,6 +359,30 @@ fn main() -> Result<()> {
             println!("     round trip #{run} {:.2?}", t.elapsed());
         }
 
+        // 1a. live conversion is refined in the background by the reranker
+        h.clear();
+        let t = std::time::Instant::now();
+        h.type_str("kinounokaiginoshiryou");
+        let typed = t.elapsed();
+        let lattice = h.text();
+        let mut refined = lattice.clone();
+        let t = std::time::Instant::now();
+        while t.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            pump();
+            refined = h.text();
+            if refined != lattice {
+                break;
+            }
+        }
+        println!("     typed in {typed:.2?}; lattice {lattice}; refined after {:.2?}: {refined}", t.elapsed());
+        check("live refined", refined.clone(), "昨日の会議の資料", &mut fails);
+        let t = std::time::Instant::now();
+        h.key(0x20);
+        println!("     space after refinement {:.2?}", t.elapsed());
+        check("space keeps refined", h.text(), "昨日の会議の資料", &mut fails);
+        h.key(0x0D);
+
         // 1b. Esc during live conversion reveals the reading
         h.clear();
         h.type_str("kyouhaiitenkidesune");

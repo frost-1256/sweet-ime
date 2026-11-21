@@ -10,6 +10,7 @@ mod display_attr;
 mod edit;
 mod keys;
 mod langbar;
+mod live;
 mod register;
 mod service;
 

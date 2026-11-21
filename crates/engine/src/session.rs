@@ -225,6 +225,27 @@ impl Session {
         Preedit { text, caret, spans }
     }
 
+    /// The reading and left context of the live conversion shown now, for
+    /// refining it in the background (e.g. with a neural reranker).
+    pub fn live_request(&self) -> Option<(String, String)> {
+        let c = &self.comp;
+        c.live.as_ref()?;
+        let settled = format!("{}{}", c.before, c.composer.kana());
+        Some((settled, self.left_context.clone()))
+    }
+
+    /// Replaces the live conversion with `surface` if `reading` is still what
+    /// is being typed. Returns whether the display changed.
+    pub fn apply_live(&mut self, reading: &str, surface: &str) -> bool {
+        let c = &mut self.comp;
+        let Some(live) = &c.live else { return false };
+        if live == surface || format!("{}{}", c.before, c.composer.kana()) != reading {
+            return false;
+        }
+        c.live = Some(surface.to_string());
+        true
+    }
+
     /// Recomputes live conversion and suggestions after a composing edit.
     fn refresh(&mut self, conv: &Converter) {
         let c = &mut self.comp;
@@ -342,11 +363,12 @@ impl Session {
             }
             Key::Enter => {
                 let kana = self.comp.kana();
-                let text = if self.comp.live.is_some() {
-                    // Commit what live conversion shows (pending romaji resolved).
-                    conv.convert(&kana, &[], 1).first().map(|r| r.surface()).unwrap_or(kana)
-                } else {
-                    kana
+                let text = match &self.comp.live {
+                    // Commit exactly what is shown.
+                    Some(live) if self.comp.composer.pending().is_empty() => live.clone(),
+                    // Pending romaji resolves to more kana: convert again.
+                    Some(_) => conv.convert(&kana, &[], 1).first().map(|r| r.surface()).unwrap_or(kana),
+                    None => kana,
                 };
                 self.commit.push_str(&text);
                 self.reset();

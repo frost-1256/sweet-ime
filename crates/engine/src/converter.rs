@@ -97,7 +97,11 @@ pub struct Converter {
     dict: Dictionary,
     reranker: Option<Box<dyn Reranker>>,
     history: Mutex<UserHistory>,
+    /// Recent reranker decisions: (reading, left context, candidates) -> index.
+    rerank_cache: Mutex<Vec<(String, String, Vec<String>, Option<usize>)>>,
 }
+
+const RERANK_CACHE: usize = 16;
 
 fn is_kana(c: char) -> bool {
     matches!(c, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー' | 'ゝ' | 'ゞ')
@@ -105,7 +109,7 @@ fn is_kana(c: char) -> bool {
 
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
-        Self { dict, reranker: None, history: Mutex::new(UserHistory::new()) }
+        Self { dict, reranker: None, history: Mutex::new(UserHistory::new()), rerank_cache: Mutex::new(Vec::new()) }
     }
 
     pub fn with_history(self, h: UserHistory) -> Self {
@@ -200,7 +204,8 @@ impl Converter {
                 return res;
             }
             if res.len() > 1 {
-                if let Some(i) = r.choose(text, left_context, &res) {
+                let surfaces: Vec<String> = res.iter().map(|c| c.surface()).collect();
+                if let Some(i) = self.cached_choice(r.as_ref(), text, left_context, &res, surfaces) {
                     if i < res.len() {
                         let c = res.remove(i);
                         res.insert(0, c);
@@ -209,6 +214,35 @@ impl Converter {
             }
         }
         res
+    }
+
+    /// `Reranker::choose`, memoized so that a result computed in the
+    /// background (live conversion) makes the following Space instant.
+    fn cached_choice(
+        &self,
+        r: &dyn Reranker,
+        text: &str,
+        left_context: &str,
+        res: &[Conversion],
+        surfaces: Vec<String>,
+    ) -> Option<usize> {
+        let lock = || self.rerank_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = lock()
+            .iter()
+            .find(|(t, l, s, _)| t == text && l == left_context && *s == surfaces)
+            .map(|e| e.3)
+        {
+            return hit;
+        }
+        // Not holding the lock while the model runs.
+        let choice = r.choose(text, left_context, res);
+        let mut cache = lock();
+        cache.retain(|(t, l, _, _)| !(t == text && l == left_context));
+        cache.push((text.to_string(), left_context.to_string(), surfaces, choice));
+        if cache.len() > RERANK_CACHE {
+            cache.remove(0);
+        }
+        choice
     }
 
     pub fn dictionary(&self) -> &Dictionary {

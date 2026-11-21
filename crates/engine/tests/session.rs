@@ -180,3 +180,18 @@ fn click_selects_candidate() {
     assert_eq!(s.take_commit(), first);
     assert!(!s.select_candidate(&c, 0));
 }
+
+#[test]
+fn live_refinement_applies_only_to_current_reading() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    s.options.suggestions = false;
+    type_str(&mut s, &c, "kinounokaigi");
+    let (reading, _) = s.live_request().expect("live");
+    assert_eq!(reading, "きのうのかいぎ");
+    assert!(!s.apply_live("ちがうよみ", "違う"));
+    assert!(s.apply_live(&reading, "昨日の会議"));
+    assert_eq!(s.preedit().text, "昨日の会議");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "昨日の会議");
+}

@@ -8,12 +8,15 @@ A Japanese input method written from scratch in Rust.
 - **Neural reranking**: an optional zenz (GPT-2) model reranks the top
   lattice candidates using the text before the cursor. It runs natively
   with AVX2 kernels and tree attention over a shared KV cache, in about
-  15–25 ms.
-- **Windows**: a TSF text service for both 64-bit and 32-bit applications,
-  with a Direct2D candidate window that follows light/dark mode and the
-  accent color.
-- **Features**: live conversion, predictive suggestions, per-user learning,
-  bunsetsu resizing, and F6–F10 transliteration.
+  15–25 ms. During live conversion it runs on a background thread, so
+  typing never waits for it.
+- **Windows**: a TSF text service for both 64-bit and 32-bit applications.
+  It has a Direct2D candidate window that follows light/dark mode and the
+  accent color and accepts mouse clicks, plus a taskbar input mode
+  indicator ("あ" / "A").
+- **Features**: live conversion, predictive suggestions (including
+  mid-sentence), per-user learning, bunsetsu resizing, and F6–F10
+  transliteration.
 
 ## Accuracy
 

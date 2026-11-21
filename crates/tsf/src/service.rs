@@ -177,6 +177,41 @@ impl TextService_Impl {
         matches!(key, sweet_engine::Key::Char(_) | sweet_engine::Key::Space)
     }
 
+    /// Starts refining the live conversion in the background (reranker only).
+    fn request_live_refinement(&self) {
+        let Some(conv) = crate::converter() else { return };
+        if !conv.has_reranker() {
+            return;
+        }
+        let st = self.st.borrow();
+        let (Some((reading, left_context)), Some(w)) = (st.session.live_request(), &st.window) else { return };
+        let hwnd = w.raw();
+        let r2 = reading.clone();
+        crate::live::submit(crate::live::Job {
+            reading,
+            left_context,
+            done: Box::new(move |surface| crate::candidate_window::post_live(hwnd, r2, surface)),
+        });
+    }
+
+    /// A background live conversion result arrived (UI thread).
+    fn on_live_result(&self, reading: String, surface: String) {
+        let _ = crate::guard(|| {
+            let Ok(mut st) = self.st.try_borrow_mut() else { return Ok(()) };
+            if !st.session.apply_live(&reading, &surface) {
+                return Ok(());
+            }
+            let (ctx, tid) = (st.ctx.clone(), st.tid);
+            drop(st);
+            if let Some(ctx) = ctx {
+                let this: ComObject<TextService> = self.to_object();
+                let ctx2 = ctx.clone();
+                edit::request_any(&ctx, tid, move |ec| update_document(&this, ec, &ctx2))?;
+            }
+            Ok(())
+        });
+    }
+
     /// A candidate row was clicked.
     fn on_candidate_click(&self, index: usize) {
         let _ = crate::guard(|| {
@@ -404,6 +439,8 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                         // drops the window, which breaks the cycle.
                         let this: ComObject<TextService> = self.to_object();
                         w.set_on_click(move |i| this.on_candidate_click(i));
+                        let this: ComObject<TextService> = self.to_object();
+                        w.set_on_live(move |r, s| this.on_live_result(r, s));
                     }
                 }
             }
@@ -463,6 +500,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             let consumed = self.st.borrow_mut().session.handle(conv, key);
             if consumed {
                 self.update(&ctx)?;
+                self.request_live_refinement();
             }
             Ok(BOOL(consumed as i32))
         })
