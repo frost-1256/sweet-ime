@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
-use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Stroke, Vec2};
+use sweet_ui::eframe;
+use eframe::egui::{self, Color32, RichText, Vec2};
+use sweet_ui::{card, card_frame, toggle};
 use sweet_engine::learning::Learned;
 use sweet_engine::{Options, UserHistory, paths};
 
@@ -68,46 +70,10 @@ const MODELS: [(&str, &str); 2] = [
     ("Miwa-Keita/zenz-v3.1-small", "small(約 380 MB・高精度)"),
 ];
 
-fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    // One Japanese font for everything (mixing a Latin font gives uneven
-    // baselines), then a fallback.
-    let candidates: [(&str, &str, u32); 2] = [
-        ("yugothic", r"C:\Windows\Fonts\YuGothM.ttc", 0),
-        ("meiryo", r"C:\Windows\Fonts\meiryo.ttc", 0),
-    ];
-    let mut loaded = Vec::new();
-    for (name, path, index) in candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            let mut data = egui::FontData::from_owned(bytes);
-            data.index = index;
-            // Japanese fonts have a tall ascent; nudge glyphs down so text
-            // is centred in buttons.
-            data.tweak.y_offset_factor = 0.12;
-            fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(data));
-            loaded.push(name.to_owned());
-        }
-    }
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        let list = fonts.families.entry(family).or_default();
-        for (i, name) in loaded.iter().enumerate() {
-            list.insert(i, name.clone());
-        }
-    }
-    ctx.set_fonts(fonts);
-}
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        install_fonts(&cc.egui_ctx);
-        cc.egui_ctx.all_styles_mut(|s| {
-            s.spacing.item_spacing = Vec2::new(10.0, 10.0);
-            s.spacing.button_padding = Vec2::new(14.0, 6.0);
-            s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
-            s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
-            s.text_styles.insert(egui::TextStyle::Heading, egui::FontId::proportional(26.0));
-            s.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
-        });
+        sweet_ui::setup(&cc.egui_ctx);
         let history = paths::history_file().map(UserHistory::with_file);
         let page = match std::env::args().skip_while(|a| a != "--page").nth(1).as_deref() {
             Some("neural") => Page::Neural,
@@ -144,56 +110,6 @@ impl App {
     }
 }
 
-/// A Windows 11 style on/off switch.
-fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    let size = Vec2::new(40.0, 20.0);
-    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if response.clicked() {
-        *on = !*on;
-        response.mark_changed();
-    }
-    let t = ui.ctx().animate_bool_responsive(response.id, *on);
-    let accent = ui.visuals().selection.bg_fill;
-    let off_stroke = ui.visuals().widgets.inactive.fg_stroke.color;
-    let radius = rect.height() / 2.0;
-    let painter = ui.painter();
-    if *on {
-        painter.rect_filled(rect, radius, accent);
-    } else {
-        painter.rect_stroke(rect, radius, Stroke::new(1.0, off_stroke), egui::StrokeKind::Inside);
-    }
-    let knob_r = if *on { 6.0 } else { 5.0 } + if response.hovered() { 1.0 } else { 0.0 };
-    let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
-    let knob = if *on { Color32::WHITE } else { off_stroke };
-    painter.circle_filled(egui::pos2(x, rect.center().y), knob_r, knob);
-    response
-}
-
-/// A settings card: title and description on the left, `control` on the right.
-fn card(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
-    card_frame(ui).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.set_max_width((ui.available_width() - 120.0).max(200.0));
-                ui.label(RichText::new(title).size(15.5));
-                if !desc.is_empty() {
-                    ui.label(RichText::new(desc).small().weak());
-                }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
-        });
-    });
-}
-
-fn card_frame(ui: &egui::Ui) -> Frame {
-    let v = ui.visuals();
-    Frame::new()
-        .fill(v.faint_bg_color)
-        .stroke(Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(18, 14))
-}
 
 fn human_size(bytes: u64) -> String {
     format!("{:.0} MB", bytes as f64 / 1_000_000.0)
@@ -276,7 +192,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(14.0);
-                ui.label(RichText::new(self.page.label()).size(26.0).strong());
+                sweet_ui::title(ui, self.page.label());
                 ui.add_space(6.0);
                 match self.page {
                     Page::Input => self.input_page(ui),

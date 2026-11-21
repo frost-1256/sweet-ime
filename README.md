@@ -37,23 +37,30 @@ Requirements:
 - The `i686-pc-windows-msvc` target, for the 32-bit DLL
 - The Mozc OSS dictionary in `third_party/mozc-data`
 
-To stage a build into `dist\`, run:
+To build, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
+This stages the files in `dist\` and creates the single-file installer
+`out\SweetIME-Setup.exe` (about 28 MB).
+
 ## Install
 
-Run the installer from an elevated PowerShell:
+Run `SweetIME-Setup.exe`. It asks for administrator rights, then:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -AddToLanguageList
-```
+- Installs to `%ProgramFiles%\SweetIME`
+- Registers the IME for 64-bit and 32-bit apps
+- Optionally adds it to the Japanese keyboard list, adds a Start menu
+  entry, and downloads the AI model
+- Registers it in Installed apps, where you can uninstall it
 
-This installs the files to `%ProgramFiles%\SweetIME`, registers both
-architectures with `regsvr32`, and adds the IME to the Japanese keyboard
-list. To remove it, run `scripts\uninstall.ps1`.
+`SweetIME-Setup.exe --preview` shows the screens without changing
+anything.
+
+For development, `scripts\install.ps1 -AddToLanguageList` and
+`scripts\uninstall.ps1` do the same from an elevated PowerShell.
 
 ### Optional: neural reranking
 

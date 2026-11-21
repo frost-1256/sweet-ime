@@ -1817,11 +1817,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sweet-installer"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.9.1",
+ "sweet-ui",
+ "windows",
+]
+
+[[package]]
 name = "sweet-settings"
 version = "0.1.0"
 dependencies = [
- "eframe",
  "sweet-engine",
+ "sweet-ui",
 ]
 
 [[package]]
@@ -1833,6 +1842,13 @@ dependencies = [
  "windows",
  "windows-core",
  "windows-numerics",
+]
+
+[[package]]
+name = "sweet-ui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
 ]
 
 [[package]]

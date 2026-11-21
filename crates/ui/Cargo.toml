@@ -1,0 +1,9 @@
+[package]
+name = "sweet-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared look for Sweet IME's settings app and installer"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }

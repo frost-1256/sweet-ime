@@ -19,7 +19,7 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 
 Push-Location $root
 try {
-    cargo build --release -p sweet-tsf -p sweet-dictc -p sweet-zenz -p sweet-settings --bins
+    cargo build --release -p sweet-tsf -p sweet-dictc -p sweet-zenz -p sweet-settings -p sweet-installer --bins
     if ($LASTEXITCODE) { throw 'x64 build failed' }
     cargo build --release -p sweet-tsf --target i686-pc-windows-msvc
     if ($LASTEXITCODE) { throw 'x86 build failed' }
@@ -39,6 +39,14 @@ try {
 
     Get-ChildItem -Recurse $dist | Where-Object { -not $_.PSIsContainer } |
         Format-Table FullName, Length -AutoSize
+
+    # Single-file graphical installer.
+    New-Item -ItemType Directory -Force out | Out-Null
+    & target\release\sweet-setup.exe --bundle $dist out\SweetIME-Setup.exe
+    if ($LASTEXITCODE) { throw 'installer bundle failed' }
+    & out\SweetIME-Setup.exe --verify | Out-Null
+    if ($LASTEXITCODE) { throw 'installer verification failed' }
+    Write-Host "Installer: $root\out\SweetIME-Setup.exe"
 } finally {
     Pop-Location
 }

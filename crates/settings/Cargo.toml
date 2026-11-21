@@ -11,4 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 sweet-engine = { path = "../engine" }
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+sweet-ui = { path = "../ui" }
