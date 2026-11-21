@@ -26,6 +26,7 @@ struct TextStore {
     sel: Cell<(i32, i32)>,
     sink: RefCell<Option<ITextStoreACPSink>>,
     reject_sync: Cell<bool>,
+    layout_missing: Cell<bool>,
     /// The "application" window the document lives in.
     hwnd: HWND,
 }
@@ -185,6 +186,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         Err(E_NOTIMPL.into())
     }
     fn GetTextExt(&self, _v: u32, s: i32, e: i32, rc: *mut RECT, clipped: *mut BOOL) -> Result<()> {
+        if self.layout_missing.get() {
+            return Err(windows_core::Error::from(TS_E_NOLAYOUT));
+        }
         unsafe {
             *rc = RECT { left: 200 + s * 16, top: 200, right: 200 + e * 16, bottom: 224 };
             *clipped = BOOL(0);
@@ -388,6 +392,7 @@ fn main() -> Result<()> {
             sel: Cell::new((0, 0)),
             sink: RefCell::new(None),
             reject_sync: Cell::new(false),
+            layout_missing: Cell::new(false),
             hwnd: app_hwnd,
         });
         let store_unk: IUnknown = store.to_interface();
@@ -528,6 +533,26 @@ fn main() -> Result<()> {
                 println!("ok   click: {before} -> {after}");
             }
         }
+
+        // Some editors publish text geometry only after the edit completes.
+        h.clear();
+        h.store.layout_missing.set(true);
+        h.type_str("kisha");
+        h.key(0x20);
+        h.key(0x20);
+        pump();
+        let hwnd = own_candidate_window().expect("candidate window in this process");
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
+        check("candidate hidden until layout", IsWindowVisible(hwnd).as_bool().to_string(), "false", &mut fails);
+        h.store.layout_missing.set(false);
+        let sink = h.store.sink.borrow().clone().unwrap();
+        sink.OnLayoutChange(TS_LC_CHANGE, 1)?;
+        pump();
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect)?;
+        let placed = IsWindowVisible(hwnd).as_bool() && (150..=205).contains(&rect.left) && rect.top == 228;
+        check("candidate follows delayed layout", placed.to_string(), "true", &mut fails);
+        h.key(0x0D);
 
         // 2c. suggestions while typing; Tab enters the list
         h.clear();

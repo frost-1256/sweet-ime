@@ -1,7 +1,8 @@
 //! Closure-backed `ITfEditSession`.
 
 use windows::Win32::UI::TextServices::{
-    ITfContext, ITfEditSession, ITfEditSession_Impl, TF_ES_ASYNCDONTCARE, TF_ES_READWRITE, TF_ES_SYNC,
+    ITfContext, ITfEditSession, ITfEditSession_Impl, TF_ES_ASYNC, TF_ES_ASYNCDONTCARE,
+    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC,
 };
 use windows_core::{Result, implement};
 
@@ -33,6 +34,14 @@ where
     F: Fn(u32) -> Result<()> + 'static,
 {
     request_flags(ctx, tid, f, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE)
+}
+
+/// Reads screen geometry after the host finishes its layout notification.
+pub fn request_layout<F>(ctx: &ITfContext, tid: u32, f: F) -> Result<()>
+where
+    F: Fn(u32) -> Result<()> + 'static,
+{
+    request_flags(ctx, tid, f, TF_ES_ASYNC | TF_ES_READ)
 }
 
 fn request_flags<F>(

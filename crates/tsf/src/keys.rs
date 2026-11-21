@@ -23,11 +23,16 @@ fn down(vk: u16) -> bool {
     unsafe { (GetKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
+pub fn alt_down(lparam: isize) -> bool {
+    // A host can forward WM_SYSKEYDOWN after its modifier state has changed.
+    lparam & (1 << 29) != 0 || down(VK_MENU.0)
+}
+
 /// Translates a key-down event. `composing`: whether a composition is in
 /// progress (selects state-specific bindings). Returns `None` for keys the
 /// IME does not handle.
 pub fn translate(keymap: &Keymap, vk: u32, lparam: isize, composing: bool) -> Option<Input> {
-    let chord = Chord { vk: vk as u16, ctrl: down(VK_CONTROL.0), shift: down(VK_SHIFT.0), alt: down(VK_MENU.0) };
+    let chord = Chord { vk: vk as u16, ctrl: down(VK_CONTROL.0), shift: down(VK_SHIFT.0), alt: alt_down(lparam) };
     if let Some(action) = keymap.lookup(chord, composing) {
         return Some(match action {
             Action::ImeToggle => Input::Toggle(Toggle::Toggle),
@@ -53,4 +58,18 @@ pub fn translate(keymap: &Keymap, vk: u32, lparam: isize, composing: bool) -> Op
         return None;
     }
     Some(Input::Key(Key::Char(c)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_key_context_preserves_alt_on_backquote() {
+        let map = Keymap::default();
+        let alt_context = 1 << 29;
+        for vk in [0xC0, 0x19, 0xF3, 0xF4] {
+            assert!(matches!(translate(&map, vk, alt_context, false), Some(Input::Toggle(Toggle::Toggle))));
+        }
+    }
 }

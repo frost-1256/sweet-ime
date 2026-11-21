@@ -14,6 +14,7 @@ use windows::Win32::UI::TextServices::{
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
     ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
+    ITfContextView, ITfTextLayoutSink, ITfTextLayoutSink_Impl, TfLayoutCode, TF_LC_CHANGE,
     ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, TF_TMF_IMMERSIVEMODE,
     TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_MOD_ALT, TF_MOD_CONTROL, TF_MOD_SHIFT, TF_PRESERVEDKEY, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
     TF_SELECTIONSTYLE,
@@ -24,6 +25,7 @@ use crate::candidate_window::CandidateWindow;
 use crate::keys::{self, Input, Toggle};
 use crate::mode_indicator::ModeIndicator;
 use crate::langbar::ModeButton;
+use crate::terminal_keys::TerminalHotkey;
 use crate::{GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED, GUID_ATTR_INPUT, display_attr, edit};
 
 #[derive(Default)]
@@ -31,6 +33,7 @@ struct State {
     thread_mgr: Option<ITfThreadMgr>,
     tid: u32,
     focus_cookie: Option<u32>,
+    thread_focused: bool,
     composition: Option<ITfComposition>,
     session: Session,
     window: Option<CandidateWindow>,
@@ -38,6 +41,8 @@ struct State {
     atoms: [i32; 3],
     /// Context of the last key event (target for mouse selections).
     ctx: Option<ITfContext>,
+    /// Context subscription for positioning candidates after layout.
+    layout_sink: Option<(ITfSource, u32)>,
     /// Taskbar input mode indicator.
     mode_button: Option<ComObject<ModeButton>>,
     /// "あ" / "A" badge near the caret.
@@ -49,6 +54,7 @@ struct State {
     openclose_sink: Option<(ITfSource, u32)>,
     /// Registered preserved keys for IME mode changes.
     preserved: Vec<(GUID, TF_PRESERVEDKEY, Toggle)>,
+    terminal_hotkey: Option<TerminalHotkey>,
 }
 
 /// GUID of the `i`-th preserved key.
@@ -62,6 +68,7 @@ pub(crate) fn preserved_guid(i: usize) -> GUID {
     ITfKeyEventSink,
     ITfCompositionSink,
     ITfThreadFocusSink,
+    ITfTextLayoutSink,
     ITfDisplayAttributeProvider,
     ITfCompartmentEventSink,
     ITfFnConfigure,
@@ -129,6 +136,28 @@ fn set_selection(ctx: &ITfContext, ec: u32, range: &ITfRange) -> Result<()> {
 }
 
 impl TextService_Impl {
+    fn track_context(&self, ctx: &ITfContext) {
+        let previous = {
+            let mut st = self.st.borrow_mut();
+            if st.ctx.as_ref() == Some(ctx) {
+                return;
+            }
+            st.ctx = Some(ctx.clone());
+            st.layout_sink.take()
+        };
+        unsafe {
+            if let Some((source, cookie)) = previous {
+                let _ = source.UnadviseSink(cookie);
+            }
+            if let Ok(source) = ctx.cast::<ITfSource>() {
+                let sink: ITfTextLayoutSink = self.to_interface();
+                if let Ok(cookie) = source.AdviseSink(&ITfTextLayoutSink::IID, &sink) {
+                    self.st.borrow_mut().layout_sink = Some((source, cookie));
+                }
+            }
+        }
+    }
+
     fn is_open(&self) -> bool {
         let st = self.st.borrow();
         let Some(tm) = &st.thread_mgr else { return false };
@@ -291,6 +320,26 @@ impl TextService_Impl {
             return true;
         }
         matches!(key, sweet_engine::Key::Char(_) | sweet_engine::Key::Space)
+    }
+
+    fn terminal_toggle(&self, vk: u32, lparam: isize) -> bool {
+        let Ok(st) = self.st.try_borrow() else { return false };
+        let Some(tm) = st.thread_mgr.clone() else { return false };
+        drop(st);
+        let owns_input = unsafe {
+            tm.IsThreadFocus().is_ok_and(|focused| focused.as_bool())
+                && tm.cast::<ITfKeystrokeMgr>().and_then(|km| km.GetForeground())
+                    .is_ok_and(|id| id == crate::CLSID_SWEET_IME)
+        };
+        if !owns_input {
+            return false;
+        }
+        let Some(Input::Toggle(toggle)) = self.translate(vk, lparam) else { return false };
+        // Eat autorepeat without switching back on every repeat.
+        if lparam & (1 << 30) == 0 {
+            self.handle_toggle(None, toggle);
+        }
+        true
     }
 
     /// Starts refining the live conversion in the background (reranker only).
@@ -466,7 +515,6 @@ fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> 
         let text: Vec<u16> = pre.text.encode_utf16().collect();
         range.SetText(ec, 0, &text)?;
         let _ = attr_prop.Clear(ec, &range);
-        let mut focused: Option<ITfRange> = None;
         for &(s, e, attr) in &pre.spans {
             let r = sub_range(&range, ec, u16_at(&pre.text, s), u16_at(&pre.text, e))?;
             let atom = match attr {
@@ -475,45 +523,55 @@ fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> 
                 SpanAttr::Focused => st.atoms[2],
             };
             let _ = attr_prop.SetValue(ec, &r, &VARIANT::from(atom));
-            if attr == SpanAttr::Focused {
-                focused = Some(r);
-            }
         }
         let caret = u16_at(&pre.text, pre.caret);
         let caret_range = sub_range(&range, ec, caret, caret)?;
         set_selection(ctx, ec, &caret_range)?;
 
-        match st.session.candidates() {
-            Some(list) => {
-                let target = focused.unwrap_or(range);
-                let mut rc = RECT::default();
-                let mut clipped = BOOL(0);
-                if let Ok(view) = ctx.GetActiveView() {
-                    let _ = view.GetTextExt(ec, &target, &mut rc, &mut clipped);
-                }
-                // Own the window by the application window holding the text.
-                let owner = ctx
-                    .GetActiveView()
-                    .and_then(|v| v.GetWnd())
-                    .ok()
-                    .filter(|h| !h.is_invalid())
-                    .or_else(|| Some(GetFocus()).filter(|h| !h.is_invalid()));
-                if st.window.is_none() {
-                    st.window = make_window(this, owner);
-                }
-                if let Some(w) = &st.window {
-                    if let Some(o) = owner {
-                        w.set_owner(o);
-                    }
-                    w.show(&list, rc);
-                }
-            }
-            None => {
-                if let Some(w) = &st.window {
-                    w.hide();
-                }
-            }
+        refresh_candidates(this, st, ec, ctx)?;
+    }
+    Ok(())
+}
+
+fn refresh_candidates(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
+    let (Some(list), Some(comp)) = (st.session.candidates(), &st.composition) else {
+        if let Some(w) = &st.window {
+            w.hide();
         }
+        return Ok(());
+    };
+    let range = unsafe { comp.GetRange()? };
+    let pre = st.session.preedit();
+    let target = pre.spans.iter().find(|span| span.2 == SpanAttr::Focused)
+        .and_then(|&(start, end, _)| sub_range(&range, ec, u16_at(&pre.text, start), u16_at(&pre.text, end)).ok());
+    let caret = u16_at(&pre.text, pre.caret);
+    let anchor = unsafe {
+        ctx.GetActiveView().ok().and_then(|view| {
+            let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
+            let bounds = range_bounds(&view, ec, target.as_ref().unwrap_or(&range), owner)
+                .or_else(|| {
+                    let selection = sub_range(&range, ec, caret, caret).ok()?;
+                    range_bounds(&view, ec, &selection, owner)
+                });
+            bounds.map(|rc| (rc, owner))
+        }).or_else(gui_caret)
+    };
+    let Some((rc, owner)) = anchor else {
+        // The host may not have laid out the composition yet.
+        if let Some(w) = &st.window {
+            w.hide();
+        }
+        return Ok(());
+    };
+    let owner = owner.or_else(|| Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
+    if st.window.is_none() {
+        st.window = make_window(this, owner);
+    }
+    if let Some(w) = &st.window {
+        if let Some(owner) = owner {
+            w.set_owner(owner);
+        }
+        w.show(&list, rc);
     }
     Ok(())
 }
@@ -526,6 +584,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
     fn Deactivate(&self) -> Result<()> {
         crate::guard(|| {
             let mut st = self.st.borrow_mut();
+            st.terminal_hotkey = None;
             if let Some(button) = st.mode_button.take() {
                 if let Some(mgr) = st.thread_mgr.as_ref().and_then(|tm| tm.cast::<ITfLangBarItemMgr>().ok()) {
                     let item: ITfLangBarItem = button.to_interface();
@@ -538,6 +597,9 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             if let Some(tm) = st.thread_mgr.take() {
                 unsafe {
                     if let Ok(km) = tm.cast::<ITfKeystrokeMgr>() {
+                        for (g, k, _) in st.preserved.drain(..) {
+                            let _ = km.UnpreserveKey(&g, &k);
+                        }
                         let _ = km.UnadviseKeyEventSink(st.tid);
                     }
                     if let (Some(cookie), Ok(src)) = (st.focus_cookie.take(), tm.cast::<ITfSource>()) {
@@ -545,12 +607,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                     }
                 }
             }
-            if let Some(km) = st.thread_mgr.as_ref().and_then(|tm| tm.cast::<ITfKeystrokeMgr>().ok()) {
-                for (g, k, _) in st.preserved.drain(..) {
-                    unsafe {
-                        let _ = km.UnpreserveKey(&g, &k);
-                    }
-                }
+            if let Some((source, cookie)) = st.layout_sink.take() {
+                unsafe { let _ = source.UnadviseSink(cookie); }
             }
             if let Some((src, cookie)) = st.openclose_sink.take() {
                 unsafe {
@@ -575,6 +633,7 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 let mut st = self.st.borrow_mut();
                 st.thread_mgr = Some(tm.clone());
                 st.tid = tid;
+                st.thread_focused = true;
             }
             unsafe {
                 let km: ITfKeystrokeMgr = tm.cast()?;
@@ -654,6 +713,9 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 }
             }
             self.update_preserved_keys();
+            let this: ComObject<TextService> = self.to_object();
+            let hotkey = TerminalHotkey::install(move |vk, lparam| this.terminal_toggle(vk, lparam));
+            self.st.borrow_mut().terminal_hotkey = hotkey;
             // Switched to Sweet IME (e.g. Win+Space): show the mode.
             self.show_mode_indicator(self.is_open());
             Ok(())
@@ -691,15 +753,20 @@ unsafe fn document_caret(ec: u32, ctx: &ITfContext) -> Option<(RECT, Option<HWND
         }
         let range = std::mem::ManuallyDrop::into_inner(std::mem::take(&mut sel[0].range))?;
         let view = ctx.GetActiveView().ok()?;
+        let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
+        Some((range_bounds(&view, ec, &range, owner)?, owner))
+    }
+}
+
+fn range_bounds(view: &ITfContextView, ec: u32, range: &ITfRange, owner: Option<HWND>) -> Option<RECT> {
+    unsafe {
         let mut rc = RECT::default();
         let mut clipped = BOOL(0);
-        view.GetTextExt(ec, &range, &mut rc, &mut clipped).ok()?;
-        if rc.left == 0 && rc.top == 0 && rc.right == 0 && rc.bottom == 0 {
+        view.GetTextExt(ec, range, &mut rc, &mut clipped).ok()?;
+        if clipped.as_bool() || rc.bottom <= rc.top || rc.right < rc.left {
             return None;
         }
-        let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
-        // Some documents report a bogus position before they have focus or
-        // layout; ignore one that is outside the window holding the text.
+        // Ignore bogus coordinates from hosts that have not laid out the text.
         if let Some(w) = owner {
             let mut wr = RECT::default();
             if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(w, &mut wr).is_ok()
@@ -708,7 +775,7 @@ unsafe fn document_caret(ec: u32, ctx: &ITfContext) -> Option<(RECT, Option<HWND
                 return None;
             }
         }
-        Some((rc, owner))
+        Some(rc)
     }
 }
 
@@ -765,7 +832,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             let Some(conv) = crate::converter() else { return Ok(BOOL(0)) };
             let ctx = pic.ok()?.clone();
-            self.st.borrow_mut().ctx = Some(ctx.clone());
+            self.track_context(&ctx);
             let consumed = self.st.borrow_mut().session.handle(conv, key);
             if consumed {
                 if let Some(i) = &self.st.borrow().indicator {
@@ -813,14 +880,46 @@ impl ITfCompositionSink_Impl for TextService_Impl {
     }
 }
 
+impl ITfTextLayoutSink_Impl for TextService_Impl {
+    fn OnLayoutChange(&self, pic: Ref<ITfContext>, code: TfLayoutCode, _view: Ref<ITfContextView>) -> Result<()> {
+        crate::guard(|| {
+            let Some(ctx) = pic.as_ref().filter(|_| code == TF_LC_CHANGE) else { return Ok(()) };
+            let Ok(st) = self.st.try_borrow() else { return Ok(()) };
+            if !st.thread_focused || st.ctx.as_ref() != Some(ctx) || st.session.candidates().is_none() {
+                return Ok(());
+            }
+            let tid = st.tid;
+            drop(st);
+            let this: ComObject<TextService> = self.to_object();
+            let target = ctx.clone();
+            let _ = edit::request_layout(ctx, tid, move |ec| {
+                if let Ok(mut st) = this.st.try_borrow_mut() {
+                    let current = st.thread_mgr.as_ref().and_then(|tm| unsafe {
+                        tm.GetFocus().and_then(|doc| doc.GetTop()).ok()
+                    });
+                    if st.thread_focused && current.as_ref() == Some(&target) && st.ctx.as_ref() == Some(&target) {
+                        refresh_candidates(&this, &mut st, ec, &target)?;
+                    }
+                }
+                Ok(())
+            });
+            Ok(())
+        })
+    }
+}
+
 impl ITfThreadFocusSink_Impl for TextService_Impl {
     fn OnSetThreadFocus(&self) -> Result<()> {
+        if let Ok(mut st) = self.st.try_borrow_mut() {
+            st.thread_focused = true;
+        }
         self.reload_settings_if_changed();
         Ok(())
     }
 
     fn OnKillThreadFocus(&self) -> Result<()> {
-        if let Ok(st) = self.st.try_borrow() {
+        if let Ok(mut st) = self.st.try_borrow_mut() {
+            st.thread_focused = false;
             if let Some(w) = &st.window {
                 w.hide();
             }
