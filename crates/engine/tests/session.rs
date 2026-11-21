@@ -642,3 +642,43 @@ fn english_words_typed_by_spelling_show_as_words() {
         assert!(i < 5 || s.preedit().text.starts_with("今日は"), "{}", s.preedit().text);
     }
 }
+
+#[test]
+fn special_readings_offer_dates_emoji_and_arithmetic() {
+    let Some(c) = converter() else { return };
+    // The candidate list for `typed` (Space twice) with `options`.
+    let list = |typed: &str, options: Options| {
+        let mut s = Session::new();
+        s.options = options;
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert!(s.handle(&c, Key::Space));
+        s.candidates().map(|l| l.items).unwrap_or_default()
+    };
+    let commit = |typed: &str, options: Options| {
+        let mut s = Session::new();
+        s.options = options;
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert!(s.handle(&c, Key::Enter));
+        s.take_commit()
+    };
+    let on = Options { live_conversion: false, suggestions: false, ..Options::default() };
+    // A date follows the dictionary's 今日 in the candidate list.
+    let today = list("kyou", on);
+    assert_eq!(today[0], "今日");
+    assert!(today[1].starts_with("20") && today[1].contains('/'), "{today:?}");
+    assert!(list("egao", on).contains(&"😊".to_string()));
+    // Arithmetic: Space gives the value; 123/456 types as 123・456.
+    assert_eq!(commit("1+2*3=", on), "7");
+    // ... and the value is the first prediction while typing.
+    let mut live = Session::new();
+    type_str(&mut live, &c, "123/456=");
+    assert_eq!(live.candidates().unwrap().items[0], "0.2697368421");
+
+    // Each can be turned off.
+    let off = Options { dates: false, emoji: false, calculator: false, ..on };
+    assert!(!list("kyou", off).iter().any(|c| c.contains('/')));
+    assert!(!list("egao", off).contains(&"😊".to_string()));
+    assert_ne!(commit("1+2*3=", off), "7");
+}

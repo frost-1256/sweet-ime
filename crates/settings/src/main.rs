@@ -299,6 +299,15 @@ impl App {
         card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
             changed |= toggle(ui, &mut self.opts.suggestions).changed();
         });
+        card(ui, "日付と時刻", "「きょう」「あした」で日付、「いま」で時刻を候補に出します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.dates).changed();
+        });
+        card(ui, "絵文字と顔文字", "「えがお」で 😊、「かお」で顔文字を候補に出します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.emoji).changed();
+        });
+        card(ui, "計算", "「1+2*3=」のように = で終わる式を打つと、答えを候補に出します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.calculator).changed();
+        });
         #[cfg(windows)]
         card(ui, "入力モードを表示", "IME のオン/オフを切り替えたとき、文字カーソルの近くに「あ」「A」を表示します。", |ui| {
             changed |= toggle(ui, &mut self.opts.mode_indicator).changed();

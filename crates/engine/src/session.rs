@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::converter::{Conversion, Converter};
-use crate::english;
+use crate::{english, special};
 use crate::romaji::{self, Composer};
 use crate::{typo, width};
 
@@ -95,11 +95,28 @@ pub struct Options {
     pub theme: crate::Theme,
     /// Look for a newer release on GitHub (settings app and sign-in).
     pub update_check: bool,
+    /// Offer dates and times for readings such as きょう and いま.
+    pub dates: bool,
+    /// Offer emoji and kaomoji for readings such as えがお and かお.
+    pub emoji: bool,
+    /// Offer the value of arithmetic typed with a trailing = (1+2=).
+    pub calculator: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { live_conversion: true, suggestions: true, neural: true, learning: true, mode_indicator: true, theme: crate::Theme::Default, update_check: true }
+        Self {
+            live_conversion: true,
+            suggestions: true,
+            neural: true,
+            learning: true,
+            mode_indicator: true,
+            theme: crate::Theme::Default,
+            update_check: true,
+            dates: true,
+            emoji: true,
+            calculator: true,
+        }
     }
 }
 
@@ -119,6 +136,9 @@ impl Options {
                 "mode_indicator" => o.mode_indicator = on,
                 "theme" => o.theme = crate::Theme::from_id(v).unwrap_or_default(),
                 "update_check" => o.update_check = on,
+                "dates" => o.dates = on,
+                "emoji" => o.emoji = on,
+                "calculator" => o.calculator = on,
                 _ => {}
             }
         }
@@ -137,6 +157,9 @@ impl Options {
              mode_indicator = {}
              theme = {}
              update_check = {}
+             dates = {}
+             emoji = {}
+             calculator = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -145,6 +168,9 @@ impl Options {
             b(self.mode_indicator),
             self.theme.id(),
             b(self.update_check),
+            b(self.dates),
+            b(self.emoji),
+            b(self.calculator),
         )
     }
 }
@@ -457,6 +483,11 @@ impl Session {
                 }
             };
         }
+        if suggest && self.options.calculator {
+            if let Some(value) = special::calculator_candidates(&settled).into_iter().next() {
+                c.suggestions.push(value);
+            }
+        }
         if suggest {
             let shown = c.live.as_ref().map_or(settled.as_str(), |live| live.surface.as_str());
             if let Some(fix) = correction.filter(|fix| fix.surface != shown) {
@@ -687,8 +718,32 @@ impl Session {
         }
     }
 
+    /// Dates, emoji and kaomoji for a segment reading (see [`crate::special`]).
+    fn special_candidates(&self, reading: &str) -> Vec<String> {
+        let mut v = Vec::new();
+        if self.options.dates {
+            v.extend(special::date_candidates(reading, special::DateTime::now()));
+        }
+        if self.options.emoji {
+            v.extend(special::emoji_candidates(reading));
+        }
+        v
+    }
+
     fn start_conversion(&mut self, conv: &Converter) {
         let kana = self.comp.kana();
+        if self.options.calculator {
+            let cands = special::calculator_candidates(&kana);
+            if !cands.is_empty() {
+                self.conv = Some(Converting {
+                    segs: vec![SegState { reading: kana, cands, expanded: true, selected: 0, predicted: true }],
+                    focus: 0,
+                    window: false,
+                    corrected: false,
+                });
+                return;
+            }
+        }
         if let Some(candidates) = self.comp.bundled_candidates(&kana) {
             self.conv = Some(Converting {
                 segs: vec![SegState {
@@ -736,8 +791,14 @@ impl Session {
         }
         let reading = correction.as_ref().map_or(kana.as_str(), |fix| fix.reading.as_str());
         let result = conv.convert_best(reading, &[], &self.left_context);
+        let mut segs = segs_from(result.first(), reading);
+        // A special reading (えがお) stays one segment so its candidates show.
+        if segs.len() > 1 && !self.special_candidates(reading).is_empty() {
+            let first = conv.segment_candidates(reading, 1).into_iter().next().unwrap_or_else(|| reading.to_string());
+            segs = vec![SegState { reading: reading.to_string(), cands: vec![first], expanded: false, selected: 0, predicted: false }];
+        }
         self.conv = Some(Converting {
-            segs: segs_from(result.first(), reading),
+            segs,
             focus: 0,
             window: false,
             corrected: correction.is_some(),
@@ -745,12 +806,23 @@ impl Session {
     }
 
     fn expand(&mut self, conv: &Converter) {
+        let special = {
+            let cv = self.conv.as_ref().unwrap();
+            self.special_candidates(&cv.segs[cv.focus].reading)
+        };
         let cv = self.conv.as_mut().unwrap();
         let s = &mut cv.segs[cv.focus];
         if s.expanded {
             return;
         }
         s.expanded = true;
+        let mut at = 1.min(s.cands.len());
+        for c in special {
+            if !s.cands.contains(&c) {
+                s.cands.insert(at, c);
+                at += 1;
+            }
+        }
         for c in conv.segment_candidates(&s.reading, 40) {
             if !s.cands.contains(&c) {
                 s.cands.push(c);
@@ -995,7 +1067,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);

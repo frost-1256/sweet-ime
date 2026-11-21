@@ -9,6 +9,7 @@ pub mod number;
 pub mod paths;
 pub mod romaji;
 pub mod session;
+pub mod special;
 pub mod theme;
 pub mod typo;
 pub mod user_dict;

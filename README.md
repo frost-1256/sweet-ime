@@ -208,6 +208,9 @@ neural = on            # rerank with the zenz model when installed
 learning = on          # learn from chosen candidates
 theme = default        # default, light, dark, sakura, matcha, midnight, lavender
 update_check = on      # look for new releases on GitHub
+dates = on             # きょう / いま -> dates and times
+emoji = on             # えがお -> 😊, かお -> kaomoji
+calculator = on        # 1+2*3= -> 7
 ```
 
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
