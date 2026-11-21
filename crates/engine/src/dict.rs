@@ -238,23 +238,34 @@ impl Dictionary {
     /// Words whose reading starts with `prefix` (for prediction), up to `limit`
     /// readings.
     pub fn predictive(&self, prefix: &str, limit: usize) -> Vec<(String, Entry<'_>)> {
+        let mut entries = Vec::new();
+        self.for_each_prediction(prefix, limit, |reading, entry| {
+            entries.push((reading.to_owned(), entry));
+        });
+        entries
+    }
+
+    pub(crate) fn for_each_prediction<'s>(
+        &'s self,
+        prefix: &str,
+        limit: usize,
+        mut visit: impl FnMut(&str, Entry<'s>),
+    ) {
         use fst::{IntoStreamer, Streamer};
         let mut upper = prefix.as_bytes().to_vec();
         upper.push(0xff);
         let mut stream = self.fst.range().ge(prefix).lt(upper).into_stream();
-        let mut res = Vec::new();
         let mut n = 0;
         while let Some((k, v)) = stream.next() {
-            let reading = String::from_utf8_lossy(k).into_owned();
+            let reading = String::from_utf8_lossy(k);
             for e in self.entries(v) {
-                res.push((reading.clone(), e));
+                visit(&reading, e);
             }
             n += 1;
             if n >= limit {
                 break;
             }
         }
-        res
     }
 }
 

@@ -59,15 +59,6 @@ fn register_class() {
     });
 }
 
-fn light_theme() -> bool {
-    crate::candidate_window::read_dword(
-        w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-        w!("AppsUseLightTheme"),
-    )
-    .unwrap_or(1)
-        != 0
-}
-
 fn blend(alpha: u8) -> BLENDFUNCTION {
     BLENDFUNCTION {
         BlendOp: AC_SRC_OVER as u8,
@@ -166,12 +157,9 @@ fn rounded_coverage(x: i32, y: i32, size: f32, r: f32, inset: f32) -> f32 {
 /// Renders the badge into a premultiplied 32-bit bitmap and puts it on the
 /// layered window at `pos`.
 fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()> {
-    let light = light_theme();
-    let (bg, border, fg): ([f32; 3], [f32; 3], [f32; 3]) = if light {
-        ([249.0, 249.0, 249.0], [200.0, 200.0, 200.0], [26.0, 26.0, 26.0])
-    } else {
-        ([44.0, 44.0, 44.0], [90.0, 90.0, 90.0], [255.0, 255.0, 255.0])
-    };
+    let c = crate::theme_colors();
+    let f = |v: sweet_engine::theme::Rgb| [v.0 as f32, v.1 as f32, v.2 as f32];
+    let (bg, border, fg) = (f(c.bg), f(c.badge_border), f(c.text));
     unsafe {
         let dc = CreateCompatibleDC(None);
         let bmi = BITMAPINFO {

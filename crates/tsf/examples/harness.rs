@@ -352,6 +352,14 @@ fn main() -> Result<()> {
     // Keep learning history out of the real profile.
     let appdata = std::env::temp_dir().join(format!("sweet-ime-harness-{}", std::process::id()));
     unsafe { std::env::set_var("APPDATA", &appdata) };
+    // Optional theme for screenshots (SWEET_HARNESS_THEME=sakura).
+    if let Ok(theme) = std::env::var("SWEET_HARNESS_THEME") {
+        let o = sweet_engine::Options {
+            theme: sweet_engine::Theme::from_id(&theme).expect("unknown SWEET_HARNESS_THEME"),
+            ..Default::default()
+        };
+        sweet_engine::paths::save_options(&o).expect("write config.txt");
+    }
     // Custom key bindings: Ctrl+Space toggles, 変換 converts while composing.
     let preserved = {
         use sweet_engine::keymap::{Action, Binding, Chord, When};

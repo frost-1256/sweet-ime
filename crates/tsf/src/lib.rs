@@ -110,10 +110,29 @@ pub(crate) fn launch_settings() {
 /// activated in an application.
 pub(crate) fn load_options() -> sweet_engine::Options {
     let o = sweet_engine::paths::load_options();
+    set_theme(o.theme);
     if let Some(c) = converter() {
         c.configure(o.neural, o.learning);
     }
     o
+}
+
+static THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn set_theme(t: sweet_engine::Theme) {
+    let i = sweet_engine::Theme::ALL.iter().position(|&x| x == t).unwrap_or(0);
+    THEME.store(i as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The theme from the last settings load.
+pub(crate) fn theme() -> sweet_engine::Theme {
+    let i = THEME.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    sweet_engine::Theme::ALL.get(i).copied().unwrap_or_default()
+}
+
+/// Colors of the current theme for the current Windows app theme.
+pub(crate) fn theme_colors() -> sweet_engine::theme::Colors {
+    theme().colors(candidate_window::system_light())
 }
 
 /// Modification times of the settings files; a change means the settings

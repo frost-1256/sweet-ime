@@ -7,6 +7,7 @@ use std::fs;
 use std::io::BufWriter;
 use std::path::Path;
 use sweet_engine::dict::{SourceEntry, TECH_TERMS, VRCHAT_TERMS, build};
+use sweet_engine::romaji;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -77,12 +78,19 @@ fn main() -> Result<()> {
                     continue;
                 }
                 let mut fields = line.split('\t');
-                let (Some(reading), Some(surface), Some(cost), None) =
-                    (fields.next(), fields.next(), fields.next(), fields.next())
+                let (Some(reading), Some(surface), Some(cost)) =
+                    (fields.next(), fields.next(), fields.next())
                 else {
                     bail!("{file}:{}: expected reading, surface and cost", i + 1);
                 };
-                entries.push(SourceEntry {
+                let kana = fields.next();
+                if fields.next().is_some() {
+                    bail!(
+                        "{file}:{}: expected at most one kana candidate per row",
+                        i + 1
+                    );
+                }
+                let entry = SourceEntry {
                     reading: reading.into(),
                     lid: noun as u16,
                     rid: noun as u16,
@@ -90,7 +98,23 @@ fn main() -> Result<()> {
                         .parse()
                         .with_context(|| format!("{file}:{}: invalid cost", i + 1))?,
                     surface: surface.into(),
-                });
+                };
+                if let Some(kana) = kana.filter(|s| !s.is_empty()) {
+                    let katakana = romaji::to_katakana(reading);
+                    if katakana != reading && katakana != kana {
+                        entries.push(SourceEntry {
+                            reading: katakana,
+                            ..entry.clone()
+                        });
+                    }
+                    if kana != reading {
+                        entries.push(SourceEntry {
+                            reading: kana.into(),
+                            ..entry.clone()
+                        });
+                    }
+                }
+                entries.push(entry);
             }
         }
     }

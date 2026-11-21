@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::converter::{Conversion, Converter};
-use crate::dict::TECH_TERMS;
+use crate::dict::{TECH_TERMS, VRCHAT_TERMS};
 use crate::romaji::{self, Composer};
 use crate::{typo, width};
 
@@ -91,11 +91,13 @@ pub struct Options {
     pub learning: bool,
     /// Show "あ" / "A" near the caret when the input mode changes.
     pub mode_indicator: bool,
+    /// Colors of the candidate window and the mode badge.
+    pub theme: crate::Theme,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { live_conversion: true, suggestions: true, neural: true, learning: true, mode_indicator: true }
+        Self { live_conversion: true, suggestions: true, neural: true, learning: true, mode_indicator: true, theme: crate::Theme::Default }
     }
 }
 
@@ -113,6 +115,7 @@ impl Options {
                 "neural" => o.neural = on,
                 "learning" => o.learning = on,
                 "mode_indicator" => o.mode_indicator = on,
+                "theme" => o.theme = crate::Theme::from_id(v).unwrap_or_default(),
                 _ => {}
             }
         }
@@ -129,12 +132,14 @@ impl Options {
              neural = {}
              learning = {}
              mode_indicator = {}
+             theme = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
             b(self.neural),
             b(self.learning),
             b(self.mode_indicator),
+            self.theme.id(),
         )
     }
 }
@@ -196,16 +201,28 @@ impl Composing {
         self.before.is_empty() && self.composer.is_empty() && self.after.is_empty()
     }
 
-    fn technical_spelling(&self, reading: &str) -> Option<&'static str> {
+    fn bundled_candidates(&self, reading: &str) -> Option<Vec<String>> {
         if !self.before.is_empty() || !self.after.is_empty() {
             return None;
         }
-        let surface = TECH_TERMS
+        let mut candidates = Vec::new();
+        for line in TECH_TERMS
             .lines()
+            .chain(VRCHAT_TERMS.lines())
             .filter(|line| !line.starts_with('#'))
-            .filter_map(|line| line.split('\t').nth(1))
-            .find(|surface| surface.eq_ignore_ascii_case(&self.raw))?;
-        (romaji::to_hiragana(&self.raw) == reading).then_some(surface)
+        {
+            let mut fields = line.split('\t').skip(1);
+            let Some(spelling) = fields.next().filter(|s| s.eq_ignore_ascii_case(&self.raw)) else {
+                continue;
+            };
+            let kana = fields.nth(1).filter(|s| !s.is_empty());
+            for surface in std::iter::once(spelling).chain(kana) {
+                if !candidates.iter().any(|c| c == surface) {
+                    candidates.push(surface.to_owned());
+                }
+            }
+        }
+        (!candidates.is_empty() && romaji::to_hiragana(&self.raw) == reading).then_some(candidates)
     }
 
     fn typo_input(&self, reading: &str) -> Option<&str> {
@@ -327,7 +344,11 @@ impl Session {
             return;
         }
         let settled = format!("{}{}", c.before, c.composer.kana());
-        let live = self.options.live_conversion && !c.live_off && c.after.is_empty() && !settled.is_empty();
+        let live = self.options.live_conversion
+            && !c.live_off
+            && c.after.is_empty()
+            && !settled.is_empty()
+            && !is_plain_interjection(&settled);
         let suggest = self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2;
         let unresolved = typo::has_unresolved_romaji(&settled);
         let mut correction = None;
@@ -580,11 +601,11 @@ impl Session {
 
     fn start_conversion(&mut self, conv: &Converter) {
         let kana = self.comp.kana();
-        if let Some(spelling) = self.comp.technical_spelling(&kana) {
+        if let Some(candidates) = self.comp.bundled_candidates(&kana) {
             self.conv = Some(Converting {
                 segs: vec![SegState {
                     reading: kana,
-                    cands: vec![spelling.to_string()],
+                    cands: candidates,
                     expanded: false,
                     selected: 0,
                     predicted: false,
@@ -802,6 +823,16 @@ impl Session {
     }
 }
 
+fn is_plain_interjection(reading: &str) -> bool {
+    // Keep standalone reactions intact in live conversion. Space still
+    // offers kanji for the same reading.
+    let reading = reading.trim_end_matches(['、', '。', '！', '？', '…', 'ー', '～']);
+    matches!(
+        reading,
+        "おお" | "おおっ" | "ああ" | "あっ" | "おっ" | "へえ" | "へぇ" | "うわ" | "うわっ" | "わあ"
+    )
+}
+
 fn segs_from(conv: Option<&Conversion>, kana: &str) -> Vec<SegState> {
     match conv {
         Some(c) if !c.segments.is_empty() => c
@@ -853,7 +884,9 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura };
         assert_eq!(Options::parse(&o.to_text()), o);
+        assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
+        assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);
     }
 }

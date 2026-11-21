@@ -100,6 +100,135 @@ fn lowercase_technical_terms_convert_to_their_canonical_spelling() {
 }
 
 #[test]
+fn technical_spellings_offer_ordered_kana_candidates() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    for (typed, expected) in [
+        ("nginx", ["Nginx", "ﾝｷﾞｯｸｽ", "エンジンエックス"]),
+        ("ieee", ["IEEE", "アイエエエ", "アイトリプルイー"]),
+        (
+            "kubectl",
+            ["kubectl", "キューブコントロール", "キューブシーティーエル"],
+        ),
+        ("sql", ["SQL", "エスキューエル", "シークェル"]),
+    ] {
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected[0]);
+        assert!(s.handle(&c, Key::Space));
+        let list = s.candidates().expect("technical spelling candidates");
+        assert_eq!(list.items[..expected.len()], expected, "{typed}");
+        assert_eq!(s.preedit().text, expected[1]);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected[1]);
+    }
+}
+
+#[test]
+fn technical_spellings_convert_from_kana_aliases() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    for (typed, expected) in [
+        ("ngikkusu", "Nginx"),
+        ("ンギックス", "Nginx"),
+        ("ﾝｷﾞｯｸｽ", "Nginx"),
+        ("ンギンクス", "Nginx"),
+        ("ennjinnekkusu", "Nginx"),
+        ("aieee", "IEEE"),
+        ("アイエエエ", "IEEE"),
+        ("しーくぇる", "SQL"),
+        ("ぽすぐれ", "PostgreSQL"),
+        ("クベコン", "kubectl"),
+    ] {
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+
+    for (key, kana) in [
+        (Key::ToKatakana, "ンギックス"),
+        (Key::ToHalfKatakana, "ﾝｷﾞｯｸｽ"),
+    ] {
+        type_str(&mut s, &c, "ngikkusu");
+        assert!(s.handle(&c, key));
+        assert_eq!(s.preedit().text, kana);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, "Nginx");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), "Nginx");
+    }
+}
+
+#[test]
+fn standalone_interjections_stay_in_hiragana_until_explicit_conversion() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    for (typed, expected) in [
+        ("oo", "おお"),
+        ("oo,", "おお、"),
+        ("oo!", "おお！"),
+        ("oo-", "おおー"),
+        ("aa", "ああ"),
+    ] {
+        type_str(&mut s, &c, typed);
+        assert_eq!(s.preedit().text, expected);
+        assert!(s.live_request().is_none());
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+
+    type_str(&mut s, &c, "oo");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Space));
+    let list = s.candidates().expect("explicit conversion candidates");
+    assert!(list.items.iter().any(|item| item == "大"));
+    assert!(s.select_candidate(
+        &c,
+        list.items.iter().position(|item| item == "おお").unwrap()
+    ));
+    assert_eq!(s.take_commit(), "おお");
+
+    type_str(&mut s, &c, "ookii");
+    assert_eq!(s.preedit().text, "大きい");
+}
+
+#[test]
+fn vrchat_terms_convert_from_short_readings_and_ascii() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    for (typed, expected) in [
+        ("funyaosu", "ふにゃオス"),
+        ("fizubo", "PhysBone"),
+        ("mojuaba", "Modular Avatar"),
+        ("abaopu", "Avatar Optimizer"),
+        ("physbone", "PhysBone"),
+        ("vrchat", "VRChat"),
+        ("liltoon", "lilToon"),
+    ] {
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+
+    type_str(&mut s, &c, "fizubowoireru");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.preedit().text.starts_with("PhysBoneを"));
+    assert!(s.handle(&c, Key::Enter));
+    assert!(s.take_commit().starts_with("PhysBoneを"));
+
+    type_str(&mut s, &c, "buicha");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Space));
+    let list = s.candidates().expect("VRChat conversion candidates");
+    assert!(list.items.iter().any(|item| item == "VRChat"));
+    assert!(list.items.iter().any(|item| item == "ぶいちゃ"));
+}
+
+#[test]
 fn compose_convert_commit() {
     let Some(c) = converter() else { return };
     let mut s = plain();

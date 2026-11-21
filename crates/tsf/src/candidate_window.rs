@@ -1,13 +1,14 @@
 //! Fluent-style candidate window drawn with Direct2D / DirectWrite.
 //!
 //! The window never takes activation; it is a top-most tool popup with
-//! DWM rounded corners, follows the system light/dark theme and accent
-//! color, fades in and animates the selection highlight.
+//! DWM rounded corners, follows the configured theme (by default the system light/dark
+//! theme and accent color), fades in and animates the selection highlight.
 
 use std::cell::RefCell;
 use std::sync::Once;
 use std::time::Instant;
 
+use sweet_engine::theme::Rgb;
 use sweet_engine::{CandidateList, ListKind};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -21,7 +22,7 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS,
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
@@ -87,47 +88,46 @@ pub(crate) fn read_dword(path: PCWSTR, name: PCWSTR) -> Option<u32> {
     r.is_ok().then_some(v)
 }
 
-fn palette() -> Palette {
-    let light = read_dword(
+/// The Windows app theme (`AppsUseLightTheme`); light when unset.
+pub(crate) fn system_light() -> bool {
+    read_dword(
         w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
         w!("AppsUseLightTheme"),
     )
     .unwrap_or(1)
-        != 0;
-    // AccentColor is stored as 0xAABBGGRR.
-    let accent = read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor"));
-    let accent_c = |dark: bool| match accent {
-        Some(v) => {
-            let (r, g, b) = ((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8);
-            if dark {
-                // Lighten for dark backgrounds.
-                let l = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
-                rgb(l(r), l(g), l(b), 1.0)
-            } else {
-                rgb(r, g, b, 1.0)
+        != 0
+}
+
+fn palette() -> Palette {
+    let c = crate::theme_colors();
+    let col = |v: Rgb, a: f32| rgb(v.0, v.1, v.2, a);
+    let accent = match c.accent {
+        Some(v) => col(v, 1.0),
+        // AccentColor is stored as 0xAABBGGRR.
+        None => match read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor")) {
+            Some(v) => {
+                let (r, g, b) = ((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8);
+                if c.dark {
+                    // Lighten for dark backgrounds.
+                    let l = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
+                    rgb(l(r), l(g), l(b), 1.0)
+                } else {
+                    rgb(r, g, b, 1.0)
+                }
             }
-        }
-        None if dark => rgb(0x60, 0xcd, 0xff, 1.0),
-        None => rgb(0x00, 0x5f, 0xb8, 1.0),
+            None if c.dark => rgb(0x60, 0xcd, 0xff, 1.0),
+            None => rgb(0x00, 0x5f, 0xb8, 1.0),
+        },
     };
-    if light {
-        Palette {
-            bg: rgb(0xf9, 0xf9, 0xf9, 1.0),
-            text: rgb(0x1a, 0x1a, 0x1a, 1.0),
-            sub: rgb(0x5f, 0x5f, 0x5f, 1.0),
-            hover: rgb(0x00, 0x00, 0x00, 0.06),
-            accent: accent_c(false),
-            border: COLORREF(0x00e5e5e5),
-        }
-    } else {
-        Palette {
-            bg: rgb(0x2c, 0x2c, 0x2c, 1.0),
-            text: rgb(0xff, 0xff, 0xff, 1.0),
-            sub: rgb(0xc5, 0xc5, 0xc5, 1.0),
-            hover: rgb(0xff, 0xff, 0xff, 0.08),
-            accent: accent_c(true),
-            border: COLORREF(0x00404040),
-        }
+    let b = c.border;
+    Palette {
+        bg: col(c.bg, 1.0),
+        text: col(c.text, 1.0),
+        sub: col(c.sub, 1.0),
+        hover: col(c.hover, c.hover_alpha),
+        accent,
+        // COLORREF is 0x00BBGGRR.
+        border: COLORREF(u32::from(b.0) | u32::from(b.1) << 8 | u32::from(b.2) << 16),
     }
 }
 
@@ -139,6 +139,7 @@ struct State {
     small: IDWriteTextFormat,
     pal: Palette,
     items: Vec<String>,
+    rows: Vec<Option<(IDWriteTextLayout, f32)>>,
     selected: usize,
     page_start: usize,
     page_len: usize,
@@ -273,6 +274,7 @@ impl CandidateWindow {
                 small,
                 pal: palette(),
                 items: Vec::new(),
+                rows: Vec::new(),
                 selected: 0,
                 page_start: 0,
                 page_len: 0,
@@ -318,7 +320,27 @@ impl CandidateWindow {
             } else {
                 (list.selected - page_start) as f32
             };
-            st.items = list.items[page_start..page_end].to_vec();
+            let items = &list.items[page_start..page_end];
+            if st.items != items || st.rows.iter().any(Option::is_none) {
+                st.items = items.to_vec();
+                let mut max_width: f32 = 0.0;
+                st.rows = items
+                    .iter()
+                    .map(|item| {
+                        let layout = st
+                            .dwrite
+                            .CreateTextLayout(&wide(item), &st.format, 2000.0, ROW_H)
+                            .ok()?;
+                        let mut metrics = DWRITE_TEXT_METRICS::default();
+                        let _ = layout.GetMetrics(&mut metrics);
+                        max_width = max_width.max(metrics.widthIncludingTrailingWhitespace);
+                        Some((layout, metrics.height))
+                    })
+                    .collect();
+                st.width = (PAD * 2.0 + INDEX_W + max_width + TEXT_PAD_R)
+                    .max(MIN_W)
+                    .ceil();
+            }
             st.page_start = page_start;
             st.page_len = page_end - page_start;
             st.selected = list.selected;
@@ -329,22 +351,16 @@ impl CandidateWindow {
             if !was_visible {
                 st.pal = palette();
                 st.shown_at = Instant::now();
+                let border = st.pal.border;
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_BORDER_COLOR,
+                    &border as *const _ as *const _,
+                    4,
+                );
             }
-            // Measure the widest candidate.
-            let mut max_w: f32 = 0.0;
-            for it in &st.items {
-                if let Ok(layout) = st.dwrite.CreateTextLayout(&wide(it), &st.format, 2000.0, 100.0) {
-                    let mut m = DWRITE_TEXT_METRICS::default();
-                    if layout.GetMetrics(&mut m).is_ok() {
-                        max_w = max_w.max(m.widthIncludingTrailingWhitespace);
-                    }
-                }
-            }
-            st.width = (PAD * 2.0 + INDEX_W + max_w + TEXT_PAD_R).max(MIN_W).ceil();
             let height = PAD * 2.0 + ROW_H * st.page_len as f32 + FOOTER_H;
             st.visible = true;
-            let border = st.pal.border;
-            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border as *const _ as *const _, 4);
             ((st.width * st.scale) as i32, (height * st.scale) as i32, (PAD + INDEX_W) * st.scale, was_visible)
         });
         let Some((w, h, text_x, was_visible)) = geom else { return };
@@ -396,9 +412,11 @@ impl CandidateWindow {
     }
 
     pub fn hide(&self) {
-        with_state(self.hwnd, |st| st.visible = false);
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        if with_state(self.hwnd, |st| std::mem::replace(&mut st.visible, false)) == Some(true) {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_ID);
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            }
         }
     }
 }
@@ -454,22 +472,34 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         rt.FillRoundedRectangle(&bar, &accent);
         }
 
-        for (i, it) in st.items.iter().enumerate() {
+        for (i, row) in st.rows.iter().enumerate() {
             let y = PAD + i as f32 * ROW_H;
             // Digits are typed as text while composing, so suggestions
             // are not numbered.
-            let idx = wide(&if st.suggest { String::new() } else { format!("{}", i + 1) });
-            if let Ok(l) = st.dwrite.CreateTextLayout(&idx, &st.small, INDEX_W, ROW_H) {
+            if !st.suggest
+                && let Ok(l) = st.dwrite.CreateTextLayout(
+                    &wide(&(i + 1).to_string()),
+                    &st.small,
+                    INDEX_W,
+                    ROW_H,
+                )
+            {
                 let mut m = DWRITE_TEXT_METRICS::default();
                 let _ = l.GetMetrics(&mut m);
                 let origin = windows_numerics::Vector2 { X: PAD + 12.0, Y: y + (ROW_H - m.height) / 2.0 };
                 rt.DrawTextLayout(origin, &l, &sub, Default::default());
             }
-            if let Ok(l) = st.dwrite.CreateTextLayout(&wide(it), &st.format, 2000.0, ROW_H) {
-                let mut m = DWRITE_TEXT_METRICS::default();
-                let _ = l.GetMetrics(&mut m);
-                let origin = windows_numerics::Vector2 { X: PAD + INDEX_W, Y: y + (ROW_H - m.height) / 2.0 };
-                rt.DrawTextLayout(origin, &l, &brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+            if let Some((layout, height)) = row {
+                let origin = windows_numerics::Vector2 {
+                    X: PAD + INDEX_W,
+                    Y: y + (ROW_H - height) / 2.0,
+                };
+                rt.DrawTextLayout(
+                    origin,
+                    layout,
+                    &brush,
+                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                );
             }
         }
         // Footer: position / total.

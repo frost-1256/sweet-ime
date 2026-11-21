@@ -82,6 +82,24 @@ struct Lattice<'a> {
 const BOS: u32 = 0;
 const EOS: u32 = 1;
 
+struct ViterbiScratch {
+    incoming: Vec<(usize, i32)>,
+    outgoing: Vec<(usize, usize)>,
+    predecessors: Vec<(u16, i32)>,
+    next_tag: usize,
+}
+
+impl ViterbiScratch {
+    fn new(pos_count: usize) -> Self {
+        Self {
+            incoming: vec![(usize::MAX, i32::MAX); pos_count],
+            outgoing: vec![(usize::MAX, 0); pos_count],
+            predecessors: Vec::new(),
+            next_tag: 0,
+        }
+    }
+}
+
 /// Picks the best whole-sentence candidate (e.g. with a neural LM).
 pub trait Reranker: Send + Sync {
     /// How many lattice candidates to offer.
@@ -107,7 +125,7 @@ pub struct Converter {
 const RERANK_CACHE: usize = 16;
 
 fn is_kana(c: char) -> bool {
-    matches!(c, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー' | 'ゝ' | 'ゞ')
+    matches!(c, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー' | 'ゝ' | 'ゞ' | 'ｦ'..='ﾟ')
 }
 
 impl Converter {
@@ -355,16 +373,28 @@ impl Converter {
     }
 
     fn viterbi(&self, lat: &mut Lattice<'_>) {
+        let mut scratch = ViterbiScratch::new(self.dict.pos_count());
+        self.viterbi_with_scratch(lat, &mut scratch);
+    }
+
+    fn viterbi_with_scratch(&self, lat: &mut Lattice<'_>, scratch: &mut ViterbiScratch) {
         let len = lat.ends.len() - 1;
         // Alternative spellings with the same left POS share their incoming
-        // transition cost at this position.
-        let mut incoming = vec![(usize::MAX, i32::MAX); self.dict.pos_count()];
-        let mut outgoing = vec![(usize::MAX, 0); self.dict.pos_count()];
-        let mut predecessors: Vec<(u16, i32)> = Vec::new();
+        // transition cost at this position. Tags span lattices so typo scoring
+        // can reuse the POS tables without clearing them for each variant.
+        let first_tag = scratch.next_tag;
+        scratch.next_tag += lat.ends.len();
+        let ViterbiScratch {
+            incoming,
+            outgoing,
+            predecessors,
+            ..
+        } = scratch;
         for pos in 0..=len {
             if lat.begins[pos].is_empty() || lat.ends[pos].is_empty() {
                 continue;
             }
+            let tag = first_tag + pos;
             predecessors.clear();
             for &id in &lat.ends[pos] {
                 let prev = &lat.nodes[id as usize];
@@ -372,11 +402,11 @@ impl Converter {
                     continue;
                 }
                 let entry = &mut outgoing[prev.rid as usize];
-                if entry.0 == pos {
+                if entry.0 == tag {
                     let best = &mut predecessors[entry.1].1;
                     *best = (*best).min(prev.best);
                 } else {
-                    *entry = (pos, predecessors.len());
+                    *entry = (tag, predecessors.len());
                     predecessors.push((prev.rid, prev.best));
                 }
             }
@@ -384,12 +414,12 @@ impl Converter {
                 let id = lat.begins[pos][bi] as usize;
                 let (lid, wcost) = (lat.nodes[id].lid, lat.nodes[id].wcost);
                 let entry = &mut incoming[lid as usize];
-                if entry.0 != pos {
+                if entry.0 != tag {
                     let mut best = i32::MAX;
-                    for &(rid, cost) in &predecessors {
+                    for &(rid, cost) in predecessors.iter() {
                         best = best.min(cost + self.dict.connection(rid, lid));
                     }
-                    *entry = (pos, best);
+                    *entry = (tag, best);
                 }
                 let best = entry.1;
                 lat.nodes[id].best = if best == i32::MAX { i32::MAX } else { best + wcost };
@@ -517,15 +547,19 @@ impl Converter {
     }
 
     /// Scores typo variants against the same history, checking its file once.
-    pub(crate) fn score_typos<T>(&self, evaluate: impl FnOnce(&dyn Fn(&str) -> i32) -> T) -> T {
+    pub(crate) fn score_typos<T>(
+        &self,
+        evaluate: impl FnOnce(&mut dyn FnMut(&str) -> i32) -> T,
+    ) -> T {
         let mut history = self.learning_enabled().then(|| self.history());
         if let Some(h) = history.as_mut() {
             h.reload_if_changed();
         }
-        evaluate(&|text| {
+        let mut scratch = ViterbiScratch::new(self.dict.pos_count());
+        evaluate(&mut |text| {
             let extras = history.as_ref().map_or_else(Vec::new, |h| self.learned_extras_from(text, h));
             let mut lat = self.build_lattice(text, &[], &extras);
-            self.viterbi(&mut lat);
+            self.viterbi_with_scratch(&mut lat, &mut scratch);
             lat.nodes[EOS as usize].best
         })
     }
@@ -548,11 +582,13 @@ impl Converter {
         let mut seen = HashSet::new();
         let mut res = Vec::new();
         for (cost, path) in self.nbest_paths(&lat, n * 3) {
-            let words = self.to_words(&lat, text, &path);
-            let segments = self.segment(words, boundaries);
-            let conv = Conversion { segments, cost };
-            if seen.insert(conv.surface()) {
-                res.push(conv);
+            let surface: String = path
+                .iter()
+                .map(|&id| lat.nodes[id as usize].surface)
+                .collect();
+            if seen.insert(surface) {
+                let segments = self.segment(self.to_words(&lat, text, &path), boundaries);
+                res.push(Conversion { segments, cost });
                 if res.len() >= n {
                     break;
                 }
@@ -575,15 +611,16 @@ impl Converter {
                 }
             }
         }
-        let plen = prefix.chars().count();
-        let mut scored: Vec<(i32, &str)> = Vec::new();
-        for (reading, e) in self.dict.predictive(prefix, 3000) {
-            let extra = reading.chars().count().saturating_sub(plen);
-            if extra == 0 {
-                continue;
-            }
-            scored.push((e.cost as i32 + 700 * extra as i32, e.surface));
+        if out.len() >= n {
+            return out;
         }
+        let mut scored: Vec<(i32, &str)> = Vec::new();
+        self.dict.for_each_prediction(prefix, 3000, |reading, e| {
+            let extra = reading[prefix.len()..].chars().count();
+            if extra != 0 {
+                scored.push((e.cost as i32 + 700 * extra as i32, e.surface));
+            }
+        });
         scored.sort_by_key(|x| x.0);
         for (_, surface) in scored {
             if out.len() >= n {

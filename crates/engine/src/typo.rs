@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::converter::Converter;
-use crate::romaji;
+use crate::romaji::{self, Composer};
 
 /// Lattice cost charged for one edit.
 pub const EDIT_PENALTY: i32 = 2500;
@@ -53,49 +53,56 @@ fn neighbours(c: char) -> &'static str {
 pub fn variants(raw: &str, window: usize) -> Vec<(String, String)> {
     let b: Vec<char> = raw.chars().collect();
     let from = b.len().saturating_sub(window);
+    // Keep the pending romaji as well as the kana before each edit, so a
+    // variant only reprocesses the part of the input that could change.
+    let mut composer = Composer::new();
+    for &ch in &b[..from] {
+        composer.push(ch);
+    }
+    let mut prefixes = Vec::with_capacity(b.len() - from + 1);
+    for &ch in &b[from..] {
+        prefixes.push(composer.clone());
+        composer.push(ch);
+    }
+    prefixes.push(composer.clone());
+    composer.flush();
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    seen.insert(romaji::to_hiragana(raw));
-    let mut add = |v: Vec<char>| {
-        let s: String = v.into_iter().collect();
-        let kana = romaji::to_hiragana(&s);
-        if !kana.is_empty() && !has_unresolved_romaji(&kana) && seen.insert(kana.clone()) {
-            out.push((s, kana));
+    let mut seen = HashSet::from([composer.kana().to_owned()]);
+    let mut add = |i: usize, edit: &[char], tail: &[char]| {
+        let mut variant = prefixes[i - from].clone();
+        for &ch in edit.iter().chain(tail) {
+            variant.push(ch);
+        }
+        variant.flush();
+        let kana = variant.kana();
+        if !kana.is_empty() && !has_unresolved_romaji(kana) && seen.insert(kana.to_owned()) {
+            let keys = b[..i].iter().chain(edit).chain(tail).collect();
+            out.push((keys, kana.to_owned()));
         }
     };
     // Give a missing n (ん) a chance before the broader search.
     for i in from..=b.len() {
-        let mut v = b.clone();
-        v.insert(i, 'n');
-        add(v);
+        add(i, &['n'], &b[i..]);
     }
     for i in from..b.len() {
         if !b[i].is_ascii_alphabetic() {
             continue;
         }
         // Extra key.
-        let mut v = b.clone();
-        v.remove(i);
-        add(v);
+        add(i, &[], &b[i + 1..]);
         // Swapped keys.
         if i + 1 < b.len() && b[i] != b[i + 1] {
-            let mut v = b.clone();
-            v.swap(i, i + 1);
-            add(v);
+            add(i, &[b[i + 1], b[i]], &b[i + 2..]);
         }
         // Neighbouring key.
         for n in neighbours(b[i]).chars() {
-            let mut v = b.clone();
-            v[i] = n;
-            add(v);
+            add(i, &[n], &b[i + 1..]);
         }
     }
     // Other missing keys: vowels, y (yoon) and h (sh/ch).
     for i in from..=b.len() {
         for k in "aiueoyh".chars() {
-            let mut v = b.clone();
-            v.insert(i, k);
-            add(v);
+            add(i, &[k], &b[i..]);
         }
     }
     out

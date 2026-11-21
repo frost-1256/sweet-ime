@@ -1,7 +1,12 @@
-# Reading	Surface	Cost
+# Reading	Surface	Cost	Kana candidate for ASCII input (optional)
+# Rows for the same ASCII spelling are offered in file order.
+# An optional kana candidate also enables reverse lookup from that form and full-width katakana.
 あいえむいー	IME	2300
 あいえむい	IME	3000
-あいとりぷるいー	IEEE	2600
+# https://standards.ieee.org/wp-content/uploads/import/documents/other/geps-faq.pdf
+あいえええ	IEEE	2600	アイエエエ
+あいとりぷるいー	IEEE	2600	アイトリプルイー
+あいいーいーいー	IEEE	2700	アイイーイーイー
 えーぴーあい	API	2900
 しーえるあい	CLI	2900
 えすでぃーけー	SDK	2900
@@ -13,3 +18,54 @@
 ちゃっとじーぴーてぃー	ChatGPT	2600
 おーぷんえーあい	OpenAI	2600
 こーでっくす	Codex	3500
+
+# https://blog.nginx.org/about/the-nginx-name
+んぎっくす	Nginx	2300	ﾝｷﾞｯｸｽ
+えんじんえっくす	Nginx	2300	エンジンエックス
+んぎんくす	Nginx	2700	ンギンクス
+えぬじんくす	Nginx	2700	エヌジンクス
+えぬじーあいえぬえっくす	Nginx	2700	エヌジーアイエヌエックス
+
+# https://www.postgresql.org/about/press/faq/
+ぽすとぐれすきゅーえる	PostgreSQL	2400	ポストグレスキューエル
+ぽすとぐれすえすきゅーえる	PostgreSQL	2700	ポストグレスエスキューエル
+ぽすぐれ	PostgreSQL	2800	ポスグレ
+ぽすとぐれす	Postgres	2400	ポストグレス
+えすきゅーえる	SQL	2600	エスキューエル
+しーくぇる	SQL	2800	シークェル
+しーくえる	SQL	2900	シークエル
+えすきゅーらいと	SQLite	2400	エスキューライト
+えすきゅーえるらいと	SQLite	2600	エスキューエルライト
+
+# https://kubernetes.io/docs/reference/glossary/?user-type=true
+くーばねてぃす	Kubernetes	2400	クーバネティス
+くばねてぃす	Kubernetes	2600	クバネティス
+きゅーばねてぃす	Kubernetes	2600	キューバネティス
+けーえいとえす	K8s	2600	ケーエイトエス
+きゅーぶこんとろーる	kubectl	2500	キューブコントロール
+きゅーぶしーてぃーえる	kubectl	2600	キューブシーティーエル
+くべこん	kubectl	2800	クベコン
+
+# https://www.gnu.org/gnu/pronunciation.html
+ぐぬー	GNU	2600	グヌー
+ぐにゅー	GNU	2600	グニュー
+じーえぬゆー	GNU	2600	ジーエヌユー
+# https://vite.dev/guide/
+ゔぃーと	Vite	2600	ヴィート
+# https://tug.ctan.org/info/latex-doc-ptr/latex-doc-ptr.html
+らてふ	LaTeX	2600	ラテフ
+らてっく	LaTeX	2600	ラテック
+れてっく	LaTeX	2800	レテック
+てふ	TeX	3000	テフ
+
+# https://www.w3.org/TR/png-3/
+ぴーえぬじー	PNG	2600	ピーエヌジー
+ぴんぐ	PNG	4100	ピング
+じふ	GIF	3000	ジフ
+じぇいぺぐ	JPEG	2600	ジェイペグ
+やむる	YAML	2600	ヤムル
+じぇいそん	JSON	3000	ジェイソン
+れでぃす	Redis	2500	レディス
+れでぃず	Redis	2600	レディズ
+どっかー	Docker	2600	ドッカー
+えふえふえむぺぐ	FFmpeg	2600	エフエフエムペグ

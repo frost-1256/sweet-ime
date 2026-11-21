@@ -311,6 +311,10 @@ impl TextService_Impl {
             Some(Input::Toggle(_)) => return true,
             Some(Input::Key(k)) => k,
         };
+        self.allows_key(key)
+    }
+
+    fn allows_key(&self, key: sweet_engine::Key) -> bool {
         if crate::converter().is_none() || !self.is_open() {
             return false;
         }
@@ -806,7 +810,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 }
                 Some(Input::Key(k)) => k,
             };
-            if !self.wants_key(vk, lparam.0) {
+            if !self.allows_key(key) {
                 return Ok(BOOL(0));
             }
             let Some(conv) = crate::converter() else { return Ok(BOOL(0)) };
