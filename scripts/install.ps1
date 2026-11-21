@@ -65,11 +65,16 @@ if ($AddToLanguageList) {
 }
 # Start menu shortcut to the settings app (all users). This file is saved
 # as UTF-8 with BOM so Windows PowerShell 5.1 reads the name correctly.
-$lnk = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Sweet IME の設定.lnk"
-$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+# WScript.Shell saves through the ANSI code page, so save under an ASCII
+# name and rename (Unicode-safe) afterwards.
+$programs = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs"
+$lnk = Join-Path $programs 'Sweet IME の設定.lnk'
+$tmp = Join-Path $programs 'SweetIME-settings.lnk'
+$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($tmp)
 $shortcut.TargetPath = "$Target\sweet-settings.exe"
 $shortcut.WorkingDirectory = $Target
 $shortcut.Save()
+Move-Item -Force $tmp $lnk
 
 Write-Host "Sweet IME installed to $Target"
 Write-Host "Settings (including the optional AI model download): Start menu > Sweet IME の設定"
