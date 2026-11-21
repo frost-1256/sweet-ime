@@ -33,7 +33,6 @@ Requirements:
 - Rust stable with the MSVC toolchain
 - The `i686-pc-windows-msvc` target, for the 32-bit DLL
 - The Mozc OSS dictionary in `third_party/mozc-data`
-- Optionally, a zenz model in `third_party/zenz/v3.1-xsmall`
 
 To stage a build into `dist\`, run:
 
@@ -52,6 +51,22 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -AddToLanguageList
 This installs the files to `%ProgramFiles%\SweetIME`, registers both
 architectures with `regsvr32`, and adds the IME to the Japanese keyboard
 list. To remove it, run `scripts\uninstall.ps1`.
+
+### Optional: neural reranking
+
+The zenz model is not bundled, because it is licensed under
+CC BY-SA 4.0. To enable reranking, download and convert it yourself.
+Administrator rights are not needed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:ProgramFiles\SweetIME\get-zenz.ps1"
+```
+
+The script writes `%LOCALAPPDATA%\SweetIME\zenz.swz`, which the IME
+loads the next time it is activated. Pass
+`-Model Miwa-Keita/zenz-v3.1-small` to use the larger, more accurate
+model. Without the model, the IME converts with the dictionary lattice
+only.
 
 ## Keys
 
@@ -89,9 +104,9 @@ Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
 
 ## Licenses
 
-- **Code**: no license has been chosen yet.
-- **Dictionary**: derived from the Mozc OSS dictionary. It includes
-  IPAdic and the Okinawa dictionary; see
-  `dist\licenses\dictionary-oss.txt`.
-- **zenz model**: by Miwa Keita, licensed under CC BY-SA 4.0; see
-  `dist\licenses\zenz.txt`.
+- **Code**: MIT; see `LICENSE`.
+- **Dictionary** (`system.dict`, bundled): derived from the Mozc OSS
+  dictionary. It includes IPAdic and the Okinawa dictionary, which keep
+  their own licenses; see `dist\licenses\dictionary-oss.txt`.
+- **zenz model** (not bundled): by Miwa Keita, licensed under
+  CC BY-SA 4.0. Users download it themselves with `get-zenz.ps1`.
