@@ -24,6 +24,9 @@ pub enum Action {
     Key(Key),
 }
 
+/// Format version written to files (see [`Keymap::parse`]).
+pub const KEYMAP_VERSION: u32 = 2;
+
 /// When a binding applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum When {
@@ -169,6 +172,15 @@ pub fn normalize_vk(vk: u16) -> u16 {
     }
 }
 
+/// Keys that exist only for the IME (半角/全角, 変換, 無変換, ひらがな,
+/// 英数, IME on/off). Layouts produce some of them with a modifier held:
+/// the Japanese layout for 101-key keyboards (kbd101) sends 半角/全角 for
+/// Alt+`. With no binding of its own, such a chord uses the key's
+/// unmodified binding.
+pub fn is_ime_key(vk: u16) -> bool {
+    matches!(normalize_vk(vk), 0x19 | 0x16 | 0x1A | 0x1C | 0x1D | 0xF0 | 0xF2)
+}
+
 /// Whether the key types a character (letters, digits, punctuation).
 /// Shift is part of the character for these, so Shift chords do not fall
 /// back to the unshifted binding.
@@ -195,8 +207,19 @@ pub fn modifier_toggles(map: &Keymap) -> Vec<(Chord, Action)> {
     let mut out: Vec<(Chord, Action)> = Vec::new();
     for b in &map.bindings {
         let toggle = matches!(b.action, Action::ImeToggle | Action::ImeOn | Action::ImeOff);
-        if toggle && b.when == When::Always && (b.chord.ctrl || b.chord.alt) && !out.iter().any(|(c, _)| *c == b.chord) {
-            out.push((b.chord, b.action));
+        if !(toggle && b.when == When::Always) {
+            continue;
+        }
+        let mut add = |c: Chord| {
+            if !out.iter().any(|(x, _)| *x == c) && !map.bindings.iter().any(|x| x.chord == c && x.action != b.action) {
+                out.push((c, b.action));
+            }
+        };
+        if b.chord.ctrl || b.chord.alt {
+            add(b.chord);
+        } else if b.chord.vk == 0x19 && !b.chord.shift {
+            // kbd101 sends 半角/全角 for Alt+`.
+            add(Chord { alt: true, ..b.chord });
         }
     }
     out
@@ -330,17 +353,25 @@ impl Keymap {
             }
             best.map(|b| b.action)
         };
-        find(chord).or_else(|| {
-            (chord.shift && !chord.ctrl && !chord.alt && !is_character_key(chord.vk))
-                .then(|| find(Chord { shift: false, ..chord }))
-                .flatten()
-        })
+        find(chord)
+            .or_else(|| {
+                (chord.shift && !chord.ctrl && !chord.alt && !is_character_key(chord.vk))
+                    .then(|| find(Chord { shift: false, ..chord }))
+                    .flatten()
+            })
+            .or_else(|| is_ime_key(chord.vk).then(|| find(Chord::key(chord.vk))).flatten())
     }
 
-    /// Parses the file format; bad lines are skipped.
+    /// Parses the file format; bad lines are skipped. Files written by an
+    /// older version get the default bindings added since then.
     pub fn parse(text: &str) -> Self {
         let mut bindings = Vec::new();
+        let mut version = 1;
         for line in text.lines() {
+            if let Some(v) = line.trim().strip_prefix("#! version") {
+                version = v.trim().parse().unwrap_or(1);
+                continue;
+            }
             let line = line.split('#').next().unwrap_or("").trim();
             let mut f = line.split_whitespace();
             let (Some(chord), Some(action)) = (f.next(), f.next()) else { continue };
@@ -355,11 +386,28 @@ impl Keymap {
             };
             bindings.push(Binding { chord, action, when });
         }
-        Self { bindings }
+        let mut map = Self { bindings };
+        map.upgrade(version);
+        map
+    }
+
+    /// Adds default bindings introduced after file `version`, unless the
+    /// user already uses the chord.
+    fn upgrade(&mut self, version: u32) {
+        // Version 2: Alt+` toggles.
+        let added: [(u32, Chord, Action); 1] =
+            [(2, Chord { vk: 0xC0, ctrl: false, shift: false, alt: true }, Action::ImeToggle)];
+        for (since, chord, action) in added {
+            if version < since && !self.bindings.iter().any(|b| b.chord == chord) {
+                self.bindings.push(Binding { chord, action, when: When::Always });
+            }
+        }
     }
 
     pub fn to_text(&self) -> String {
-        let mut s = String::from("# Sweet IME key bindings: <key> <action> [always|composing|idle]\n");
+        let mut s = format!(
+            "#! version {KEYMAP_VERSION}\n# Sweet IME key bindings: <key> <action> [always|composing|idle]\n"
+        );
         for b in &self.bindings {
             let action = ACTIONS.iter().find(|a| a.2 == b.action).map_or("?", |a| a.0);
             let mut line = format!("{:<18} {action}", b.chord.to_text());
@@ -407,13 +455,35 @@ mod tests {
         assert_eq!(m.lookup(Chord::shift(0x41), true), None);
         // Alt+` toggles.
         assert_eq!(m.lookup(Chord { alt: true, ..Chord::key(0xC0) }, false), Some(Action::ImeToggle));
+        // kbd101: Alt+` arrives as Alt+半角/全角.
+        assert_eq!(m.lookup(Chord { alt: true, ..Chord::key(0x19) }, false), Some(Action::ImeToggle));
+        assert_eq!(m.lookup(Chord { alt: true, ..Chord::key(0x1D) }, true), Some(Action::ImeOff));
         // Ctrl chords are not bound by default.
         assert_eq!(m.lookup(Chord { ctrl: true, ..Chord::key(0x20) }, false), None);
     }
 
     #[test]
+    fn old_files_get_new_defaults() {
+        let alt_grave = Chord { vk: 0xC0, ctrl: false, shift: false, alt: true };
+        let old = Keymap::parse("Kanji ime_toggle\n");
+        assert!(old.bindings.iter().any(|b| b.chord == alt_grave));
+        // A current file keeps the user's choice (Alt+` removed).
+        let mut m = Keymap::default();
+        m.bindings.retain(|b| b.chord != alt_grave);
+        assert_eq!(Keymap::parse(&m.to_text()), m);
+    }
+
+    #[test]
+    fn preserved_toggles() {
+        let t = modifier_toggles(&Keymap::default());
+        let chords: Vec<String> = t.iter().map(|(c, _)| c.label()).collect();
+        assert!(chords.contains(&"Alt+半角/全角".to_string()), "{chords:?}");
+        assert!(chords.iter().any(|c| c.starts_with("Alt+`")), "{chords:?}");
+    }
+
+    #[test]
     fn parse_skips_bad_lines() {
-        let m = Keymap::parse("Ctrl+Space ime_toggle\nBogus ime_on\nSpace nope\nHenkan convert composing # c\n");
+        let m = Keymap::parse("#! version 2\nCtrl+Space ime_toggle\nBogus ime_on\nSpace nope\nHenkan convert composing # c\n");
         assert_eq!(m.bindings.len(), 2);
         assert_eq!(m.bindings[1].when, When::Composing);
     }

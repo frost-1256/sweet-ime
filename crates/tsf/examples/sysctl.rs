@@ -2,7 +2,9 @@
 //! its profile for this process, focuses a real text control and sends
 //! keystrokes with SendInput. Reports whether the mode badge appeared.
 //!
-//!   cargo run --release -p sweet-tsf --example sysctl -- [edit|richedit]
+//!   cargo run --release -p sweet-tsf --example sysctl -- [edit|richedit] [dev sweet_tsf.dll]
+//!
+//! Brings its window to the foreground for a few seconds.
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx};
@@ -65,6 +67,30 @@ fn key(vk: u16, up: bool) -> INPUT {
     }
 }
 
+/// Presses keys by scan code, so the keyboard layout translates them
+/// exactly as for a physical key press. Extended scan codes: 0xE0xx.
+fn press_scan(chord: &[u16]) {
+    let mk = |sc: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: sc & 0xFF,
+                dwFlags: KEYEVENTF_SCANCODE
+                    | if sc & 0xE000 == 0xE000 { KEYEVENTF_EXTENDEDKEY } else { KEYBD_EVENT_FLAGS(0) }
+                    | if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let mut v: Vec<INPUT> = chord.iter().map(|&k| mk(k, false)).collect();
+    v.extend(chord.iter().rev().map(|&k| mk(k, true)));
+    unsafe {
+        SendInput(&v, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
 fn press(chord: &[u16]) {
     let mut v: Vec<INPUT> = chord.iter().map(|&k| key(k, false)).collect();
     v.extend(chord.iter().rev().map(|&k| key(k, true)));
@@ -110,6 +136,22 @@ fn main() -> Result<()> {
     let kind = std::env::args().nth(1).unwrap_or_else(|| "edit".into());
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        // Optionally serve the TIP from a development DLL, for this process
+        // only, instead of the installed one.
+        if let Some(dll) = std::env::args().nth(2) {
+            use windows::Win32::System::Com::{CoRegisterClassObject, IClassFactory, REGCLS_MULTIPLEUSE};
+            let module = LoadLibraryW(&windows_core::HSTRING::from(dll.as_str()))?;
+            let proc = windows::Win32::System::LibraryLoader::GetProcAddress(module, windows_core::s!("DllGetClassObject"))
+                .expect("DllGetClassObject");
+            type GetClassObject = unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut std::ffi::c_void) -> windows_core::HRESULT;
+            let get: GetClassObject = std::mem::transmute(proc);
+            let mut f: *mut std::ffi::c_void = std::ptr::null_mut();
+            get(&CLSID_SWEET_IME, &IClassFactory::IID, &mut f).ok()?;
+            let factory = IClassFactory::from_raw(f);
+            let cookie = CoRegisterClassObject(&CLSID_SWEET_IME, &factory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE)?;
+            println!("serving TIP from {dll} (cookie {cookie})");
+            std::mem::forget(factory);
+        }
         let top = CreateWindowExW(
             Default::default(), w!("STATIC"), w!("sweet sysctl"), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             100, 100, 420, 160, None, None, None, None,
@@ -166,6 +208,14 @@ fn main() -> Result<()> {
             let eaten = if std::env::var_os("SWEET_USE_KM").is_some() { send(&tm, chord) } else { press(chord); true };
             pump_for(150);
             println!("{name}: eaten={eaten} open={:?} badge={:?}", open_state(&tm), badge());
+        }
+        // Physical-key presses through the layout (scan codes).
+        for (name, chord) in [("scan Alt+` (x2)", &[0x38u16, 0x29][..]), ("scan Ctrl+Space", &[0x1D, 0x39][..])] {
+            pump_for(1500);
+            let before = open_state(&tm);
+            press_scan(chord);
+            pump_for(150);
+            println!("{name}: open {before:?} -> {:?} badge={:?}", open_state(&tm), badge());
         }
         // Type something to see the IME is really active here.
         press(&[0x1C]); // 変換 = on

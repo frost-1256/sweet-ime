@@ -732,7 +732,11 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 
     fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
-        crate::guard(|| Ok(BOOL(self.wants_key(wparam.0 as u32, lparam.0) as i32)))
+        crate::guard(|| {
+            let wants = self.wants_key(wparam.0 as u32, lparam.0);
+            crate::debug_log!("test key 0x{:02X} -> {wants}", wparam.0);
+            Ok(BOOL(wants as i32))
+        })
     }
 
     fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
@@ -742,6 +746,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         crate::guard(|| {
             let vk = wparam.0 as u32;
+            crate::debug_log!("key down 0x{vk:02X}");
             let ctx = pic.ok()?.clone();
             self.st.borrow_mut().ctx = Some(ctx.clone());
             let key = match self.translate(vk, lparam.0) {
@@ -773,11 +778,13 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     }
 
     fn OnPreservedKey(&self, pic: Ref<ITfContext>, rguid: *const GUID) -> Result<BOOL> {
+        crate::debug_log!("OnPreservedKey");
         crate::guard(|| {
             if rguid.is_null() {
                 return Ok(BOOL(0));
             }
             let g = unsafe { *rguid };
+            crate::debug_log!("preserved key {g:?}");
             let t = self.st.borrow().preserved.iter().find(|(x, _, _)| *x == g).map(|(_, _, t)| *t);
             let (Some(t), Ok(ctx)) = (t, pic.ok()) else { return Ok(BOOL(0)) };
             let ctx = ctx.clone();
