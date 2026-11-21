@@ -1,0 +1,398 @@
+//! End-to-end TSF harness: loads sweet_tsf.dll without registration, hosts it
+//! on a real ITfThreadMgr with an in-memory ITextStoreACP, sends keystrokes
+//! through ITfKeystrokeMgr and checks the resulting document text.
+//!
+//!   cargo run --release -p sweet-tsf --example harness -- [path\to\sweet_tsf.dll]
+
+use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
+
+use windows::Win32::Foundation::{E_INVALIDARG, E_NOTIMPL, HWND, POINT, RECT, S_OK};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, FORMATETC,
+    IClassFactory, IDataObject,
+};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC, MapVirtualKeyW};
+use windows::Win32::UI::TextServices::*;
+use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
+use windows_core::{BOOL, GUID, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, Ref, Result, implement, s};
+
+const CLSID_SWEET_IME: GUID = GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1a01);
+
+#[implement(ITextStoreACP)]
+struct TextStore {
+    text: RefCell<Vec<u16>>,
+    sel: Cell<(i32, i32)>,
+    sink: RefCell<Option<ITextStoreACPSink>>,
+}
+
+impl TextStore {
+    fn len(&self) -> i32 {
+        self.text.borrow().len() as i32
+    }
+}
+
+impl ITextStoreACP_Impl for TextStore_Impl {
+    fn AdviseSink(&self, _riid: *const GUID, punk: Ref<IUnknown>, _mask: u32) -> Result<()> {
+        *self.sink.borrow_mut() = Some(punk.ok()?.cast()?);
+        Ok(())
+    }
+    fn UnadviseSink(&self, _punk: Ref<IUnknown>) -> Result<()> {
+        *self.sink.borrow_mut() = None;
+        Ok(())
+    }
+    fn RequestLock(&self, flags: u32) -> Result<HRESULT> {
+        let sink = self.sink.borrow().clone().ok_or(windows_core::Error::from(E_INVALIDARG))?;
+        unsafe { sink.OnLockGranted(TEXT_STORE_LOCK_FLAGS(flags & !TS_LF_SYNC))? };
+        Ok(S_OK)
+    }
+    fn GetStatus(&self) -> Result<TS_STATUS> {
+        Ok(TS_STATUS::default())
+    }
+    fn QueryInsert(&self, s: i32, e: i32, _cch: u32, rs: *mut i32, re: *mut i32) -> Result<()> {
+        unsafe {
+            *rs = s;
+            *re = e;
+        }
+        Ok(())
+    }
+    fn GetSelection(&self, _idx: u32, count: u32, out: *mut TS_SELECTION_ACP, fetched: *mut u32) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let (s, e) = self.sel.get();
+        unsafe {
+            *out = TS_SELECTION_ACP {
+                acpStart: s,
+                acpEnd: e,
+                style: TS_SELECTIONSTYLE { ase: TS_AE_END, fInterimChar: BOOL(0) },
+            };
+            *fetched = 1;
+        }
+        Ok(())
+    }
+    fn SetSelection(&self, count: u32, sel: *const TS_SELECTION_ACP) -> Result<()> {
+        if count > 0 {
+            let s = unsafe { &*sel };
+            self.sel.set((s.acpStart, s.acpEnd));
+        }
+        Ok(())
+    }
+    fn GetText(
+        &self, start: i32, end: i32, pch: PWSTR, cchreq: u32, cchret: *mut u32,
+        runs: *mut TS_RUNINFO, runreq: u32, runret: *mut u32, next: *mut i32,
+    ) -> Result<()> {
+        let t = self.text.borrow();
+        let end = if end < 0 { t.len() as i32 } else { end.min(t.len() as i32) };
+        let n = ((end - start).max(0) as u32).min(cchreq);
+        unsafe {
+            if n > 0 && !pch.is_null() {
+                std::ptr::copy_nonoverlapping(t[start as usize..].as_ptr(), pch.0, n as usize);
+            }
+            *cchret = n;
+            if runreq > 0 && !runs.is_null() {
+                *runs = TS_RUNINFO { uCount: n, r#type: TS_RT_PLAIN };
+                *runret = 1;
+            } else if !runret.is_null() {
+                *runret = 0;
+            }
+            *next = start + n as i32;
+        }
+        Ok(())
+    }
+    fn SetText(&self, _flags: u32, start: i32, end: i32, pch: &PCWSTR, cch: u32) -> Result<TS_TEXTCHANGE> {
+        let new: &[u16] = if cch == 0 { &[] } else { unsafe { std::slice::from_raw_parts(pch.0, cch as usize) } };
+        self.text.borrow_mut().splice(start as usize..end as usize, new.iter().copied());
+        let ne = start + cch as i32;
+        self.sel.set((ne, ne));
+        Ok(TS_TEXTCHANGE { acpStart: start, acpOldEnd: end, acpNewEnd: ne })
+    }
+    fn GetFormattedText(&self, _s: i32, _e: i32) -> Result<IDataObject> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetEmbedded(&self, _p: i32, _g: *const GUID, _r: *const GUID) -> Result<IUnknown> {
+        Err(E_NOTIMPL.into())
+    }
+    fn QueryInsertEmbedded(&self, _g: *const GUID, _f: *const FORMATETC) -> Result<BOOL> {
+        Ok(BOOL(0))
+    }
+    fn InsertEmbedded(&self, _f: u32, _s: i32, _e: i32, _d: Ref<IDataObject>) -> Result<TS_TEXTCHANGE> {
+        Err(E_NOTIMPL.into())
+    }
+    fn InsertTextAtSelection(
+        &self, flags: u32, pch: &PCWSTR, cch: u32, ps: *mut i32, pe: *mut i32, change: *mut TS_TEXTCHANGE,
+    ) -> Result<()> {
+        let (s, e) = self.sel.get();
+        if flags & TS_IAS_QUERYONLY != 0 {
+            unsafe {
+                *ps = s;
+                *pe = e;
+            }
+            return Ok(());
+        }
+        let c = self.SetText(0, s, e, pch, cch)?;
+        unsafe {
+            if !ps.is_null() {
+                *ps = s;
+                *pe = c.acpNewEnd;
+            }
+            if !change.is_null() {
+                *change = c;
+            }
+        }
+        Ok(())
+    }
+    fn InsertEmbeddedAtSelection(&self, _f: u32, _d: Ref<IDataObject>, _s: *mut i32, _e: *mut i32, _c: *mut TS_TEXTCHANGE) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn RequestSupportedAttrs(&self, _f: u32, _c: u32, _a: *const GUID) -> Result<()> {
+        Ok(())
+    }
+    fn RequestAttrsAtPosition(&self, _p: i32, _c: u32, _a: *const GUID, _f: u32) -> Result<()> {
+        Ok(())
+    }
+    fn RequestAttrsTransitioningAtPosition(&self, _p: i32, _c: u32, _a: *const GUID, _f: u32) -> Result<()> {
+        Ok(())
+    }
+    fn FindNextAttrTransition(
+        &self, _s: i32, halt: i32, _c: u32, _a: *const GUID, _f: u32, next: *mut i32, found: *mut BOOL, off: *mut i32,
+    ) -> Result<()> {
+        unsafe {
+            *next = halt;
+            *found = BOOL(0);
+            *off = 0;
+        }
+        Ok(())
+    }
+    fn RetrieveRequestedAttrs(&self, _c: u32, _v: *mut TS_ATTRVAL, fetched: *mut u32) -> Result<()> {
+        unsafe { *fetched = 0 };
+        Ok(())
+    }
+    fn GetEndACP(&self) -> Result<i32> {
+        Ok(self.len())
+    }
+    fn GetActiveView(&self) -> Result<u32> {
+        Ok(1)
+    }
+    fn GetACPFromPoint(&self, _v: u32, _p: *const POINT, _f: u32) -> Result<i32> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetTextExt(&self, _v: u32, s: i32, e: i32, rc: *mut RECT, clipped: *mut BOOL) -> Result<()> {
+        unsafe {
+            *rc = RECT { left: 200 + s * 16, top: 200, right: 200 + e * 16, bottom: 224 };
+            *clipped = BOOL(0);
+        }
+        Ok(())
+    }
+    fn GetScreenExt(&self, _v: u32) -> Result<RECT> {
+        Ok(RECT { left: 0, top: 0, right: 800, bottom: 600 })
+    }
+    fn GetWnd(&self, _v: u32) -> Result<HWND> {
+        Ok(HWND::default())
+    }
+}
+
+type GetClassObject = unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
+
+fn pump() {
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+struct Harness {
+    sink: ITfKeyEventSink,
+    ctx: ITfContext,
+    store: windows_core::ComObject<TextStore>,
+}
+
+impl Harness {
+    fn key(&self, vk: u16) -> bool {
+        unsafe {
+            let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC);
+            let lp = windows::Win32::Foundation::LPARAM(((scan as isize) << 16) | 1);
+            let wp = windows::Win32::Foundation::WPARAM(vk as usize);
+            let test = self.sink.OnTestKeyDown(&self.ctx, wp, lp).map(|b| b.as_bool()).unwrap_or(false);
+            let eaten = test && self.sink.OnKeyDown(&self.ctx, wp, lp).map(|b| b.as_bool()).unwrap_or(false);
+            pump();
+            eaten
+        }
+    }
+    fn type_str(&self, s: &str) {
+        for c in s.chars() {
+            let vk = match c {
+                'a'..='z' => c.to_ascii_uppercase() as u16,
+                '-' => 0xBD, // VK_OEM_MINUS
+                _ => panic!("unsupported char {c}"),
+            };
+            assert!(self.key(vk), "key {c} not eaten");
+        }
+    }
+    fn text(&self) -> String {
+        String::from_utf16_lossy(&self.store.text.borrow())
+    }
+    fn clear(&self) {
+        self.store.text.borrow_mut().clear();
+        self.store.sel.set((0, 0));
+    }
+}
+
+/// Saves the candidate window's screen area as a 32-bit BMP.
+fn screenshot(path: &str) {
+    use windows::Win32::Graphics::Gdi::*;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+    unsafe {
+        let Ok(hwnd) = FindWindowW(windows_core::w!("SweetImeCandidateWindow"), None) else {
+            println!("FAIL screenshot: window not found");
+            return;
+        };
+        let mut rc = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rc);
+        let (m, w, hgt) = (16, rc.right - rc.left + 32, rc.bottom - rc.top + 32);
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, hgt);
+        let old = SelectObject(mem, bmp.into());
+        let _ = BitBlt(mem, 0, 0, w, hgt, Some(screen), rc.left - m, rc.top - m, SRCCOPY);
+        let mut bi = BITMAPINFO::default();
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: hgt,
+            biPlanes: 1,
+            biBitCount: 32,
+            ..Default::default()
+        };
+        let mut px = vec![0u8; (w * hgt * 4) as usize];
+        GetDIBits(mem, bmp, 0, hgt as u32, Some(px.as_mut_ptr() as *mut _), &mut bi, DIB_RGB_COLORS);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+        let mut f = Vec::new();
+        let size = 14 + 40 + px.len() as u32;
+        f.extend_from_slice(b"BM");
+        f.extend_from_slice(&size.to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes());
+        f.extend_from_slice(&54u32.to_le_bytes());
+        let hdr = std::slice::from_raw_parts(&bi.bmiHeader as *const _ as *const u8, 40);
+        f.extend_from_slice(hdr);
+        f.extend_from_slice(&px);
+        std::fs::write(path, f).unwrap();
+        println!("     screenshot {}x{} -> {path}", w, hgt);
+    }
+}
+
+fn check(name: &str, got: String, want: &str, fails: &mut u32) {
+    if got == want {
+        println!("ok   {name}: {got}");
+    } else {
+        println!("FAIL {name}: got {got:?}, want {want:?}");
+        *fails += 1;
+    }
+}
+
+fn main() -> Result<()> {
+    let dll = std::env::args().nth(1).unwrap_or_else(|| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "\\..\\..\\target\\release\\sweet_tsf.dll").to_string()
+    });
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        let module = LoadLibraryW(&HSTRING::from(dll.as_str()))?;
+        let proc = GetProcAddress(module, s!("DllGetClassObject")).expect("DllGetClassObject");
+        let get: GetClassObject = std::mem::transmute(proc);
+        let mut factory: *mut c_void = std::ptr::null_mut();
+        get(&CLSID_SWEET_IME, &IClassFactory::IID, &mut factory).ok()?;
+        let factory = IClassFactory::from_raw(factory);
+        let tip: ITfTextInputProcessor = factory.CreateInstance(None)?;
+        eprintln!("step: tip created");
+
+        let tm: ITfThreadMgr = CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)?;
+        let tid = tm.Activate()?;
+        eprintln!("step: tm activated {tid}");
+        let dim = tm.CreateDocumentMgr()?;
+        let store = windows_core::ComObject::new(TextStore {
+            text: RefCell::new(Vec::new()),
+            sel: Cell::new((0, 0)),
+            sink: RefCell::new(None),
+        });
+        let store_unk: IUnknown = store.to_interface();
+        let mut ctx = None;
+        let mut ec = 0;
+        dim.CreateContext(tid, 0, &store_unk, &mut ctx, &mut ec)?;
+        eprintln!("step: context");
+        let ctx = ctx.unwrap();
+        dim.Push(&ctx)?;
+        tm.SetFocus(&dim)?;
+        eprintln!("step: focus");
+
+        let t0 = std::time::Instant::now();
+        let tip_tid = tm.cast::<ITfClientId>()?.GetClientId(&CLSID_SWEET_IME);
+        eprintln!("step: client id {tip_tid:?}");
+        let tip_tid = tip_tid.unwrap_or(tid);
+        tip.Activate(&tm, tip_tid)?;
+        println!("activated in {:.2?}", t0.elapsed());
+        let h = Harness { sink: tip.cast()?, ctx: ctx.clone(), store };
+        let mut fails = 0;
+
+        // 1. compose + convert + commit
+        let t = std::time::Instant::now();
+        h.type_str("kyouhaiitenkidesune");
+        check("preedit", h.text(), "きょうはいいてんきですね", &mut fails);
+        h.key(0x20); // space
+        check("converted", h.text(), "今日はいい天気ですね", &mut fails);
+        h.key(0x0D); // enter
+        check("committed", h.text(), "今日はいい天気ですね", &mut fails);
+        println!("     round trip {:.2?}", t.elapsed());
+
+        // 2. candidate window + selection by digit
+        h.clear();
+        h.type_str("kisha");
+        h.key(0x20);
+        h.key(0x20);
+        h.key(0x20);
+        let shown = h.text();
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            pump();
+        }
+        if let Ok(path) = std::env::var("SWEET_SHOT") {
+            screenshot(&path);
+        }
+        h.key(0x0D);
+        check("candidate", h.text(), &shown, &mut fails);
+
+        // 3. escape cancels
+        h.clear();
+        h.type_str("aiueo");
+        h.key(0x1B);
+        check("escape", h.text(), "", &mut fails);
+
+        // 4. F7 katakana
+        h.clear();
+        h.type_str("ko-hi-");
+        h.key(0x76); // F7
+        h.key(0x0D);
+        check("katakana", h.text(), "コーヒー", &mut fails);
+
+        // 5. IME off passes keys through
+        h.clear();
+        h.key(0xF3); // 半角/全角
+        let eaten = h.key(0x41);
+        check("off passthrough", format!("{eaten}"), "false", &mut fails);
+        h.key(0xF3);
+        let eaten = h.key(0x41);
+        check("on again", format!("{eaten}"), "true", &mut fails);
+        h.key(0x1B);
+
+        tip.Deactivate()?;
+        tm.Deactivate()?;
+        println!("{}", if fails == 0 { "ALL PASSED" } else { "FAILURES" });
+        std::process::exit(fails as i32);
+    }
+}

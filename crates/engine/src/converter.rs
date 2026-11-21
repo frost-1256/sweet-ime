@@ -236,10 +236,15 @@ impl Converter {
         let mut segs: Vec<Segment> = Vec::new();
         let mut prev_class = PosClass::Boundary;
         let mut pos = 0usize;
+        // Spans up to the last boundary are fixed by the user; after it the
+        // automatic rules apply.
+        let fixed_until = boundaries.iter().copied().max().unwrap_or(0);
         for w in words {
             let class = self.dict.pos_class(w.lid);
-            let start_new = if !boundaries.is_empty() {
-                pos == 0 || boundaries.contains(&pos)
+            let start_new = if boundaries.contains(&pos) {
+                true
+            } else if pos < fixed_until {
+                false
             } else {
                 match class {
                     PosClass::Functional => segs.is_empty(),
@@ -297,9 +302,17 @@ impl Converter {
         };
         let mut lat = self.build_lattice(reading, &[]);
         self.viterbi(&mut lat);
-        for (_, path) in self.nbest_paths(&lat, n) {
+        for (_, path) in self.nbest_paths(&lat, n * 2) {
+            // Drop paths that fall back to single unknown characters
+            // (e.g. "き者"); the plain hiragana candidate covers them.
+            if path.iter().any(|&i| lat.nodes[i as usize].wcost == UNKNOWN_CHAR_COST) {
+                continue;
+            }
             let s: String = path.iter().map(|&i| lat.nodes[i as usize].surface).collect();
             add(s, &mut out);
+            if out.len() >= n {
+                break;
+            }
         }
         add(reading.to_string(), &mut out);
         add(crate::romaji::to_katakana(reading), &mut out);

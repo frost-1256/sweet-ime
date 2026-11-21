@@ -1,0 +1,408 @@
+//! The TSF text input processor.
+
+use std::cell::RefCell;
+
+use sweet_engine::{Session, SpanAttr};
+use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows::Win32::System::Variant::VARIANT;
+use windows::Win32::UI::TextServices::{
+    CLSID_TF_CategoryMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_PROP_ATTRIBUTE,
+    IEnumTfDisplayAttributeInfo, ITfCategoryMgr, ITfCompartmentMgr, ITfComposition,
+    ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
+    ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
+    ITfInsertAtSelection, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
+    ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
+    ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr,
+    TF_AE_NONE, TF_ANCHOR_END, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
+    TF_SELECTIONSTYLE,
+};
+use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, implement};
+
+use crate::candidate_window::CandidateWindow;
+use crate::keys::{self, Toggle};
+use crate::{GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED, GUID_ATTR_INPUT, display_attr, edit};
+
+#[derive(Default)]
+struct State {
+    thread_mgr: Option<ITfThreadMgr>,
+    tid: u32,
+    focus_cookie: Option<u32>,
+    composition: Option<ITfComposition>,
+    session: Session,
+    window: Option<CandidateWindow>,
+    /// GUID atoms for [input, converted, focused] display attributes.
+    atoms: [i32; 3],
+}
+
+#[implement(
+    ITfTextInputProcessorEx,
+    ITfTextInputProcessor,
+    ITfKeyEventSink,
+    ITfCompositionSink,
+    ITfThreadFocusSink,
+    ITfDisplayAttributeProvider
+)]
+pub struct TextService {
+    st: RefCell<State>,
+}
+
+impl TextService {
+    pub fn new() -> Self {
+        crate::lock_module(true);
+        Self { st: RefCell::new(State::default()) }
+    }
+}
+
+impl Drop for TextService {
+    fn drop(&mut self) {
+        crate::lock_module(false);
+    }
+}
+
+fn utf16_len(s: &str) -> i32 {
+    s.encode_utf16().count() as i32
+}
+
+/// UTF-16 offset of byte offset `b` in `s`.
+fn u16_at(s: &str, b: usize) -> i32 {
+    utf16_len(&s[..b])
+}
+
+fn sub_range(range: &ITfRange, ec: u32, start: i32, end: i32) -> Result<ITfRange> {
+    unsafe {
+        let r = range.Clone()?;
+        r.Collapse(ec, TF_ANCHOR_START)?;
+        let mut moved = 0;
+        r.ShiftEnd(ec, end, &mut moved, std::ptr::null())?;
+        r.ShiftStart(ec, start, &mut moved, std::ptr::null())?;
+        Ok(r)
+    }
+}
+
+fn set_selection(ctx: &ITfContext, ec: u32, range: &ITfRange) -> Result<()> {
+    let sel = TF_SELECTION {
+        range: std::mem::ManuallyDrop::new(Some(range.clone())),
+        style: TF_SELECTIONSTYLE { ase: TF_AE_NONE, fInterimChar: BOOL(0) },
+    };
+    let r = unsafe { ctx.SetSelection(ec, &[sel.clone()]) };
+    drop(std::mem::ManuallyDrop::into_inner(sel.range));
+    r
+}
+
+impl TextService_Impl {
+    fn is_open(&self) -> bool {
+        let st = self.st.borrow();
+        let Some(tm) = &st.thread_mgr else { return false };
+        unsafe {
+            tm.cast::<ITfCompartmentMgr>()
+                .and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE))
+                .and_then(|c| c.GetValue())
+                .map(|v| i32::try_from(&v).unwrap_or(0) != 0)
+                .unwrap_or(false)
+        }
+    }
+
+    fn set_open(&self, open: bool) {
+        let st = self.st.borrow();
+        let Some(tm) = &st.thread_mgr else { return };
+        unsafe {
+            if let Ok(c) = tm
+                .cast::<ITfCompartmentMgr>()
+                .and_then(|m| m.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE))
+            {
+                let _ = c.SetValue(st.tid, &VARIANT::from(open as i32));
+            }
+        }
+    }
+
+    /// Whether the key-down event would be consumed.
+    fn wants_key(&self, vk: u32, lparam: isize) -> bool {
+        if keys::toggle_key(vk).is_some() {
+            return true;
+        }
+        if crate::converter().is_none() || !self.is_open() {
+            return false;
+        }
+        let Some(key) = keys::translate(vk, lparam) else { return false };
+        if self.st.borrow().session.is_active() {
+            return true;
+        }
+        matches!(key, sweet_engine::Key::Char(_) | sweet_engine::Key::Space)
+    }
+
+    /// Pushes the session state (commit text, preedit, candidates) into the
+    /// document through an edit session.
+    fn update(&self, ctx: &ITfContext) -> Result<()> {
+        let this: ComObject<TextService> = self.to_object();
+        let tid = self.st.borrow().tid;
+        let ctx2 = ctx.clone();
+        edit::request(ctx, tid, move |ec| update_document(&this, ec, &ctx2))
+    }
+
+    fn handle_toggle(&self, ctx: &ITfContext, t: Toggle) -> Result<()> {
+        let open = self.is_open();
+        let new = match t {
+            Toggle::Toggle => !open,
+            Toggle::On => true,
+            Toggle::Off => false,
+        };
+        if !new && self.st.borrow().session.is_active() {
+            self.st.borrow_mut().session.commit_all();
+            self.update(ctx)?;
+        }
+        if new != open {
+            self.set_open(new);
+        }
+        Ok(())
+    }
+}
+
+fn ensure_composition(
+    this: &ComObject<TextService>,
+    st: &mut State,
+    ec: u32,
+    ctx: &ITfContext,
+) -> Result<ITfComposition> {
+    if let Some(c) = &st.composition {
+        return Ok(c.clone());
+    }
+    unsafe {
+        let ins: ITfInsertAtSelection = ctx.cast()?;
+        let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
+        let cc: ITfContextComposition = ctx.cast()?;
+        let sink: ITfCompositionSink = this.to_interface();
+        let comp = cc.StartComposition(ec, &range, &sink)?;
+        st.composition = Some(comp.clone());
+        Ok(comp)
+    }
+}
+
+fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> Result<()> {
+    let Ok(mut st) = this.st.try_borrow_mut() else { return Ok(()) };
+    let st = &mut *st;
+    let commit = st.session.take_commit();
+    let pre = st.session.preedit();
+    unsafe {
+        let attr_prop = ctx.GetProperty(&GUID_PROP_ATTRIBUTE)?;
+        if !commit.is_empty() {
+            let comp = ensure_composition(this, st, ec, ctx)?;
+            let range = comp.GetRange()?;
+            let text: Vec<u16> = commit.encode_utf16().collect();
+            range.SetText(ec, 0, &text)?;
+            let _ = attr_prop.Clear(ec, &range);
+            range.Collapse(ec, TF_ANCHOR_END)?;
+            set_selection(ctx, ec, &range)?;
+            comp.EndComposition(ec)?;
+            st.composition = None;
+        }
+        if pre.text.is_empty() {
+            if let Some(comp) = st.composition.take() {
+                let range = comp.GetRange()?;
+                range.SetText(ec, 0, &[])?;
+                comp.EndComposition(ec)?;
+            }
+            if let Some(w) = &st.window {
+                w.hide();
+            }
+            return Ok(());
+        }
+        let comp = ensure_composition(this, st, ec, ctx)?;
+        let range = comp.GetRange()?;
+        let text: Vec<u16> = pre.text.encode_utf16().collect();
+        range.SetText(ec, 0, &text)?;
+        let _ = attr_prop.Clear(ec, &range);
+        let mut focused: Option<ITfRange> = None;
+        for &(s, e, attr) in &pre.spans {
+            let r = sub_range(&range, ec, u16_at(&pre.text, s), u16_at(&pre.text, e))?;
+            let atom = match attr {
+                SpanAttr::Input => st.atoms[0],
+                SpanAttr::Converted => st.atoms[1],
+                SpanAttr::Focused => st.atoms[2],
+            };
+            let _ = attr_prop.SetValue(ec, &r, &VARIANT::from(atom));
+            if attr == SpanAttr::Focused {
+                focused = Some(r);
+            }
+        }
+        let caret = u16_at(&pre.text, pre.caret);
+        let caret_range = sub_range(&range, ec, caret, caret)?;
+        set_selection(ctx, ec, &caret_range)?;
+
+        match st.session.candidates() {
+            Some(list) => {
+                let target = focused.unwrap_or(range);
+                let mut rc = RECT::default();
+                let mut clipped = BOOL(0);
+                if let Ok(view) = ctx.GetActiveView() {
+                    let _ = view.GetTextExt(ec, &target, &mut rc, &mut clipped);
+                }
+                if st.window.is_none() {
+                    st.window = CandidateWindow::new().ok();
+                }
+                if let Some(w) = &st.window {
+                    w.show(&list, rc);
+                }
+            }
+            None => {
+                if let Some(w) = &st.window {
+                    w.hide();
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl ITfTextInputProcessor_Impl for TextService_Impl {
+    fn Activate(&self, ptim: Ref<ITfThreadMgr>, tid: u32) -> Result<()> {
+        self.ActivateEx(ptim, tid, 0)
+    }
+
+    fn Deactivate(&self) -> Result<()> {
+        crate::guard(|| {
+            let mut st = self.st.borrow_mut();
+            if let Some(tm) = st.thread_mgr.take() {
+                unsafe {
+                    if let Ok(km) = tm.cast::<ITfKeystrokeMgr>() {
+                        let _ = km.UnadviseKeyEventSink(st.tid);
+                    }
+                    if let (Some(cookie), Ok(src)) = (st.focus_cookie.take(), tm.cast::<ITfSource>()) {
+                        let _ = src.UnadviseSink(cookie);
+                    }
+                }
+            }
+            st.composition = None;
+            st.session.reset();
+            st.window = None;
+            Ok(())
+        })
+    }
+}
+
+impl ITfTextInputProcessorEx_Impl for TextService_Impl {
+    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, _flags: u32) -> Result<()> {
+        crate::guard(|| {
+            let tm = ptim.ok()?.clone();
+            {
+                let mut st = self.st.borrow_mut();
+                st.thread_mgr = Some(tm.clone());
+                st.tid = tid;
+            }
+            unsafe {
+                let km: ITfKeystrokeMgr = tm.cast()?;
+                let sink: ITfKeyEventSink = self.to_interface();
+                // Fails for unregistered CLSIDs (test harness); keep going.
+                if let Err(e) = km.AdviseKeyEventSink(tid, &sink, true) {
+                    crate::debug_log!("AdviseKeyEventSink: {e}");
+                }
+                let src: ITfSource = tm.cast()?;
+                let fs: ITfThreadFocusSink = self.to_interface();
+                let cookie = src
+                    .AdviseSink(&ITfThreadFocusSink::IID, &fs)
+                    .inspect_err(|e| crate::debug_log!("AdviseSink(ThreadFocus): {e}"))?;
+                self.st.borrow_mut().focus_cookie = Some(cookie);
+                let cats: ITfCategoryMgr =
+                    CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)?;
+                let mut atoms = [0i32; 3];
+                for (i, g) in [GUID_ATTR_INPUT, GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED].iter().enumerate() {
+                    atoms[i] = cats
+                        .RegisterGUID(g)
+                        .inspect_err(|e| crate::debug_log!("RegisterGUID: {e}"))? as i32;
+                }
+                self.st.borrow_mut().atoms = atoms;
+            }
+            // Start in hiragana mode; also warms up the dictionary mapping.
+            let _ = crate::converter();
+            self.set_open(true);
+            Ok(())
+        })
+    }
+}
+
+impl ITfKeyEventSink_Impl for TextService_Impl {
+    fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        crate::guard(|| Ok(BOOL(self.wants_key(wparam.0 as u32, lparam.0) as i32)))
+    }
+
+    fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        Ok(BOOL(0))
+    }
+
+    fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        crate::guard(|| {
+            let vk = wparam.0 as u32;
+            let ctx = pic.ok()?.clone();
+            if let Some(t) = keys::toggle_key(vk) {
+                self.handle_toggle(&ctx, t)?;
+                return Ok(BOOL(1));
+            }
+            if !self.wants_key(vk, lparam.0) {
+                return Ok(BOOL(0));
+            }
+            let (Some(conv), Some(key)) = (crate::converter(), keys::translate(vk, lparam.0)) else {
+                return Ok(BOOL(0));
+            };
+            let consumed = self.st.borrow_mut().session.handle(conv, key);
+            if consumed {
+                self.update(&ctx)?;
+            }
+            Ok(BOOL(consumed as i32))
+        })
+    }
+
+    fn OnKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        Ok(BOOL(0))
+    }
+
+    fn OnPreservedKey(&self, _pic: Ref<ITfContext>, _rguid: *const GUID) -> Result<BOOL> {
+        Ok(BOOL(0))
+    }
+}
+
+impl ITfCompositionSink_Impl for TextService_Impl {
+    fn OnCompositionTerminated(&self, _ec: u32, _comp: Ref<ITfComposition>) -> Result<()> {
+        // The application ended the composition (e.g. clicked elsewhere).
+        // The text stays in the document as-is.
+        if let Ok(mut st) = self.st.try_borrow_mut() {
+            st.composition = None;
+            st.session.reset();
+            if let Some(w) = &st.window {
+                w.hide();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ITfThreadFocusSink_Impl for TextService_Impl {
+    fn OnSetThreadFocus(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnKillThreadFocus(&self) -> Result<()> {
+        if let Ok(st) = self.st.try_borrow() {
+            if let Some(w) = &st.window {
+                w.hide();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
+    fn EnumDisplayAttributeInfo(&self) -> Result<IEnumTfDisplayAttributeInfo> {
+        Ok(display_attr::EnumInfo::new())
+    }
+
+    fn GetDisplayAttributeInfo(&self, guid: *const GUID) -> Result<ITfDisplayAttributeInfo> {
+        if guid.is_null() {
+            return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+        }
+        display_attr::info(unsafe { &*guid })
+    }
+}

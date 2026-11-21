@@ -1,0 +1,458 @@
+//! Fluent-style candidate window drawn with Direct2D / DirectWrite.
+//!
+//! The window never takes activation; it is a top-most tool popup with
+//! DWM rounded corners, follows the system light/dark theme and accent
+//! color, fades in and animates the selection highlight.
+
+use std::cell::RefCell;
+use std::sync::Once;
+use std::time::Instant;
+
+use sweet_engine::CandidateList;
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+};
+use windows::Win32::Graphics::Direct2D::{
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
+};
+use windows::Win32::Graphics::DirectWrite::{
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+};
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, EndPaint, InvalidateRect, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, PAINTSTRUCT, ValidateRect,
+};
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    GWLP_USERDATA, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
+    MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+};
+use windows_core::{HSTRING, PCWSTR, Result, w};
+
+const CLASS_NAME: PCWSTR = w!("SweetImeCandidateWindow");
+const TIMER_ID: usize = 1;
+
+// Layout in DIPs.
+const PAD: f32 = 4.0;
+const ROW_H: f32 = 32.0;
+const INDEX_W: f32 = 28.0;
+const TEXT_PAD_R: f32 = 16.0;
+const FOOTER_H: f32 = 24.0;
+const FONT_SIZE: f32 = 16.0;
+const MIN_W: f32 = 140.0;
+const FADE_MS: f32 = 90.0;
+const SLIDE_MS: f32 = 70.0;
+
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: D2D1_COLOR_F,
+    text: D2D1_COLOR_F,
+    sub: D2D1_COLOR_F,
+    hover: D2D1_COLOR_F,
+    accent: D2D1_COLOR_F,
+    border: COLORREF,
+}
+
+fn rgb(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
+    D2D1_COLOR_F { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a }
+}
+
+fn read_dword(path: PCWSTR, name: PCWSTR) -> Option<u32> {
+    let mut v = 0u32;
+    let mut size = 4u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            path,
+            name,
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut v as *mut u32 as *mut _),
+            Some(&mut size),
+        )
+    };
+    r.is_ok().then_some(v)
+}
+
+fn palette() -> Palette {
+    let light = read_dword(
+        w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+        w!("AppsUseLightTheme"),
+    )
+    .unwrap_or(1)
+        != 0;
+    // AccentColor is stored as 0xAABBGGRR.
+    let accent = read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor"));
+    let accent_c = |dark: bool| match accent {
+        Some(v) => {
+            let (r, g, b) = ((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8);
+            if dark {
+                // Lighten for dark backgrounds.
+                let l = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
+                rgb(l(r), l(g), l(b), 1.0)
+            } else {
+                rgb(r, g, b, 1.0)
+            }
+        }
+        None if dark => rgb(0x60, 0xcd, 0xff, 1.0),
+        None => rgb(0x00, 0x5f, 0xb8, 1.0),
+    };
+    if light {
+        Palette {
+            bg: rgb(0xf9, 0xf9, 0xf9, 1.0),
+            text: rgb(0x1a, 0x1a, 0x1a, 1.0),
+            sub: rgb(0x5f, 0x5f, 0x5f, 1.0),
+            hover: rgb(0x00, 0x00, 0x00, 0.06),
+            accent: accent_c(false),
+            border: COLORREF(0x00e5e5e5),
+        }
+    } else {
+        Palette {
+            bg: rgb(0x2c, 0x2c, 0x2c, 1.0),
+            text: rgb(0xff, 0xff, 0xff, 1.0),
+            sub: rgb(0xc5, 0xc5, 0xc5, 1.0),
+            hover: rgb(0xff, 0xff, 0xff, 0.08),
+            accent: accent_c(true),
+            border: COLORREF(0x00404040),
+        }
+    }
+}
+
+struct State {
+    d2d: ID2D1Factory,
+    dwrite: IDWriteFactory,
+    target: Option<ID2D1HwndRenderTarget>,
+    format: IDWriteTextFormat,
+    small: IDWriteTextFormat,
+    pal: Palette,
+    items: Vec<String>,
+    selected: usize,
+    page_start: usize,
+    page_len: usize,
+    total: usize,
+    scale: f32,
+    width: f32,
+    /// Animated highlight row (fractional) and animation start.
+    anim_from: f32,
+    anim_start: Instant,
+    shown_at: Instant,
+    visible: bool,
+}
+
+impl State {
+    fn highlight_row(&self) -> f32 {
+        let target = (self.selected - self.page_start) as f32;
+        let t = (self.anim_start.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS).min(1.0);
+        let e = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+        self.anim_from + (target - self.anim_from) * e
+    }
+
+    fn animating(&self) -> bool {
+        self.anim_start.elapsed().as_secs_f32() * 1000.0 < SLIDE_MS
+            || self.shown_at.elapsed().as_secs_f32() * 1000.0 < FADE_MS
+    }
+}
+
+thread_local! {
+    // The window lives on the host's UI thread; state is per-thread.
+    static STATES: RefCell<Vec<(isize, Box<State>)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn with_state<R>(hwnd: HWND, f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    STATES.with(|s| {
+        let mut s = s.borrow_mut();
+        s.iter_mut().find(|(h, _)| *h == hwnd.0 as isize).map(|(_, st)| f(st))
+    })
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+pub struct CandidateWindow {
+    hwnd: HWND,
+}
+
+fn register_class() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: CS_DROPSHADOW | CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wndproc),
+            hInstance: crate::dll_instance(),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            lpszClassName: CLASS_NAME,
+            ..Default::default()
+        };
+        RegisterClassExW(&wc);
+    });
+}
+
+impl CandidateWindow {
+    pub fn new() -> Result<Self> {
+        register_class();
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                CLASS_NAME,
+                PCWSTR::null(),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                Some(crate::dll_instance()),
+                None,
+            )?;
+            let pref = DWMWCP_ROUND;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &pref as *const _ as *const _,
+                4,
+            );
+            let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+            let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            let font = HSTRING::from("Yu Gothic UI");
+            let locale = HSTRING::from("ja-jp");
+            let format = dwrite.CreateTextFormat(
+                &font, None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, FONT_SIZE, &locale,
+            )?;
+            let small = dwrite.CreateTextFormat(
+                &HSTRING::from("Segoe UI Variable Text"), None, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0, &locale,
+            )?;
+            let state = State {
+                d2d,
+                dwrite,
+                target: None,
+                format,
+                small,
+                pal: palette(),
+                items: Vec::new(),
+                selected: 0,
+                page_start: 0,
+                page_len: 0,
+                total: 0,
+                scale: 1.0,
+                width: MIN_W,
+                anim_from: 0.0,
+                anim_start: Instant::now(),
+                shown_at: Instant::now(),
+                visible: false,
+            };
+            STATES.with(|s| s.borrow_mut().push((hwnd.0 as isize, Box::new(state))));
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
+            Ok(Self { hwnd })
+        }
+    }
+
+    /// Shows `list` next to `anchor` (screen coordinates of the focused text).
+    pub fn show(&self, list: &CandidateList, anchor: RECT) {
+        let hwnd = self.hwnd;
+        let geom = with_state(hwnd, |st| unsafe {
+            let dpi = GetDpiForWindow(hwnd);
+            st.scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
+            let page_start = list.page_start();
+            let page_end = (page_start + list.page_size).min(list.items.len());
+            let was_visible = st.visible;
+            let prev_row = if was_visible && st.page_start == page_start {
+                st.highlight_row()
+            } else {
+                (list.selected - page_start) as f32
+            };
+            st.items = list.items[page_start..page_end].to_vec();
+            st.page_start = page_start;
+            st.page_len = page_end - page_start;
+            st.selected = list.selected;
+            st.total = list.items.len();
+            st.anim_from = prev_row;
+            st.anim_start = Instant::now();
+            if !was_visible {
+                st.pal = palette();
+                st.shown_at = Instant::now();
+            }
+            // Measure the widest candidate.
+            let mut max_w: f32 = 0.0;
+            for it in &st.items {
+                if let Ok(layout) = st.dwrite.CreateTextLayout(&wide(it), &st.format, 2000.0, 100.0) {
+                    let mut m = DWRITE_TEXT_METRICS::default();
+                    if layout.GetMetrics(&mut m).is_ok() {
+                        max_w = max_w.max(m.widthIncludingTrailingWhitespace);
+                    }
+                }
+            }
+            st.width = (PAD * 2.0 + INDEX_W + max_w + TEXT_PAD_R).max(MIN_W).ceil();
+            let height = PAD * 2.0 + ROW_H * st.page_len as f32 + FOOTER_H;
+            st.visible = true;
+            let border = st.pal.border;
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border as *const _ as *const _, 4);
+            ((st.width * st.scale) as i32, (height * st.scale) as i32, (PAD + INDEX_W) * st.scale, was_visible)
+        });
+        let Some((w, h, text_x, was_visible)) = geom else { return };
+        unsafe {
+            // Align candidate text with the composition text.
+            let mut x = anchor.left - text_x as i32;
+            let mut y = anchor.bottom + 4;
+            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let mon = MonitorFromPoint(POINT { x: anchor.left, y: anchor.bottom }, MONITOR_DEFAULTTONEAREST);
+            if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                let wa = mi.rcWork;
+                if y + h > wa.bottom {
+                    y = anchor.top - h - 4;
+                }
+                x = x.clamp(wa.left, (wa.right - w).max(wa.left));
+                y = y.max(wa.top);
+            }
+            if !was_visible {
+                let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), 0, LWA_ALPHA);
+            }
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetTimer(Some(self.hwnd), TIMER_ID, 8, None);
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    pub fn hide(&self) {
+        with_state(self.hwnd, |st| st.visible = false);
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+}
+
+impl Drop for CandidateWindow {
+    fn drop(&mut self) {
+        STATES.with(|s| s.borrow_mut().retain(|(h, _)| *h != self.hwnd.0 as isize));
+        unsafe {
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
+fn render(hwnd: HWND, st: &mut State) -> Result<()> {
+    unsafe {
+        let mut rc = RECT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc);
+        let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
+        if st.target.is_none() {
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_UNKNOWN },
+                ..Default::default()
+            };
+            let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
+            st.target = Some(st.d2d.CreateHwndRenderTarget(&props, &hprops)?);
+        }
+        let rt = st.target.clone().unwrap();
+        rt.Resize(&size)?;
+        let dpi = 96.0 * st.scale;
+        rt.SetDpi(dpi, dpi);
+        rt.BeginDraw();
+        rt.Clear(Some(&st.pal.bg));
+        let brush = rt.CreateSolidColorBrush(&st.pal.text, None)?;
+        let sub = rt.CreateSolidColorBrush(&st.pal.sub, None)?;
+        let hover = rt.CreateSolidColorBrush(&st.pal.hover, None)?;
+        let accent = rt.CreateSolidColorBrush(&st.pal.accent, None)?;
+
+        // Selection pill + accent bar (animated).
+        let row = st.highlight_row();
+        let top = PAD + row * ROW_H;
+        let pill = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F { left: PAD, top: top + 2.0, right: st.width - PAD, bottom: top + ROW_H - 2.0 },
+            radiusX: 4.0,
+            radiusY: 4.0,
+        };
+        rt.FillRoundedRectangle(&pill, &hover);
+        let bar = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F { left: PAD, top: top + 9.0, right: PAD + 3.0, bottom: top + ROW_H - 9.0 },
+            radiusX: 1.5,
+            radiusY: 1.5,
+        };
+        rt.FillRoundedRectangle(&bar, &accent);
+
+        for (i, it) in st.items.iter().enumerate() {
+            let y = PAD + i as f32 * ROW_H;
+            let idx = wide(&format!("{}", i + 1));
+            if let Ok(l) = st.dwrite.CreateTextLayout(&idx, &st.small, INDEX_W, ROW_H) {
+                let mut m = DWRITE_TEXT_METRICS::default();
+                let _ = l.GetMetrics(&mut m);
+                let origin = windows_numerics::Vector2 { X: PAD + 12.0, Y: y + (ROW_H - m.height) / 2.0 };
+                rt.DrawTextLayout(origin, &l, &sub, Default::default());
+            }
+            if let Ok(l) = st.dwrite.CreateTextLayout(&wide(it), &st.format, 2000.0, ROW_H) {
+                let mut m = DWRITE_TEXT_METRICS::default();
+                let _ = l.GetMetrics(&mut m);
+                let origin = windows_numerics::Vector2 { X: PAD + INDEX_W, Y: y + (ROW_H - m.height) / 2.0 };
+                rt.DrawTextLayout(origin, &l, &brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+            }
+        }
+        // Footer: position / total.
+        let footer = wide(&format!("{} / {}", st.selected + 1, st.total));
+        if let Ok(l) = st.dwrite.CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H) {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            let _ = l.GetMetrics(&mut m);
+            let y = PAD + st.page_len as f32 * ROW_H;
+            let origin = windows_numerics::Vector2 {
+                X: st.width - PAD - 10.0 - m.width,
+                Y: y + (FOOTER_H - m.height) / 2.0 - 2.0,
+            };
+            rt.DrawTextLayout(origin, &l, &sub, Default::default());
+        }
+        if let Err(e) = rt.EndDraw(None, None) {
+            // Device lost: recreate next time.
+            st.target = None;
+            return Err(e);
+        }
+        // Fade-in.
+        let t = (st.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), (255.0 * t) as u8, LWA_ALPHA);
+    }
+    Ok(())
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                BeginPaint(hwnd, &mut ps);
+                if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        with_state(hwnd, |st| render(hwnd, st));
+                    }));
+                }
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == TIMER_ID => {
+                let animating = with_state(hwnd, |st| st.visible && st.animating()).unwrap_or(false);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                if !animating {
+                    let _ = KillTimer(Some(hwnd), TIMER_ID);
+                }
+                let _ = ValidateRect(Some(hwnd), None);
+                with_state(hwnd, |st| render(hwnd, st));
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
