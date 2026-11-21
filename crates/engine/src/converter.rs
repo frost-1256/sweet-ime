@@ -167,6 +167,13 @@ impl Converter {
         }
         let mut h = self.history();
         h.reload_if_changed();
+        self.learned_extras_from(text, &h)
+    }
+
+    fn learned_extras_from(&self, text: &str, h: &UserHistory) -> Vec<Extra> {
+        if h.is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for (pos, _) in text.char_indices() {
             h.common_prefix(&text[pos..], |l, e| {
@@ -318,17 +325,15 @@ impl Converter {
                 pos = e;
                 continue;
             }
-            let mut found = Vec::new();
-            self.dict.common_prefix(rest, |l, e| found.push((l, e)));
-            for (l, e) in found {
+            self.dict.common_prefix(rest, |l, e| {
                 if crosses(pos, pos + l) {
-                    continue;
+                    return;
                 }
                 push(&mut lat, Node {
                     start: pos, end: pos + l, lid: e.lid, rid: e.rid,
                     wcost: e.cost as i32, surface: e.surface, best: i32::MAX, learned: false,
                 });
-            }
+            });
             // Always allow a single-character fallback to keep the lattice connected.
             let cl = c.len_utf8();
             push(&mut lat, Node {
@@ -351,27 +356,66 @@ impl Converter {
 
     fn viterbi(&self, lat: &mut Lattice<'_>) {
         let len = lat.ends.len() - 1;
+        // Alternative spellings with the same left POS share their incoming
+        // transition cost at this position.
+        let mut incoming = vec![(usize::MAX, i32::MAX); self.dict.pos_count()];
+        let mut outgoing = vec![(usize::MAX, 0); self.dict.pos_count()];
+        let mut predecessors: Vec<(u16, i32)> = Vec::new();
         for pos in 0..=len {
-            if pos > 0 && lat.ends[pos].is_empty() {
+            if lat.begins[pos].is_empty() || lat.ends[pos].is_empty() {
                 continue;
+            }
+            predecessors.clear();
+            for &id in &lat.ends[pos] {
+                let prev = &lat.nodes[id as usize];
+                if prev.best == i32::MAX {
+                    continue;
+                }
+                let entry = &mut outgoing[prev.rid as usize];
+                if entry.0 == pos {
+                    let best = &mut predecessors[entry.1].1;
+                    *best = (*best).min(prev.best);
+                } else {
+                    *entry = (pos, predecessors.len());
+                    predecessors.push((prev.rid, prev.best));
+                }
             }
             for bi in 0..lat.begins[pos].len() {
                 let id = lat.begins[pos][bi] as usize;
                 let (lid, wcost) = (lat.nodes[id].lid, lat.nodes[id].wcost);
-                let mut best = i32::MAX;
-                for &p in &lat.ends[pos] {
-                    let prev = &lat.nodes[p as usize];
-                    if prev.best == i32::MAX {
-                        continue;
+                let entry = &mut incoming[lid as usize];
+                if entry.0 != pos {
+                    let mut best = i32::MAX;
+                    for &(rid, cost) in &predecessors {
+                        best = best.min(cost + self.dict.connection(rid, lid));
                     }
-                    let c = prev.best + self.dict.connection(prev.rid, lid);
-                    if c < best {
-                        best = c;
-                    }
+                    *entry = (pos, best);
                 }
+                let best = entry.1;
                 lat.nodes[id].best = if best == i32::MAX { i32::MAX } else { best + wcost };
             }
         }
+    }
+
+    /// The best path can be traced from the saved Viterbi costs. Walk
+    /// predecessors in reverse insertion order to match A* on ties.
+    fn best_path(&self, lat: &Lattice<'_>) -> Option<Vec<u32>> {
+        let mut path = Vec::new();
+        let mut current = EOS;
+        while current != BOS {
+            let node = &lat.nodes[current as usize];
+            let next = lat.ends[node.start].iter().rev().copied().find(|&id| {
+                let prev = &lat.nodes[id as usize];
+                prev.best != i32::MAX
+                    && prev.best + self.dict.connection(prev.rid, node.lid) == node.best - node.wcost
+            })?;
+            if next != BOS {
+                path.push(next);
+            }
+            current = next;
+        }
+        path.reverse();
+        Some(path)
     }
 
     /// N-best paths (BOS..EOS exclusive) via backward A* over the Viterbi
@@ -472,6 +516,20 @@ impl Converter {
         segs
     }
 
+    /// Scores typo variants against the same history, checking its file once.
+    pub(crate) fn score_typos<T>(&self, evaluate: impl FnOnce(&dyn Fn(&str) -> i32) -> T) -> T {
+        let mut history = self.learning_enabled().then(|| self.history());
+        if let Some(h) = history.as_mut() {
+            h.reload_if_changed();
+        }
+        evaluate(&|text| {
+            let extras = history.as_ref().map_or_else(Vec::new, |h| self.learned_extras_from(text, h));
+            let mut lat = self.build_lattice(text, &[], &extras);
+            self.viterbi(&mut lat);
+            lat.nodes[EOS as usize].best
+        })
+    }
+
     /// Convert `text` (hiragana) into up to `n` whole-sentence candidates.
     /// `boundaries` are byte offsets that segments must break at (user-resized
     /// bunsetsu); pass `&[]` for automatic segmentation.
@@ -482,6 +540,11 @@ impl Converter {
         let extras = self.learned_extras(text);
         let mut lat = self.build_lattice(text, boundaries, &extras);
         self.viterbi(&mut lat);
+        if n == 1 {
+            let Some(path) = self.best_path(&lat) else { return Vec::new() };
+            let segments = self.segment(self.to_words(&lat, text, &path), boundaries);
+            return vec![Conversion { segments, cost: lat.nodes[EOS as usize].best }];
+        }
         let mut seen = HashSet::new();
         let mut res = Vec::new();
         for (cost, path) in self.nbest_paths(&lat, n * 3) {
@@ -537,9 +600,20 @@ impl Converter {
     /// then the best conversion of all but the last bunsetsu followed by
     /// completions of the last one (so predictions keep working mid-sentence).
     pub fn predict_sentence(&self, text: &str, n: usize) -> Vec<String> {
+        self.predict_with_conversion(text, n, None)
+    }
+
+    pub(crate) fn predict_with_conversion(&self, text: &str, n: usize, best: Option<&Conversion>) -> Vec<String> {
         let mut out = self.predict(text, n);
-        let best = self.convert(text, &[], 1);
-        if let Some(conv) = best.first() {
+        if out.len() >= n {
+            return out;
+        }
+        let computed;
+        let best = if best.is_some() { best } else {
+            computed = self.convert(text, &[], 1);
+            computed.first()
+        };
+        if let Some(conv) = best {
             if conv.segments.len() >= 2 {
                 let (last, head) = conv.segments.split_last().unwrap();
                 let head: String = head.iter().map(|s| s.surface.as_str()).collect();

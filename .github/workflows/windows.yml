@@ -1,0 +1,82 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v[0-9]*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Build and test
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the Mozc dictionary
+        uses: actions/checkout@v7
+        with:
+          repository: google/mozc
+          ref: 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
+          path: third_party/mozc-data
+          sparse-checkout: src/data/dictionary_oss
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal --target i686-pc-windows-msvc
+
+      - name: Build and verify the installer
+        run: ./scripts/build.ps1
+
+      - name: Test the workspace with the system dictionary
+        run: |
+          New-Item -ItemType Directory -Force data | Out-Null
+          Copy-Item -LiteralPath dist/system.dict -Destination data/system.dict
+          cargo test --locked --workspace --all-targets
+
+      - name: Store the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: SweetIME-Windows
+          path: out/SweetIME-Setup.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: SweetIME-Windows
+          path: out
+
+      - name: Attach the installer to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); then
+            if ! grep -Fxq SweetIME-Setup.exe <<< "$assets"; then
+              gh release upload "$RELEASE_TAG" out/SweetIME-Setup.exe
+            fi
+          else
+            args=(--verify-tag --generate-notes)
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" out/SweetIME-Setup.exe "${args[@]}"
+          fi

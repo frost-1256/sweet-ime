@@ -25,6 +25,7 @@ struct TextStore {
     text: RefCell<Vec<u16>>,
     sel: Cell<(i32, i32)>,
     sink: RefCell<Option<ITextStoreACPSink>>,
+    reject_sync: Cell<bool>,
     /// The "application" window the document lives in.
     hwnd: HWND,
 }
@@ -45,6 +46,9 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         Ok(())
     }
     fn RequestLock(&self, flags: u32) -> Result<HRESULT> {
+        if self.reject_sync.get() && flags & TS_LF_SYNC != 0 {
+            return Ok(TS_E_SYNCHRONOUS);
+        }
         let sink = self.sink.borrow().clone().ok_or(windows_core::Error::from(E_INVALIDARG))?;
         unsafe { sink.OnLockGranted(TEXT_STORE_LOCK_FLAGS(flags & !TS_LF_SYNC))? };
         Ok(S_OK)
@@ -343,7 +347,7 @@ fn main() -> Result<()> {
     let appdata = std::env::temp_dir().join(format!("sweet-ime-harness-{}", std::process::id()));
     unsafe { std::env::set_var("APPDATA", &appdata) };
     // Custom key bindings: Ctrl+Space toggles, 変換 converts while composing.
-    {
+    let preserved = {
         use sweet_engine::keymap::{Action, Binding, Chord, When};
         let mut km = sweet_engine::Keymap::default();
         km.bindings.push(Binding {
@@ -354,7 +358,8 @@ fn main() -> Result<()> {
         km.bindings.push(Binding { chord: Chord::key(0x1C), action: Action::Key(sweet_engine::Key::Space), when: When::Composing });
         std::fs::create_dir_all(appdata.join("SweetIME")).unwrap();
         std::fs::write(appdata.join("SweetIME").join("keymap.txt"), km.to_text()).unwrap();
-    }
+        sweet_engine::keymap::preserved_toggles(&km)
+    };
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         let module = LoadLibraryW(&HSTRING::from(dll.as_str()))?;
@@ -382,6 +387,7 @@ fn main() -> Result<()> {
             text: RefCell::new(Vec::new()),
             sel: Cell::new((0, 0)),
             sink: RefCell::new(None),
+            reject_sync: Cell::new(false),
             hwnd: app_hwnd,
         });
         let store_unk: IUnknown = store.to_interface();
@@ -626,15 +632,42 @@ fn main() -> Result<()> {
         h.key(0x1B);
         h.key(0x1B);
 
-        // 7. Alt+` arrives as a preserved key (the first modifier toggle).
+        // 7. Hotkeys delivered as preserved keys.
         h.clear();
-        let alt_grave = GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1b00);
+        let key_guid = |wanted| {
+            let index = preserved.iter().position(|(chord, _)| *chord == wanted).unwrap();
+            GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1b00 + index as u128)
+        };
+        use sweet_engine::keymap::Chord;
+        let alt_grave = key_guid(Chord { alt: true, ..Chord::key(0xC0) });
         let eaten = h.sink.OnPreservedKey(&h.ctx, &alt_grave).map(|b| b.as_bool()).unwrap_or(false);
         pump();
         check("alt+` preserved key eaten", format!("{eaten}"), "true", &mut fails);
         check("alt+` turned off", format!("{}", h.key(0x41)), "false", &mut fails);
         let _ = h.sink.OnPreservedKey(&h.ctx, &alt_grave);
         check("alt+` turned on", format!("{}", h.key(0x41)), "true", &mut fails);
+        h.key(0x1B);
+        h.key(0x1B);
+
+        h.clear();
+        h.type_str("kana");
+        let composed = h.text();
+        h.store.reject_sync.set(true);
+        let eisu = key_guid(Chord::key(0xF0));
+        let hankaku = key_guid(Chord::key(0xF4));
+        let eaten = h.sink.OnPreservedKey(None::<&ITfContext>, &eisu)?.as_bool();
+        pump();
+        h.store.reject_sync.set(false);
+        check("英数 preserved without context", eaten.to_string(), "true", &mut fails);
+        check("英数 turns off during composition", h.key(0x41).to_string(), "false", &mut fails);
+        check("英数 keeps composed text", h.text(), &composed, &mut fails);
+        let compositions = h.ctx.cast::<ITfContextComposition>()?.EnumCompositions()?;
+        let mut fetched = 0;
+        compositions.Next(&mut [None], &mut fetched)?;
+        check("英数 ends the composition", fetched.to_string(), "0", &mut fails);
+        let eaten = h.sink.OnPreservedKey(None::<&ITfContext>, &hankaku)?.as_bool();
+        check("半角/全角 alias turns on", eaten.to_string(), "true", &mut fails);
+        check("on types Japanese again", h.key(0x41).to_string(), "true", &mut fails);
         h.key(0x1B);
         h.key(0x1B);
         // The taskbar mode indicator can only be added for a registered TIP.

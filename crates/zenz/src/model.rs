@@ -538,9 +538,14 @@ impl Model {
 
 /// log-softmax value of `idx` within `logits`.
 pub fn log_prob(logits: &[f32], idx: usize) -> f32 {
+    let (mx, log_sum) = log_normalizer(logits);
+    logits[idx] - mx - log_sum
+}
+
+pub(crate) fn log_normalizer(logits: &[f32]) -> (f32, f32) {
     let mx = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let sum: f32 = logits.iter().map(|v| (v - mx).exp()).sum();
-    logits[idx] - mx - sum.ln()
+    (mx, sum.ln())
 }
 
 pub fn argmax(logits: &[f32]) -> usize {

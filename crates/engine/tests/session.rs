@@ -39,6 +39,22 @@ fn compose_convert_commit() {
 }
 
 #[test]
+fn best_path_matches_the_first_nbest_candidate() {
+    let Some(c) = converter() else { return };
+    for (reading, boundaries) in [
+        ("きしゃのきしゃ", &[][..]),
+        ("きょうはいいてんきですね", &[9, 12][..]),
+        ("ぶいちゃであそぶ", &[][..]),
+        ("きのうabcのかいぎ", &[12][..]),
+    ] {
+        let best = c.convert(reading, boundaries, 1);
+        let ranked = c.convert(reading, boundaries, 5);
+        assert_eq!(best[0].cost, ranked[0].cost, "{reading}");
+        assert_eq!(best[0].segments, ranked[0].segments, "{reading}");
+    }
+}
+
+#[test]
 fn candidate_window_and_selection() {
     let Some(c) = converter() else { return };
     let mut s = plain();
@@ -194,6 +210,56 @@ fn live_refinement_applies_only_to_current_reading() {
     assert_eq!(s.preedit().text, "昨日の会議");
     s.handle(&c, Key::Enter);
     assert_eq!(s.take_commit(), "昨日の会議");
+}
+
+#[test]
+fn typo_correction_on_space_and_escape() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    for keys in ["saisiylo", "saisiyxo"] {
+        type_str(&mut s, &c, keys);
+        assert_eq!(s.preedit().text, "さいしyぉ");
+        s.handle(&c, Key::Space);
+        assert_eq!(s.preedit().text, "最初");
+        s.handle(&c, Key::Escape);
+        assert_eq!(s.preedit().text, "さいしyぉ");
+        s.handle(&c, Key::Space);
+        s.handle(&c, Key::Enter);
+        assert_eq!(s.take_commit(), "最初");
+    }
+}
+
+#[test]
+fn live_typo_correction_uses_the_corrected_reading() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "saisiylo");
+    assert_eq!(s.preedit().text, "最初");
+    assert_eq!(s.live_request().unwrap().0, "さいしょ");
+    assert!(!s.apply_live("さいしyぉ", "際しyぉ"));
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "最初");
+
+    type_str(&mut s, &c, "saisiylo");
+    s.handle(&c, Key::Escape);
+    assert_eq!(s.preedit().text, "さいしyぉ");
+}
+
+#[test]
+fn valid_kana_typo_is_offered_as_a_suggestion() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    s.options.live_conversion = false;
+    type_str(&mut s, &c, "konyaku");
+    assert_eq!(s.preedit().text, "こにゃく");
+    assert_eq!(s.candidates().unwrap().items[0], "婚約");
+    s.handle(&c, Key::Tab);
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "婚約");
+
+    type_str(&mut s, &c, "konyaku");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "こにゃく");
 }
 
 /// Always prefers the last candidate, to make reranking observable.

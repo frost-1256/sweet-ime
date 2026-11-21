@@ -29,6 +29,9 @@ const MAGIC: &[u8; 8] = b"SWDICT01";
 const HEADER_LEN: usize = 80;
 const ENTRY_LEN: usize = 12;
 
+/// Bundled spellings shared by the dictionary compiler and neural reranker.
+pub const VRCHAT_TERMS: &str = include_str!("vrchat.tsv");
+
 /// Coarse part-of-speech class used for bunsetsu segmentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]

@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::BufWriter;
 use std::path::Path;
-use sweet_engine::dict::{SourceEntry, build};
+use sweet_engine::dict::{SourceEntry, VRCHAT_TERMS, build};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -55,6 +55,35 @@ fn main() -> Result<()> {
                 rid: f[2].parse()?,
                 cost: f[3].parse::<i32>()?.clamp(0, i16::MAX as i32) as i16,
                 surface: f[4].to_string(),
+            });
+        }
+    }
+    // Keep the compound's connections to preceding and following words.
+    let conversion = entries.iter().find(|e| e.reading == "へんかん" && e.surface == "変換");
+    let accuracy = entries.iter().find(|e| e.reading == "せいど" && e.surface == "精度");
+    if let (Some(conversion), Some(accuracy)) = (conversion, accuracy) {
+        entries.push(SourceEntry {
+            reading: "へんかんせいど".into(),
+            lid: conversion.lid,
+            rid: accuracy.rid,
+            cost: 700,
+            surface: "変換精度".into(),
+        });
+    }
+    if let Some(noun) = features.iter().position(|f| f == "名詞,一般,*,*,*,*,*") {
+        for (i, line) in VRCHAT_TERMS.lines().enumerate() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let [reading, surface, cost] = line.split('\t').collect::<Vec<_>>()[..] else {
+                bail!("vrchat.tsv:{}: expected reading, surface and cost", i + 1);
+            };
+            entries.push(SourceEntry {
+                reading: reading.into(),
+                lid: noun as u16,
+                rid: noun as u16,
+                cost: cost.parse().with_context(|| format!("vrchat.tsv:{}: invalid cost", i + 1))?,
+                surface: surface.into(),
             });
         }
     }

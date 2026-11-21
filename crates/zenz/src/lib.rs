@@ -8,8 +8,12 @@ pub mod kernels;
 pub mod model;
 pub mod tokenizer;
 
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::sync::OnceLock;
+
+use sweet_engine::dict::VRCHAT_TERMS;
 
 pub use model::{KvCache, Model};
 pub use tokenizer::Tokenizer;
@@ -128,16 +132,22 @@ impl Zenz {
         let from = p - 1;
         let logits = self.model.forward_tree(&nodes, &parents, &mut cache, from);
         let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
+        // A branch can score several child tokens and EOS from the same logits.
+        let normalizers: Vec<_> = logits.chunks_exact(v).map(model::log_normalizer).collect();
+        let log_prob = |i, token| {
+            let (mx, log_sum) = normalizers[i - from];
+            row(i)[token] - mx - log_sum
+        };
         // Cumulative log-prob of the candidate part of the path to each node.
         let mut cum = vec![0f32; nodes.len()];
         for i in p..nodes.len() {
             let par = parents[i].expect("candidate nodes have a parent");
-            cum[i] = cum[par] + model::log_prob(row(par), nodes[i] as usize);
+            cum[i] = cum[par] + log_prob(par, nodes[i] as usize);
         }
         ends.iter()
             .map(|&end| {
                 let end = end.expect("non-empty prompt");
-                cum[end] + model::log_prob(row(end), eos)
+                cum[end] + log_prob(end, eos)
             })
             .collect()
     }
@@ -156,7 +166,7 @@ pub struct ZenzReranker {
 
 impl ZenzReranker {
     pub fn new(zenz: Zenz) -> Self {
-        Self { zenz, n: 5, mix: 0.3 }
+        Self { zenz, n: 5, mix: 0.12 }
     }
 }
 
@@ -166,12 +176,37 @@ impl sweet_engine::Reranker for ZenzReranker {
     }
 
     fn choose(&self, reading: &str, left_context: &str, cands: &[sweet_engine::Conversion]) -> Option<usize> {
+        static SPELLINGS: OnceLock<HashSet<(&str, &str)>> = OnceLock::new();
+        let spellings = SPELLINGS.get_or_init(|| {
+            VRCHAT_TERMS.lines().filter(|line| !line.starts_with('#')).filter_map(|line| {
+                let mut fields = line.split('\t');
+                Some((fields.next()?, fields.next()?))
+            }).collect()
+        });
+        // Preserve dictionary spellings such as UdonSharp when the model
+        // prefers spelling them phonetically. Still rerank the surrounding text.
+        let coverage: Vec<usize> = cands.iter().map(|c| {
+            c.segments.iter().flat_map(|s| &s.words)
+                .filter(|w| spellings.contains(&(w.reading.as_str(), w.surface.as_str())))
+                .map(|w| w.reading.len())
+                .sum()
+        }).collect();
+        let best_coverage = *coverage.iter().max()?;
+        let mut eligible: Vec<usize> = (0..cands.len()).filter(|&i| coverage[i] == best_coverage).collect();
+        // Distant lattice paths are usually poor homophones. Left context
+        // gives the model more evidence, so keep a wider window in that case.
+        let best_cost = eligible.iter().map(|&i| cands[i].cost).min()?;
+        let cost_window = if left_context.trim().is_empty() { 2000 } else { 3200 };
+        eligible.retain(|&i| cands[i].cost <= best_cost.saturating_add(cost_window));
+        if eligible.len() == 1 {
+            return eligible.first().copied();
+        }
         let prompt = Zenz::prompt(reading, left_context);
-        let surfaces: Vec<String> = cands.iter().map(|c| c.surface()).collect();
+        let surfaces: Vec<String> = eligible.iter().map(|&i| cands[i].surface()).collect();
         let scores = self.zenz.score(&prompt, &surfaces);
-        (0..cands.len()).max_by(|&a, &b| {
-            let s = |i: usize| scores[i] - self.mix * cands[i].cost as f32 / 500.0;
+        (0..eligible.len()).max_by(|&a, &b| {
+            let s = |i: usize| scores[i] - self.mix * cands[eligible[i]].cost as f32 / 500.0;
             s(a).total_cmp(&s(b))
-        })
+        }).map(|i| eligible[i])
     }
 }

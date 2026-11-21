@@ -15,8 +15,8 @@ A Japanese input method written from scratch in Rust.
   accent color and accepts mouse clicks, plus a taskbar input mode
   indicator ("あ" / "A").
 - **Features**: live conversion, predictive suggestions (including
-  mid-sentence), per-user learning, bunsetsu resizing, and F6–F10
-  transliteration.
+  mid-sentence), romaji typo correction, per-user learning, bunsetsu
+  resizing, and F6–F10 transliteration.
 
 ## Accuracy
 
@@ -25,8 +25,8 @@ Top-1 results on Mozc's `evaluation.tsv` (397 cases):
 | Configuration                    | Top-1 | Mean latency |
 |----------------------------------|-------|--------------|
 | Lattice only                     | 69.5% | ~0.1 ms      |
-| + zenz v3.1 xsmall (default)     | 79.6% | ~16 ms       |
-| + zenz v3.1 small                | 84.1% | ~66 ms       |
+| + zenz v3.1 xsmall (default)     | 82.4% | ~11 ms       |
+| + zenz v3.1 small                | 84.9% | ~37 ms       |
 | Mozc OSS (reference)             | 74.6% | —            |
 
 ## Build
@@ -45,6 +45,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 
 This stages the files in `dist\` and creates the single-file installer
 `out\SweetIME-Setup.exe` (about 28 MB).
+
+### CI and releases
+
+GitHub Actions builds and verifies the Windows installer and runs the
+workspace tests on pushes and pull requests. Each successful run provides
+the installer as the `SweetIME-Windows` artifact. Pushing a version tag
+such as `v0.1.0` publishes the verified installer to GitHub Releases.
 
 ## Install
 

@@ -47,7 +47,7 @@ struct State {
     settings_stamp: [Option<std::time::SystemTime>; 2],
     /// Open/close compartment event sink: (compartment source, cookie).
     openclose_sink: Option<(ITfSource, u32)>,
-    /// Registered preserved keys (IME on/off chords with Ctrl / Alt).
+    /// Registered preserved keys for IME mode changes.
     preserved: Vec<(GUID, TF_PRESERVEDKEY, Toggle)>,
 }
 
@@ -173,14 +173,13 @@ impl TextService_Impl {
         }
     }
 
-    /// Registers the keymap's IME on/off chords that use Ctrl or Alt as
-    /// preserved keys: applications deliver Alt chords as system keys,
-    /// which do not reach the key event sink.
+    /// Registers mode keys that hosts may deliver through OnPreservedKey
+    /// instead of the ordinary key event sink.
     fn update_preserved_keys(&self) {
-        use sweet_engine::keymap::{Action, modifier_toggles};
+        use sweet_engine::keymap::{Action, preserved_toggles};
         let (tm, tid, old, wanted) = {
             let Ok(mut st) = self.st.try_borrow_mut() else { return };
-            (st.thread_mgr.clone(), st.tid, std::mem::take(&mut st.preserved), modifier_toggles(&st.keymap))
+            (st.thread_mgr.clone(), st.tid, std::mem::take(&mut st.preserved), preserved_toggles(&st.keymap))
         };
         let Some(km) = tm.and_then(|tm| tm.cast::<ITfKeystrokeMgr>().ok()) else { return };
         let mut now = Vec::new();
@@ -268,20 +267,7 @@ impl TextService_Impl {
     /// The taskbar mode indicator was clicked.
     fn on_mode_click(&self) {
         let _ = crate::guard(|| {
-            let open = !self.is_open();
-            if !open {
-                let (active, ctx, tid) = {
-                    let st = self.st.borrow();
-                    (st.session.is_active(), st.ctx.clone(), st.tid)
-                };
-                if let (true, Some(ctx)) = (active, ctx) {
-                    self.st.borrow_mut().session.commit_all();
-                    let this: ComObject<TextService> = self.to_object();
-                    let ctx2 = ctx.clone();
-                    edit::request_any(&ctx, tid, move |ec| update_document(&this, ec, &ctx2))?;
-                }
-            }
-            self.set_open(open);
+            self.handle_toggle(None, Toggle::Toggle);
             Ok(())
         });
     }
@@ -369,21 +355,40 @@ impl TextService_Impl {
         edit::request(ctx, tid, move |ec| update_document(&this, ec, &ctx2))
     }
 
-    fn handle_toggle(&self, ctx: &ITfContext, t: Toggle) -> Result<()> {
+    fn handle_toggle(&self, ctx: Option<&ITfContext>, t: Toggle) {
         let open = self.is_open();
         let new = match t {
             Toggle::Toggle => !open,
             Toggle::On => true,
             Toggle::Off => false,
         };
-        if !new && self.st.borrow().session.is_active() {
-            self.st.borrow_mut().session.commit_all();
-            self.update(ctx)?;
+        if !new {
+            let (pending, tid) = {
+                let st = self.st.borrow();
+                let ctx = if st.session.is_active() { st.ctx.clone().or_else(|| ctx.cloned()) } else { None };
+                (ctx.map(|ctx| (ctx, st.session.preedit())), st.tid)
+            };
+            if let Some((ctx, preedit)) = pending {
+                let this: ComObject<TextService> = self.to_object();
+                let destination = ctx.clone();
+                // Some hosts only grant an asynchronous edit lock here.
+                let result = edit::request_any(&ctx, tid, move |ec| {
+                    let mut st = this.st.borrow_mut();
+                    if st.ctx.as_ref().is_some_and(|current| current != &destination) || st.session.preedit() != preedit {
+                        return Ok(());
+                    }
+                    st.session.commit_all();
+                    drop(st);
+                    update_document(&this, ec, &destination)
+                });
+                if let Err(e) = result {
+                    crate::debug_log!("finish composition on IME off: {e}");
+                }
+            }
         }
         if new != open {
             self.set_open(new);
         }
-        Ok(())
     }
 }
 
@@ -747,12 +752,10 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         crate::guard(|| {
             let vk = wparam.0 as u32;
             crate::debug_log!("key down 0x{vk:02X}");
-            let ctx = pic.ok()?.clone();
-            self.st.borrow_mut().ctx = Some(ctx.clone());
             let key = match self.translate(vk, lparam.0) {
                 None => return Ok(BOOL(0)),
                 Some(Input::Toggle(t)) => {
-                    self.handle_toggle(&ctx, t)?;
+                    self.handle_toggle(pic.as_ref(), t);
                     return Ok(BOOL(1));
                 }
                 Some(Input::Key(k)) => k,
@@ -761,6 +764,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 return Ok(BOOL(0));
             }
             let Some(conv) = crate::converter() else { return Ok(BOOL(0)) };
+            let ctx = pic.ok()?.clone();
+            self.st.borrow_mut().ctx = Some(ctx.clone());
             let consumed = self.st.borrow_mut().session.handle(conv, key);
             if consumed {
                 if let Some(i) = &self.st.borrow().indicator {
@@ -786,10 +791,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             let g = unsafe { *rguid };
             crate::debug_log!("preserved key {g:?}");
             let t = self.st.borrow().preserved.iter().find(|(x, _, _)| *x == g).map(|(_, _, t)| *t);
-            let (Some(t), Ok(ctx)) = (t, pic.ok()) else { return Ok(BOOL(0)) };
-            let ctx = ctx.clone();
-            self.st.borrow_mut().ctx = Some(ctx.clone());
-            self.handle_toggle(&ctx, t)?;
+            let Some(t) = t else { return Ok(BOOL(0)) };
+            self.handle_toggle(pic.as_ref(), t);
             Ok(BOOL(1))
         })
     }

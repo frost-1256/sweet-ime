@@ -2,9 +2,15 @@
 //! candidate list and commit text. Frontends (TSF, fcitx5) only translate
 //! keys and render the resulting state.
 
+use std::time::Duration;
+
 use crate::converter::{Conversion, Converter};
 use crate::romaji::{self, Composer};
-use crate::width;
+use crate::{typo, width};
+
+const SUGGESTION_LIMIT: usize = 5;
+const TYPO_SUGGESTION_BUDGET: Duration = Duration::from_millis(4);
+const TYPO_CONVERSION_BUDGET: Duration = Duration::from_millis(12);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
@@ -150,6 +156,12 @@ struct Converting {
     segs: Vec<SegState>,
     focus: usize,
     window: bool,
+    corrected: bool,
+}
+
+struct LiveConversion {
+    reading: String,
+    surface: String,
 }
 
 #[derive(Default)]
@@ -158,8 +170,7 @@ struct Composing {
     composer: Composer,
     after: String,
     raw: String,
-    /// Live conversion of the settled kana (`before` + composer kana).
-    live: Option<String>,
+    live: Option<LiveConversion>,
     /// Live conversion turned off for this composition (Esc / caret moves).
     live_off: bool,
     suggestions: Vec<String>,
@@ -178,6 +189,21 @@ impl Composing {
     }
     fn is_empty(&self) -> bool {
         self.before.is_empty() && self.composer.is_empty() && self.after.is_empty()
+    }
+
+    fn typo_input(&self, reading: &str) -> Option<&str> {
+        // Once the caret splits the composition, the raw keys may be out of order.
+        if !self.before.is_empty()
+            || !self.after.is_empty()
+            || !(5..=64).contains(&self.raw.len())
+            || !self.raw.bytes().all(|b| b.is_ascii_lowercase() || matches!(b, b'-' | b'\''))
+            || romaji::to_hiragana(&self.raw) != reading
+        {
+            return None;
+        }
+        let kana = reading.chars().filter(|c| matches!(c, 'ぁ'..='ゖ')).count();
+        let letters = reading.bytes().filter(u8::is_ascii_alphabetic).count();
+        (kana >= 2 && letters <= 3).then_some(&self.raw)
     }
 }
 
@@ -243,7 +269,7 @@ impl Session {
         }
         let c = &self.comp;
         if let Some(live) = &c.live {
-            let text = format!("{live}{}", c.composer.pending());
+            let text = format!("{}{}", live.surface, c.composer.pending());
             let spans = if text.is_empty() { vec![] } else { vec![(0, text.len(), SpanAttr::Input)] };
             return Preedit { caret: text.len(), text, spans };
         }
@@ -256,21 +282,18 @@ impl Session {
     /// The reading and left context of the live conversion shown now, for
     /// refining it in the background (e.g. with a neural reranker).
     pub fn live_request(&self) -> Option<(String, String)> {
-        let c = &self.comp;
-        c.live.as_ref()?;
-        let settled = format!("{}{}", c.before, c.composer.kana());
-        Some((settled, self.left_context.clone()))
+        let live = self.comp.live.as_ref()?;
+        Some((live.reading.clone(), self.left_context.clone()))
     }
 
     /// Replaces the live conversion with `surface` if `reading` is still what
     /// is being typed. Returns whether the display changed.
     pub fn apply_live(&mut self, reading: &str, surface: &str) -> bool {
-        let c = &mut self.comp;
-        let Some(live) = &c.live else { return false };
-        if live == surface || format!("{}{}", c.before, c.composer.kana()) != reading {
+        let Some(live) = &mut self.comp.live else { return false };
+        if live.surface == surface || live.reading != reading {
             return false;
         }
-        c.live = Some(surface.to_string());
+        live.surface = surface.to_string();
         true
     }
 
@@ -283,17 +306,43 @@ impl Session {
             return;
         }
         let settled = format!("{}{}", c.before, c.composer.kana());
-        if self.options.live_conversion && !c.live_off && c.after.is_empty() && !settled.is_empty() {
-            // Lattice only: this runs on every keystroke.
-            c.live = conv.convert(&settled, &[], 1).first().map(|r| r.surface());
+        let live = self.options.live_conversion && !c.live_off && c.after.is_empty() && !settled.is_empty();
+        let suggest = self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2;
+        let unresolved = typo::has_unresolved_romaji(&settled);
+        let mut correction = None;
+        if (suggest || (live && unresolved)) && c.composer.pending().is_empty() {
+            if let Some(raw) = c.typo_input(&settled) {
+                correction = typo::correct(conv, raw, 1000, TYPO_SUGGESTION_BUDGET);
+            }
         }
-        if self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2 {
-            let shown = c.live.clone().unwrap_or_else(|| settled.clone());
-            c.suggestions = conv
-                .predict_sentence(&settled, 5)
-                .into_iter()
-                .filter(|s| *s != shown)
-                .collect();
+        let mut live_best = None;
+        if live {
+            // Lattice only: this runs on every keystroke.
+            c.live = match correction.take_if(|_| unresolved) {
+                Some(fix) => Some(LiveConversion { reading: fix.reading, surface: fix.surface }),
+                None => {
+                    live_best = conv.convert(&settled, &[], 1).into_iter().next();
+                    live_best.as_ref().map(|r| LiveConversion {
+                        reading: settled.clone(),
+                        surface: r.surface(),
+                    })
+                }
+            };
+        }
+        if suggest {
+            let shown = c.live.as_ref().map_or(settled.as_str(), |live| live.surface.as_str());
+            if let Some(fix) = correction.filter(|fix| fix.surface != shown) {
+                c.suggestions.push(fix.surface);
+            }
+            let reading = c.live.as_ref().map_or(settled.as_str(), |live| live.reading.as_str());
+            for suggestion in conv.predict_with_conversion(reading, SUGGESTION_LIMIT, live_best.as_ref()) {
+                if suggestion != shown && !c.suggestions.contains(&suggestion) {
+                    c.suggestions.push(suggestion);
+                    if c.suggestions.len() == SUGGESTION_LIMIT {
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -386,14 +435,14 @@ impl Session {
             }
             _ if empty => false,
             Key::Space | Key::Down => {
-                self.start_conversion(conv, &[]);
+                self.start_conversion(conv);
                 true
             }
             Key::Enter => {
                 let kana = self.comp.kana();
                 let text = match &self.comp.live {
                     // Commit exactly what is shown.
-                    Some(live) if self.comp.composer.pending().is_empty() => live.clone(),
+                    Some(live) if self.comp.composer.pending().is_empty() => live.surface.clone(),
                     // Pending romaji resolves to more kana: convert again.
                     Some(_) => conv.convert(&kana, &[], 1).first().map(|r| r.surface()).unwrap_or(kana),
                     None => kana,
@@ -409,6 +458,7 @@ impl Session {
                     segs: vec![SegState { reading: kana, cands, expanded: true, selected: 0, predicted: true }],
                     focus: 0,
                     window: true,
+                    corrected: false,
                 });
                 true
             }
@@ -467,13 +517,13 @@ impl Session {
             Key::ToHiragana | Key::ToKatakana | Key::ToHalfKatakana | Key::ToFullAscii | Key::ToHalfAscii => {
                 let kana = self.comp.kana();
                 let raw = self.comp.raw.clone();
-                self.start_conversion(conv, &[]);
                 // Collapse to a single segment showing the transliteration.
                 let text = transliterate(key, &kana, &raw);
                 self.conv = Some(Converting {
                     segs: vec![SegState { reading: kana, cands: vec![text], expanded: false, selected: 0, predicted: false }],
                     focus: 0,
                     window: false,
+                    corrected: false,
                 });
                 true
             }
@@ -481,14 +531,23 @@ impl Session {
         }
     }
 
-    fn start_conversion(&mut self, conv: &Converter, boundaries: &[usize]) {
+    fn start_conversion(&mut self, conv: &Converter) {
         let kana = self.comp.kana();
-        let result = if boundaries.is_empty() {
-            conv.convert_best(&kana, boundaries, &self.left_context)
+        let correction = if typo::has_unresolved_romaji(&kana) {
+            self.comp.typo_input(&kana).and_then(|raw| {
+                typo::correct(conv, raw, 0, TYPO_CONVERSION_BUDGET)
+            })
         } else {
-            conv.convert(&kana, boundaries, 1)
+            None
         };
-        self.conv = Some(Converting { segs: segs_from(result.first(), &kana), focus: 0, window: false });
+        let reading = correction.as_ref().map_or(kana.as_str(), |fix| fix.reading.as_str());
+        let result = conv.convert_best(reading, &[], &self.left_context);
+        self.conv = Some(Converting {
+            segs: segs_from(result.first(), reading),
+            focus: 0,
+            window: false,
+            corrected: correction.is_some(),
+        });
     }
 
     fn expand(&mut self, conv: &Converter) {
@@ -557,7 +616,7 @@ impl Session {
                 segs[i] = o;
             }
         }
-        self.conv = Some(Converting { segs, focus, window: false });
+        self.conv = Some(Converting { segs, focus, window: false, corrected: old.corrected });
     }
 
     fn handle_converting(&mut self, conv: &Converter, key: Key) -> bool {
@@ -610,22 +669,17 @@ impl Session {
                 self.commit_conversion(conv);
                 true
             }
-            Key::Escape => {
-                let cv = self.conv.as_mut().unwrap();
-                if cv.window {
-                    cv.window = false;
-                } else {
-                    // Back to composing with the full reading.
-                    let kana: String = cv.segs.iter().map(|s| s.reading.as_str()).collect();
-                    self.conv = None;
-                    self.comp.before = kana;
-                    self.comp.after.clear();
-                    self.comp.composer.clear();
-                }
+            Key::Escape if window => {
+                self.conv.as_mut().unwrap().window = false;
                 true
             }
-            Key::Backspace => {
+            Key::Escape | Key::Backspace => {
                 let cv = self.conv.take().unwrap();
+                if cv.corrected {
+                    // The composition still has the original keystrokes.
+                    self.comp.live_off = true;
+                    return true;
+                }
                 let kana: String = cv.segs.iter().map(|s| s.reading.as_str()).collect();
                 self.comp.before = kana;
                 self.comp.after.clear();
@@ -667,7 +721,11 @@ impl Session {
                 let cv = self.conv.as_mut().unwrap();
                 let single = cv.segs.len() == 1;
                 let s = &mut cv.segs[cv.focus];
-                let text = transliterate(key, &s.reading, if single { &raw } else { "" });
+                let text = if single && cv.corrected && matches!(key, Key::ToFullAscii | Key::ToHalfAscii) {
+                    transliterate(key, &self.comp.kana(), &raw)
+                } else {
+                    transliterate(key, &s.reading, if single { &raw } else { "" })
+                };
                 if let Some(i) = s.cands.iter().position(|c| *c == text) {
                     s.selected = i;
                 } else {

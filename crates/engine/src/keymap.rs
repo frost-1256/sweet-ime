@@ -200,10 +200,9 @@ pub fn action_label(a: Action) -> &'static str {
     ACTIONS.iter().find(|x| x.2 == a).map_or("?", |x| x.1)
 }
 
-/// IME on/off bindings with Ctrl or Alt. Frontends register these with the
-/// system (e.g. TSF preserved keys) because applications may not pass Alt
-/// chords to the IME as ordinary keystrokes.
-pub fn modifier_toggles(map: &Keymap) -> Vec<(Chord, Action)> {
+/// IME mode keys to register with the host. Include the raw layout aliases
+/// because TSF matches preserved keys before our keymap normalizes them.
+pub fn preserved_toggles(map: &Keymap) -> Vec<(Chord, Action)> {
     let mut out: Vec<(Chord, Action)> = Vec::new();
     for b in &map.bindings {
         let toggle = matches!(b.action, Action::ImeToggle | Action::ImeOn | Action::ImeOff);
@@ -211,13 +210,21 @@ pub fn modifier_toggles(map: &Keymap) -> Vec<(Chord, Action)> {
             continue;
         }
         let mut add = |c: Chord| {
-            if !out.iter().any(|(x, _)| *x == c) && !map.bindings.iter().any(|x| x.chord == c && x.action != b.action) {
-                out.push((c, b.action));
+            if map.bindings.iter().any(|x| x.chord == c && x.action != b.action) {
+                return;
+            }
+            let keys: &[u16] = if c.vk == 0x19 { &[0x19, 0xF3, 0xF4] } else { &[c.vk] };
+            for &vk in keys {
+                let raw = Chord { vk, ..c };
+                if !out.iter().any(|(x, _)| *x == raw) {
+                    out.push((raw, b.action));
+                }
             }
         };
-        if b.chord.ctrl || b.chord.alt {
+        if b.chord.ctrl || b.chord.alt || is_ime_key(b.chord.vk) {
             add(b.chord);
-        } else if b.chord.vk == 0x19 && !b.chord.shift {
+        }
+        if b.chord == Chord::key(0x19) {
             // kbd101 sends 半角/全角 for Alt+`.
             add(Chord { alt: true, ..b.chord });
         }
@@ -475,10 +482,20 @@ mod tests {
 
     #[test]
     fn preserved_toggles() {
-        let t = modifier_toggles(&Keymap::default());
-        let chords: Vec<String> = t.iter().map(|(c, _)| c.label()).collect();
-        assert!(chords.contains(&"Alt+半角/全角".to_string()), "{chords:?}");
-        assert!(chords.iter().any(|c| c.starts_with("Alt+`")), "{chords:?}");
+        let mut map = Keymap::default();
+        map.bindings.push(Binding {
+            chord: Chord::key(0x1C),
+            action: Action::Key(Key::Space),
+            when: When::Composing,
+        });
+        let keys = super::preserved_toggles(&map);
+        for vk in [0x19, 0xF3, 0xF4] {
+            assert!(keys.contains(&(Chord::key(vk), Action::ImeToggle)));
+            assert!(keys.contains(&(Chord { alt: true, ..Chord::key(vk) }, Action::ImeToggle)));
+        }
+        assert!(keys.contains(&(Chord { alt: true, ..Chord::key(0xC0) }, Action::ImeToggle)));
+        assert!(keys.contains(&(Chord::key(0xF0), Action::ImeOff)));
+        assert!(!keys.iter().any(|(chord, _)| chord.vk == 0x1C));
     }
 
     #[test]

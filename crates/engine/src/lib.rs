@@ -7,6 +7,7 @@ pub mod learning;
 pub mod paths;
 pub mod romaji;
 pub mod session;
+pub mod typo;
 pub mod width;
 
 pub use converter::{Conversion, Converter, Reranker, Segment, Word};
