@@ -113,6 +113,7 @@ fn load_core(name: &str) -> Result<Core> {
 }
 
 /// A text service created by a core.
+#[derive(Clone)]
 struct Inner {
     core: Core,
     unk: IUnknown,
@@ -206,7 +207,7 @@ impl Shim_Impl {
         let _ = crate::guard(|| {
             let wanted = wanted_core();
             let (tm, tid, flags, old) = {
-                let Ok(mut st) = self.st.try_borrow_mut() else {
+                let Ok(st) = self.st.try_borrow() else {
                     return Ok(());
                 };
                 let Some(tm) = st.thread_mgr.clone() else {
@@ -216,27 +217,24 @@ impl Shim_Impl {
                     Some(i) if i.core.name != wanted && !i.busy() => {}
                     _ => return Ok(()),
                 }
-                (tm, st.tid, st.flags, st.inner.take())
+                (tm, st.tid, st.flags, st.inner.clone())
             };
-            let new = load_core(&wanted).and_then(Inner::new);
-            let Ok(new) = new else {
-                // Keep the current core; try again on a later focus.
-                self.st.borrow_mut().inner = old;
-                return Ok(());
-            };
+            // Keep the current core on failure; try again on a later focus.
+            let Ok(new) = load_core(&wanted).and_then(Inner::new) else { return Ok(()) };
+            // `st.inner` always names the text service being (de)activated:
+            // TSF may call back into this shim meanwhile, and an empty slot
+            // would make `inner()` create a second one.
             if let Some(old) = &old {
                 old.deactivate();
             }
-            let active = match new.activate(&tm, tid, flags | ACTIVATE_HOT_SWAP) {
-                Ok(()) => new,
-                Err(_) => {
-                    new.deactivate();
-                    let Some(old) = old else { return Ok(()) };
+            self.st.borrow_mut().inner = Some(new.clone());
+            if new.activate(&tm, tid, flags | ACTIVATE_HOT_SWAP).is_err() {
+                new.deactivate();
+                self.st.borrow_mut().inner = old.clone();
+                if let Some(old) = &old {
                     let _ = old.activate(&tm, tid, flags | ACTIVATE_HOT_SWAP);
-                    old
                 }
-            };
-            self.st.borrow_mut().inner = Some(active);
+            }
             Ok(())
         });
     }
@@ -251,13 +249,16 @@ unsafe extern "system" fn on_swap_timer(_hwnd: HWND, _msg: u32, id: usize, _time
     unsafe {
         let _ = KillTimer(None, id);
     }
-    let shim = PENDING.with(|p| {
-        let mut p = p.borrow_mut();
-        p.iter().position(|(t, _)| *t == id).map(|i| p.remove(i).1)
+    // A panic must not unwind into the host application (that aborts it).
+    let _ = std::panic::catch_unwind(|| {
+        let shim = PENDING.with(|p| {
+            let mut p = p.try_borrow_mut().ok()?;
+            p.iter().position(|(t, _)| *t == id).map(|i| p.remove(i).1)
+        });
+        if let Some(shim) = shim {
+            shim.swap_if_updated();
+        }
     });
-    if let Some(shim) = shim {
-        shim.swap_if_updated();
-    }
 }
 
 impl ITfTextInputProcessor_Impl for Shim_Impl {
@@ -305,7 +306,13 @@ impl ITfTextInputProcessorEx_Impl for Shim_Impl {
                 Some(i) => i,
                 None => Inner::new(load_core(&wanted)?)?,
             };
-            inner.activate(&tm, tid, flags)?;
+            // In place before activating: TSF may call back into this shim
+            // meanwhile (see `swap_if_updated`).
+            self.st.borrow_mut().inner = Some(inner.clone());
+            if let Err(e) = inner.activate(&tm, tid, flags) {
+                self.st.borrow_mut().inner = None;
+                return Err(e);
+            }
             let sink: ITfThreadFocusSink = self.to_interface();
             let cookie = tm
                 .cast::<ITfSource>()

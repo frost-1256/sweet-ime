@@ -155,7 +155,7 @@ impl ITfSource_Impl for ModeButton_Impl {
     }
 
     fn UnadviseSink(&self, cookie: u32) -> Result<()> {
-        if cookie != SINK_COOKIE || self.sink.borrow_mut().take().is_none() {
+        if cookie != SINK_COOKIE || self.sink.try_borrow_mut().ok().and_then(|mut s| s.take()).is_none() {
             return Err(CONNECT_E_NOCONNECTION.into());
         }
         Ok(())

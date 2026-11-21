@@ -240,6 +240,11 @@ fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()>
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // A panic must not unwind into the host application (that aborts it).
+    std::panic::catch_unwind(|| unsafe { wndproc_inner(hwnd, msg, wparam, lparam) }).unwrap_or(LRESULT(0))
+}
+
+unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),

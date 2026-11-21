@@ -870,14 +870,17 @@ impl ITfCompositionSink_Impl for TextService_Impl {
     fn OnCompositionTerminated(&self, _ec: u32, _comp: Ref<ITfComposition>) -> Result<()> {
         // The application ended the composition (e.g. clicked elsewhere).
         // The text stays in the document as-is.
-        if let Ok(mut st) = self.st.try_borrow_mut() {
-            st.composition = None;
-            crate::set_busy(false);
-            st.session.reset();
-            if let Some(w) = &st.window {
-                w.hide();
+        let _ = crate::guard(|| {
+            if let Ok(mut st) = self.st.try_borrow_mut() {
+                st.composition = None;
+                crate::set_busy(false);
+                st.session.reset();
+                if let Some(w) = &st.window {
+                    w.hide();
+                }
             }
-        }
+            Ok(())
+        });
         Ok(())
     }
 }
@@ -912,23 +915,29 @@ impl ITfTextLayoutSink_Impl for TextService_Impl {
 
 impl ITfThreadFocusSink_Impl for TextService_Impl {
     fn OnSetThreadFocus(&self) -> Result<()> {
-        if let Ok(mut st) = self.st.try_borrow_mut() {
-            st.thread_focused = true;
-        }
-        self.reload_settings_if_changed();
+        let _ = crate::guard(|| {
+            if let Ok(mut st) = self.st.try_borrow_mut() {
+                st.thread_focused = true;
+            }
+            self.reload_settings_if_changed();
+            Ok(())
+        });
         Ok(())
     }
 
     fn OnKillThreadFocus(&self) -> Result<()> {
-        if let Ok(mut st) = self.st.try_borrow_mut() {
-            st.thread_focused = false;
-            if let Some(w) = &st.window {
-                w.hide();
+        let _ = crate::guard(|| {
+            if let Ok(mut st) = self.st.try_borrow_mut() {
+                st.thread_focused = false;
+                if let Some(w) = &st.window {
+                    w.hide();
+                }
+                if let Some(i) = &st.indicator {
+                    i.hide();
+                }
             }
-            if let Some(i) = &st.indicator {
-                i.hide();
-            }
-        }
+            Ok(())
+        });
         Ok(())
     }
 }
