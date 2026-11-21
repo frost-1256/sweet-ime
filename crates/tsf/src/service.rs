@@ -33,6 +33,8 @@ struct State {
     window: Option<CandidateWindow>,
     /// GUID atoms for [input, converted, focused] display attributes.
     atoms: [i32; 3],
+    /// Context of the last key event (target for mouse selections).
+    ctx: Option<ITfContext>,
 }
 
 #[implement(
@@ -143,6 +145,24 @@ impl TextService_Impl {
             return true;
         }
         matches!(key, sweet_engine::Key::Char(_) | sweet_engine::Key::Space)
+    }
+
+    /// A candidate row was clicked.
+    fn on_candidate_click(&self, index: usize) {
+        let _ = crate::guard(|| {
+            let Some(conv) = crate::converter() else { return Ok(()) };
+            let Ok(mut st) = self.st.try_borrow_mut() else { return Ok(()) };
+            let changed = st.session.select_candidate(conv, index);
+            let ctx = st.ctx.clone();
+            let tid = st.tid;
+            drop(st);
+            if let (true, Some(ctx)) = (changed, ctx) {
+                let this: ComObject<TextService> = self.to_object();
+                let ctx2 = ctx.clone();
+                edit::request_any(&ctx, tid, move |ec| update_document(&this, ec, &ctx2))?;
+            }
+            Ok(())
+        });
     }
 
     /// Pushes the session state (commit text, preedit, candidates) into the
@@ -292,6 +312,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             st.composition = None;
             st.session.reset();
             st.window = None;
+            st.ctx = None;
             Ok(())
         })
     }
@@ -340,6 +361,10 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                     st.window = CandidateWindow::new().ok();
                     if let Some(w) = &st.window {
                         w.warm_up();
+                        // The closure keeps the service alive; Deactivate
+                        // drops the window, which breaks the cycle.
+                        let this: ComObject<TextService> = self.to_object();
+                        w.set_on_click(move |i| this.on_candidate_click(i));
                     }
                 }
             }
@@ -366,6 +391,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         crate::guard(|| {
             let vk = wparam.0 as u32;
             let ctx = pic.ok()?.clone();
+            self.st.borrow_mut().ctx = Some(ctx.clone());
             if let Some(t) = keys::toggle_key(vk) {
                 self.handle_toggle(&ctx, t)?;
                 return Ok(BOOL(1));

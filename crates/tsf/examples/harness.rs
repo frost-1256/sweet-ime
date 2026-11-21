@@ -396,6 +396,39 @@ fn main() -> Result<()> {
             check(&format!("context {ctx}"), h.text(), &format!("{ctx}{want}"), &mut fails);
         }
 
+        // 2b'. mouse click on the third candidate commits it
+        h.clear();
+        h.type_str("kisha");
+        h.key(0x20);
+        h.key(0x20);
+        pump();
+        {
+            use windows::Win32::UI::HiDpi::GetDpiForWindow;
+            use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SendMessageW, WM_LBUTTONUP};
+            let hwnd = FindWindowW(windows_core::w!("SweetImeCandidateWindow"), None)?;
+            let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
+            // Rows start at PAD=4 and are ROW_H=32 tall (logical px).
+            let y = ((4.0 + 2.5 * 32.0) * scale) as isize;
+            let x = (40.0 * scale) as isize;
+            let before = h.text();
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(windows::Win32::Foundation::WPARAM(0)),
+                Some(windows::Win32::Foundation::LPARAM((y << 16) | x)));
+            pump();
+            let after = h.text();
+            // After a commit the TIP no longer wants Backspace.
+            let composing = h
+                .sink
+                .OnTestKeyDown(&h.ctx, windows::Win32::Foundation::WPARAM(0x08), windows::Win32::Foundation::LPARAM(1))
+                .map(|b| b.as_bool())
+                .unwrap_or(true);
+            if after == before || composing {
+                println!("FAIL click: before {before:?} after {after:?} composing {composing}");
+                fails += 1;
+            } else {
+                println!("ok   click: {before} -> {after}");
+            }
+        }
+
         // 2c. suggestions while typing; Tab enters the list
         h.clear();
         h.type_str("arigat");

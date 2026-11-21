@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     GWLP_USERDATA, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    PostMessageW, SetTimer, SetWindowLongPtrW, WM_APP, SetWindowPos, ShowWindow, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
+    PostMessageW, SetTimer, SetWindowLongPtrW, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{HSTRING, PCWSTR, Result, w};
@@ -152,6 +152,8 @@ struct State {
     anim_start: Instant,
     shown_at: Instant,
     visible: bool,
+    /// Called with the absolute candidate index when a row is clicked.
+    on_click: Option<std::rc::Rc<dyn Fn(usize)>>,
 }
 
 impl State {
@@ -260,6 +262,7 @@ impl CandidateWindow {
                 anim_start: Instant::now(),
                 shown_at: Instant::now(),
                 visible: false,
+                on_click: None,
             };
             STATES.with(|s| s.borrow_mut().push((hwnd.0 as isize, Box::new(state))));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
@@ -336,6 +339,11 @@ impl CandidateWindow {
 
     /// Creates the Direct2D render target (and its D3D device) ahead of
     /// time; doing it on first show costs ~200 ms.
+    /// Sets the handler for clicks on candidate rows.
+    pub fn set_on_click(&self, f: impl Fn(usize) + 'static) {
+        with_state(self.hwnd, |st| st.on_click = Some(std::rc::Rc::new(f)));
+    }
+
     /// Runs from the message loop so activation itself stays fast.
     pub fn warm_up(&self) {
         unsafe {
@@ -463,6 +471,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }));
                 }
                 let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                // Look up the row and handler, then release the state borrow
+                // before calling out (the handler updates this window).
+                let hit = with_state(hwnd, |st| {
+                    let row = ((y / st.scale - PAD) / ROW_H).floor();
+                    if st.visible && row >= 0.0 && (row as usize) < st.page_len {
+                        st.on_click.clone().map(|f| (f, st.page_start + row as usize))
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+                if let Some((f, index)) = hit {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(index)));
+                }
                 LRESULT(0)
             }
             WM_APP_WARM_UP => {
