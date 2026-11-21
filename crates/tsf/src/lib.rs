@@ -118,7 +118,7 @@ pub(crate) fn load_options() -> sweet_engine::Options {
     set_theme(o.theme);
     if let Some(c) = converter() {
         c.configure(o.neural, o.learning);
-        c.set_english_words(o.english_words);
+        c.set_english_words(o.english_words, o.english_katakana);
     }
     o
 }

@@ -306,8 +306,11 @@ impl App {
         card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
             changed |= toggle(ui, &mut self.opts.suggestions).changed();
         });
-        card(ui, "英単語の判定", "「korehabestdesu」→「これはbestです」のように、ローマ字にならない英単語を文の途中でも英字にします。F10 で英字に直した単語も覚えます。", |ui| {
+        card(ui, "英単語の判定", "「korehabestdesu」→「これはベストです」、「softwarewo」→「softwareを」のように、ローマ字にならない英単語を文の途中でも変換します。F10 で英字に直した単語も覚えます。", |ui| {
             changed |= toggle(ui, &mut self.opts.english_words).changed();
+        });
+        card(ui, "英単語をカタカナで出す", "「best」→「ベスト」のように、よく使うカタカナ語がある英単語はカタカナを先に出します。英字は次の候補になります。", |ui| {
+            changed |= toggle(ui, &mut self.opts.english_katakana).changed();
         });
         card(ui, "日付と時刻","「きょう」「あした」で日付、「いま」で時刻を候補に出します。", |ui| {
             changed |= toggle(ui, &mut self.opts.dates).changed();

@@ -159,7 +159,7 @@ impl SweetContext {
         let o = paths::load_options();
         if let Some(c) = converter() {
             c.configure(o.neural, o.learning);
-            c.set_english_words(o.english_words);
+            c.set_english_words(o.english_words, o.english_katakana);
         }
         self.session.options = o;
         self.keymap = paths::load_keymap();

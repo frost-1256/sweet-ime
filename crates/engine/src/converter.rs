@@ -95,6 +95,10 @@ const NUMBER_PARTICLE_PENALTY: i32 = 1500;
 const SPELLING_COST: i32 = 2600;
 /// Cost of a word from the English word list typed by its spelling.
 const WORD_LIST_COST: i32 = 3000;
+/// How much more the English spelling costs than its loanword.
+const LOANWORD_MARGIN: i32 = 400;
+/// Dictionary cost above which a guessed loanword is not trusted.
+const LOANWORD_MAX_COST: i32 = 5600;
 
 #[derive(Clone, Copy)]
 struct Node<'a> {
@@ -161,6 +165,7 @@ pub struct Converter {
     rerank_on: std::sync::atomic::AtomicBool,
     learning_on: std::sync::atomic::AtomicBool,
     english_on: std::sync::atomic::AtomicBool,
+    katakana_on: std::sync::atomic::AtomicBool,
     /// Recent reranker decisions: (reading, left context, candidates) -> index.
     rerank: Mutex<RerankState>,
     /// Signalled when a reranker run finishes (see `cached_choice`).
@@ -202,6 +207,7 @@ impl Converter {
             rerank_on: std::sync::atomic::AtomicBool::new(true),
             learning_on: std::sync::atomic::AtomicBool::new(true),
             english_on: std::sync::atomic::AtomicBool::new(true),
+            katakana_on: std::sync::atomic::AtomicBool::new(true),
             rerank: Mutex::new(RerankState::default()),
             rerank_done: std::sync::Condvar::new() }
     }
@@ -331,12 +337,26 @@ impl Converter {
                     break;
                 }
                 if let Some(word) = index.get(&rest[..end]) {
+                    // The loanword first when there is one (ベスト, then best).
+                    let loanword = self.loanword(word);
+                    let english_cost = WORD_LIST_COST + if loanword.is_some() { LOANWORD_MARGIN } else { 0 };
+                    if let Some((surface, lid, rid)) = loanword {
+                        out.push(Extra {
+                            start,
+                            end: start + end,
+                            lid,
+                            rid,
+                            cost: WORD_LIST_COST,
+                            surface,
+                            origin: Origin::Spelling,
+                        });
+                    }
                     out.push(Extra {
                         start,
                         end: start + end,
                         lid: id,
                         rid: id,
-                        cost: WORD_LIST_COST,
+                        cost: english_cost,
                         surface: word.to_string(),
                         origin: Origin::Spelling,
                     });
@@ -345,9 +365,48 @@ impl Converter {
         }
     }
 
-    /// Turns the English word list on or off (bundled spellings stay).
-    pub fn set_english_words(&self, on: bool) {
-        self.english_on.store(on, std::sync::atomic::Ordering::Relaxed);
+    /// The common katakana loanword for an English word (best -> ベスト),
+    /// with its POS ids, when katakana is preferred: a guessed reading whose
+    /// katakana is a dictionary word. Rare dictionary words are left out;
+    /// most of them are wrong guesses (game -> ガメ).
+    fn loanword(&self, word: &str) -> Option<(String, u16, u16)> {
+        if !self.katakana_on.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        for reading in crate::english::loanword_readings(word) {
+            if reading.chars().count() < 3 {
+                continue;
+            }
+            let kata = crate::romaji::to_katakana(&reading);
+            let best = self
+                .dict
+                .lookup(&reading)
+                .into_iter()
+                .filter(|e| e.surface == kata && i32::from(e.cost) <= LOANWORD_MAX_COST)
+                .min_by_key(|e| e.cost);
+            if let Some(e) = best {
+                return Some((kata, e.lid, e.rid));
+            }
+        }
+        None
+    }
+
+    /// The loanword for an English word typed whole, if it has one.
+    pub fn loanword_for(&self, word: &str) -> Option<String> {
+        if !self.english_words_enabled() {
+            return None;
+        }
+        let reading = crate::romaji::to_hiragana(&word.to_ascii_lowercase());
+        crate::english::word_index().get(&reading).filter(|w| w.eq_ignore_ascii_case(word))?;
+        self.loanword(word).map(|(k, ..)| k)
+    }
+
+    /// Turns the English word list on or off (bundled spellings stay), and
+    /// whether a listed word shows as its katakana loanword first.
+    pub fn set_english_words(&self, on: bool, katakana: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.english_on.store(on, Relaxed);
+        self.katakana_on.store(katakana, Relaxed);
     }
 
     pub fn english_words_enabled(&self) -> bool {
@@ -939,6 +998,7 @@ impl Converter {
             add(x.surface.clone(), &mut out);
         }
         self.number_extras(reading, &mut extras);
+        self.spelling_extras(reading, &mut extras);
         let mut lat = self.build_lattice(reading, &[], &extras);
         self.viterbi(&mut lat);
         for (_, path) in self.nbest_paths(&lat, n * 2) {

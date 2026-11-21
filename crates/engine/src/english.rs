@@ -184,6 +184,115 @@ pub fn word_index() -> &'static WordIndex {
     })
 }
 
+/// Guesses at the kana reading of an English word as a katakana loanword,
+/// by filling in vowels the way loanwords do (best -> べすと, desk -> ですく,
+/// check -> ちぇっく). Most guesses are wrong or not words; check them
+/// against a dictionary.
+pub fn loanword_readings(word: &str) -> Vec<String> {
+    const MAX: usize = 16;
+    let w: Vec<char> = word.to_ascii_lowercase().chars().collect();
+    if w.iter().any(|c| !c.is_ascii_lowercase()) {
+        return Vec::new();
+    }
+    let vowel = |c: char| "aeiou".contains(c);
+    let vowel_at = |i: usize| w.get(i).is_some_and(|&c| vowel(c));
+    // Only words read as spelled: vowel pairs (real, tail), th, w, ir/ur
+    // (firm), a silent final e and plural -s (bucks) give wrong guesses
+    // that are still words (レアル, タイル, フィルム, ブックス).
+    let spelled = !w
+        .windows(2)
+        .any(|p| (vowel(p[0]) && vowel(p[1])) || matches!(p, ['t', 'h'] | ['i' | 'u', 'r']))
+        && !w.contains(&'w')
+        && !matches!(w.last(), Some('e' | 's'));
+    if !spelled {
+        return Vec::new();
+    }
+    let mut outs = vec![String::new()];
+    let mut i = 0;
+    while i < w.len() {
+        let c = w[i];
+        let last = i == w.len() - 1;
+        let rest = &w[i..];
+        let starts = |s: &str| rest.iter().copied().take(s.len()).eq(s.chars());
+        let (opts, step): (Vec<String>, usize) =
+            if rest.len() == 2 && matches!(rest, ['e' | 'o' | 'a', 'r']) {
+                (vec!["a-".into()], 2)
+            } else if starts("tion") {
+                (vec!["shon".into()], 4)
+            } else if starts("sh") || starts("ch") {
+                let base: String = rest[..2].iter().collect();
+                (
+                    vec![if vowel_at(i + 2) {
+                        base
+                    } else {
+                        format!("{base}i")
+                    }],
+                    2,
+                )
+            } else if starts("th") {
+                (
+                    vec![if vowel_at(i + 2) {
+                        "s".into()
+                    } else {
+                        "su".into()
+                    }],
+                    2,
+                )
+            } else if starts("ck") {
+                (vec!["kku".into()], 2)
+            } else if c == 'y' && last {
+                (vec!["i-".into(), "i".into()], 1)
+            } else if vowel(c) {
+                (vec![c.to_string()], 1)
+            } else if c == 'x' {
+                (vec!["kusu".into()], 1)
+            } else {
+                let next = w.get(i + 1).copied();
+                let k = match c {
+                    'l' => 'r',
+                    'v' => 'b',
+                    'q' => 'k',
+                    'c' if next.is_some_and(|n| "eiy".contains(n)) => 's',
+                    'c' => 'k',
+                    x => x,
+                };
+                let opts = if vowel_at(i + 1) || (k == 'n' && !vowel_at(i + 1)) {
+                    vec![k.to_string()]
+                } else if next == Some(c) {
+                    vec!["xtu".into()]
+                } else if matches!(k, 't' | 'd') {
+                    let mut v = vec![format!("{k}o")];
+                    if last {
+                        v.push(format!("xtu{k}o"));
+                    }
+                    v
+                } else {
+                    let mut v = vec![format!("{k}u")];
+                    if last && matches!(k, 'k' | 'p' | 'g' | 'b') {
+                        v.push(format!("xtu{k}u"));
+                    }
+                    v
+                };
+                (opts, 1)
+            };
+        let mut next_outs = Vec::with_capacity(MAX);
+        'fill: for o in &outs {
+            for p in &opts {
+                if next_outs.len() == MAX {
+                    break 'fill;
+                }
+                next_outs.push(format!("{o}{p}"));
+            }
+        }
+        outs = next_outs;
+        i += step;
+    }
+    outs.into_iter()
+        .map(|r| romaji::to_hiragana(&r))
+        .filter(|r| !r.bytes().any(|b| b.is_ascii_alphabetic()))
+        .collect()
+}
+
 /// Whether every letter left in `reading` (keys that aren't romaji) is part
 /// of an English word typed by its spelling: a bundled one, or with
 /// `listed`, one from the word list. Such letters are a word, not a typo
@@ -231,6 +340,11 @@ pub fn is_spelling(reading: &str, surface: &str) -> bool {
         || romaji_readings()
             .iter()
             .any(|(r, s)| r == reading && *s == surface)
+        // A listed word's loanword (てst -> テスト): only these put katakana
+        // over letters.
+        || (reading.bytes().any(|b| b.is_ascii_alphabetic())
+            && !surface.is_empty()
+            && surface.chars().all(|c| matches!(c, 'ァ'..='ヺ' | 'ー')))
 }
 
 /// Whether `surface` is the English word typed as `reading`: ASCII
@@ -281,6 +395,9 @@ mod tests {
         assert!(is_spelling("てst", "test"));
         assert!(typed_word("てst", "test"));
         assert!(!typed_word("これ", "kore"));
+        assert!(loanword_readings("best").contains(&"べすと".to_string()));
+        assert!(loanword_readings("desktop").contains(&"ですくとっぷ".to_string()));
+        assert!(loanword_readings("check").contains(&"ちぇっく".to_string()));
         assert!(covers_letters("こんしゅうはぶsyです", true));
         assert!(!covers_letters("こんしゅうはぶsyです", false));
         assert!(covers_letters("んぎんxをつかう", false));

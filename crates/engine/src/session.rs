@@ -111,6 +111,9 @@ pub struct Options {
     /// Recognize common English words typed as their spelling, also inside
     /// a sentence, and learn words fixed with F10.
     pub english_words: bool,
+    /// Show such a word as its katakana loanword first (best -> ベスト),
+    /// with the spelling as the next candidate.
+    pub english_katakana: bool,
 }
 
 impl Default for Options {
@@ -129,6 +132,7 @@ impl Default for Options {
             undo_commit: true,
             private_fields: true,
             english_words: true,
+            english_katakana: true,
         }
     }
 }
@@ -155,6 +159,7 @@ impl Options {
                 "undo_commit" => o.undo_commit = on,
                 "private_fields" => o.private_fields = on,
                 "english_words" => o.english_words = on,
+                "english_katakana" => o.english_katakana = on,
                 _ => {}
             }
         }
@@ -179,6 +184,7 @@ impl Options {
              undo_commit = {}
              private_fields = {}
              english_words = {}
+             english_katakana = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -193,6 +199,7 @@ impl Options {
             b(self.undo_commit),
             b(self.private_fields),
             b(self.english_words),
+            b(self.english_katakana),
         )
     }
 }
@@ -505,7 +512,11 @@ impl Session {
         let english = if live && typo::has_unresolved_romaji(&kana) {
             let bundled = c.bundled_candidates(&kana).map(|b| b[0].clone());
             let typo_possible = c.typo_input(&settled).is_some() && !c.composer.pending().is_empty();
-            bundled.or_else(|| c.english(&kana, correction.is_some()).filter(|_| unresolved && !typo_possible))
+            bundled.or_else(|| {
+                c.english(&kana, correction.is_some())
+                    .filter(|_| unresolved && !typo_possible)
+                    .map(|word| conv.loanword_for(&word).unwrap_or(word))
+            })
         } else {
             None
         };
@@ -865,7 +876,7 @@ impl Session {
             if let Some(word) = self.comp.english(&kana, correction.is_some()) {
                 // Keys that are not romaji: the word as typed, capitalized,
                 // then the kana reading's conversion.
-                let mut cands = vec![word.clone()];
+                let mut cands: Vec<String> = conv.loanword_for(&word).into_iter().chain([word.clone()]).collect();
                 let mut chars = word.chars();
                 let capitalized: String =
                     chars.next().map(|c| c.to_ascii_uppercase()).into_iter().chain(chars).collect();
@@ -1167,7 +1178,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false, english_words: true };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false, english_words: true, english_katakana: false };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);

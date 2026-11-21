@@ -180,7 +180,10 @@ input. Escape cancels the word. For common technical terms, type `ime`,
 `GitHub`. Japanese readings such as `あいえむいー` also work.
 
 Common English words whose keys are not romaji convert inside a sentence
-too: `korehabestdesu` gives `これはbestです`. The words come from a bundled
+too: `korehabestdesu` gives `これはベストです`. A word with a common katakana
+loanword shows in katakana first, with the spelling as the next candidate
+(`english_katakana = off` keeps the spelling); others keep their spelling
+(`software`). The words come from a bundled
 list (SCOWL). Words that are not on it, such as one fixed with F10 after a
 typo correction, are learned when committed and convert the same way next
 time. To turn this off, set `english_words = off`.
@@ -221,6 +224,7 @@ calculator = on        # 1+2*3= -> 7
 undo_commit = on       # Ctrl+Backspace right after a commit restores the reading
 private_fields = on    # learn nothing in password fields and private windows
 english_words = on     # common English words convert inside sentences
+english_katakana = on  # ... as their katakana loanword first (best -> ベスト)
 ```
 
 Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one

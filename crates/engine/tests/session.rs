@@ -673,9 +673,11 @@ fn listed_english_words_convert_inside_sentences() {
         (live, s.preedit().text)
     };
     for (typed, word) in [
-        ("korehabestdesu", "best"),
+        // A common loanword shows in katakana.
+        ("korehabestdesu", "ベスト"),
+        ("kyouhadesktopwokau", "デスクトップ"),
+        // Others keep their spelling.
         ("watashihasoftwarewotsukuru", "software"),
-        ("kyouhadesktopwokau", "desktop"),
         // Letters that spell a word are not a typo (not 部署).
         ("konnshuuhabusydesu", "busy"),
         ("nginxwotsukau", "Nginx"),
@@ -684,15 +686,32 @@ fn listed_english_words_convert_inside_sentences() {
         assert!(live.contains(word), "live {typed}: {live}");
         assert!(space.contains(word), "space {typed}: {space}");
     }
+    // The spelling is the next candidate, also for a word typed alone.
+    for typed in ["best", "korehabestdesu"] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        if typed != "best" {
+            assert!(s.handle(&c, Key::Right));
+        }
+        assert!(s.preedit().text.contains("ベスト"), "{}", s.preedit().text);
+        assert!(s.handle(&c, Key::Space));
+        let items = s.candidates().unwrap().items;
+        assert_eq!(items.get(1).map(|i| i.starts_with("best")), Some(true), "{typed}: {items:?}");
+    }
+    // Katakana off: the spelling.
+    c.set_english_words(true, false);
+    assert!(convert(&c, "korehabestdesu", true).1.contains("best"));
+    c.set_english_words(true, true);
     // Romaji and typos stay Japanese.
     for (typed, expected) in [("tesuto", "テスト"), ("shigtoo", "仕事"), ("arigatpu", "ありがとう")] {
         assert_eq!(convert(&c, typed, true).1, expected, "{typed}");
     }
     // Off: only bundled spellings are words.
-    c.set_english_words(false);
+    c.set_english_words(false, true);
     let (_, space) = convert(&c, "korehabestdesu", false);
     assert!(!space.contains("best"), "{space}");
-    c.set_english_words(true);
+    c.set_english_words(true, true);
 }
 
 #[test]
