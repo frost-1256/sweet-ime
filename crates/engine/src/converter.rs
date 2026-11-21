@@ -438,6 +438,41 @@ impl Converter {
         res
     }
 
+    /// Completions for a reading prefix: learned words first, then
+    /// dictionary words with a longer reading, ranked by cost with a penalty
+    /// for each extra character.
+    pub fn predict(&self, prefix: &str, n: usize) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        {
+            let h = self.history();
+            for (_, e) in h.predictive(prefix).into_iter().take(n) {
+                if seen.insert(e.surface.clone()) {
+                    out.push(e.surface.clone());
+                }
+            }
+        }
+        let plen = prefix.chars().count();
+        let mut scored: Vec<(i32, &str)> = Vec::new();
+        for (reading, e) in self.dict.predictive(prefix, 3000) {
+            let extra = reading.chars().count().saturating_sub(plen);
+            if extra == 0 {
+                continue;
+            }
+            scored.push((e.cost as i32 + 700 * extra as i32, e.surface));
+        }
+        scored.sort_by_key(|x| x.0);
+        for (_, surface) in scored {
+            if out.len() >= n {
+                break;
+            }
+            if seen.insert(surface.to_string()) {
+                out.push(surface.to_string());
+            }
+        }
+        out
+    }
+
     /// Candidate surfaces for a single bunsetsu reading, best first.
     pub fn segment_candidates(&self, reading: &str, n: usize) -> Vec<String> {
         let mut seen = HashSet::new();

@@ -1,7 +1,14 @@
 //! Session behaviour against the real system dictionary.
 //! Skipped when data/system.dict has not been built.
 
-use sweet_engine::{Converter, Dictionary, Key, Session, SpanAttr};
+use sweet_engine::{Converter, Dictionary, Key, ListKind, Options, Session, SpanAttr};
+
+/// Session with live conversion and suggestions off (classic behaviour).
+fn plain() -> Session {
+    let mut s = Session::new();
+    s.options = Options { live_conversion: false, suggestions: false };
+    s
+}
 
 fn converter() -> Option<Converter> {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
@@ -17,7 +24,7 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 #[test]
 fn compose_convert_commit() {
     let Some(c) = converter() else { return };
-    let mut s = Session::new();
+    let mut s = plain();
     type_str(&mut s, &c, "kyouhaiitenkidesune");
     assert_eq!(s.preedit().text, "きょうはいいてんきですね");
     s.handle(&c, Key::Space);
@@ -34,7 +41,7 @@ fn compose_convert_commit() {
 #[test]
 fn candidate_window_and_selection() {
     let Some(c) = converter() else { return };
-    let mut s = Session::new();
+    let mut s = plain();
     type_str(&mut s, &c, "kisha");
     s.handle(&c, Key::Space);
     s.handle(&c, Key::Space);
@@ -49,7 +56,7 @@ fn candidate_window_and_selection() {
 #[test]
 fn resize_segment() {
     let Some(c) = converter() else { return };
-    let mut s = Session::new();
+    let mut s = plain();
     type_str(&mut s, &c, "watashihanihonjindesu");
     s.handle(&c, Key::Space);
     let before = s.preedit().spans.len();
@@ -64,7 +71,7 @@ fn resize_segment() {
 #[test]
 fn caret_editing_and_escape() {
     let Some(c) = converter() else { return };
-    let mut s = Session::new();
+    let mut s = plain();
     type_str(&mut s, &c, "kaki");
     s.handle(&c, Key::Left);
     type_str(&mut s, &c, "n");
@@ -80,7 +87,7 @@ fn caret_editing_and_escape() {
 #[test]
 fn transliterate_keys() {
     let Some(c) = converter() else { return };
-    let mut s = Session::new();
+    let mut s = plain();
     type_str(&mut s, &c, "ko-hi-");
     s.handle(&c, Key::ToKatakana);
     assert_eq!(s.preedit().text, "コーヒー");
@@ -93,7 +100,7 @@ fn transliterate_keys() {
 #[test]
 fn learns_selected_candidate() {
     let Some(c) = converter() else { return };
-    let mut s = Session::new();
+    let mut s = plain();
     type_str(&mut s, &c, "kisha");
     s.handle(&c, Key::Space);
     let first = s.preedit().text;
@@ -112,4 +119,43 @@ fn learns_selected_candidate() {
     type_str(&mut s, &c, "ashitakishaninarimasu");
     s.handle(&c, Key::Space);
     assert!(s.preedit().text.contains(&second), "{}", s.preedit().text);
+}
+
+#[test]
+fn live_conversion() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    s.options.suggestions = false;
+    type_str(&mut s, &c, "kyouhaiitenkidesune");
+    assert_eq!(s.preedit().text, "今日はいい天気ですね");
+    // Pending romaji is shown after the converted part.
+    s.handle(&c, Key::Char('k'));
+    assert_eq!(s.preedit().text, "今日はいい天気ですねk");
+    s.handle(&c, Key::Backspace);
+    // First Esc reveals the reading, the second cancels.
+    s.handle(&c, Key::Escape);
+    assert_eq!(s.preedit().text, "きょうはいいてんきですね");
+    s.handle(&c, Key::Escape);
+    assert!(!s.is_active());
+    // Enter commits the live result.
+    type_str(&mut s, &c, "kyouhaiitenkidesune");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "今日はいい天気ですね");
+}
+
+#[test]
+fn suggestions_tab_select() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    s.options.live_conversion = false;
+    type_str(&mut s, &c, "arigat");
+    let list = s.candidates().expect("suggestions");
+    assert_eq!(list.kind, ListKind::Suggestion);
+    assert!(!list.items.is_empty());
+    let first = list.items[0].clone();
+    s.handle(&c, Key::Tab);
+    let list = s.candidates().expect("conversion window");
+    assert_eq!(list.kind, ListKind::Conversion);
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), first);
 }

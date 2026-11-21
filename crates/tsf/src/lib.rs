@@ -78,6 +78,17 @@ pub(crate) fn converter() -> Option<&'static Converter> {
     .as_ref()
 }
 
+/// Per-user settings from `%APPDATA%\SweetIME\config.txt` (`key = value`).
+/// Read on every activation, so edits apply the next time the IME is
+/// activated in an application.
+pub(crate) fn load_options() -> sweet_engine::Options {
+    std::env::var_os("APPDATA")
+        .map(|d| PathBuf::from(d).join("SweetIME").join("config.txt"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| sweet_engine::Options::parse(&t))
+        .unwrap_or_default()
+}
+
 /// Optional neural reranker: `zenz.swz` next to the DLL (or `SWEET_IME_ZENZ`).
 fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
     let mut paths = Vec::new();

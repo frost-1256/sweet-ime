@@ -331,6 +331,18 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             }
             // Start in hiragana mode; also warms up the dictionary mapping.
             let _ = crate::converter();
+            // Create the candidate window now so the first keystroke that
+            // shows suggestions does not pay for Direct2D initialization.
+            {
+                let mut st = self.st.borrow_mut();
+                st.session.options = crate::load_options();
+                if st.window.is_none() {
+                    st.window = CandidateWindow::new().ok();
+                    if let Some(w) = &st.window {
+                        w.warm_up();
+                    }
+                }
+            }
             self.set_open(true);
             Ok(())
         })

@@ -340,18 +340,32 @@ fn main() -> Result<()> {
         let tip_tid = tip_tid.unwrap_or(tid);
         tip.Activate(&tm, tip_tid)?;
         println!("activated in {:.2?}", t0.elapsed());
+        // A real host runs its message loop between activation and typing.
+        pump();
         let h = Harness { sink: tip.cast()?, ctx: ctx.clone(), store };
         let mut fails = 0;
 
-        // 1. compose + convert + commit
-        let t = std::time::Instant::now();
+        // 1. compose + convert + commit (twice: the first run includes
+        // one-time candidate window creation)
+        for run in 0..2 {
+            h.clear();
+            let t = std::time::Instant::now();
+            h.type_str("kyouhaiitenkidesune");
+            check("live preedit", h.text(), "今日はいい天気ですね", &mut fails);
+            h.key(0x20); // space
+            check("converted", h.text(), "今日はいい天気ですね", &mut fails);
+            h.key(0x0D); // enter
+            check("committed", h.text(), "今日はいい天気ですね", &mut fails);
+            println!("     round trip #{run} {:.2?}", t.elapsed());
+        }
+
+        // 1b. Esc during live conversion reveals the reading
+        h.clear();
         h.type_str("kyouhaiitenkidesune");
-        check("preedit", h.text(), "きょうはいいてんきですね", &mut fails);
-        h.key(0x20); // space
-        check("converted", h.text(), "今日はいい天気ですね", &mut fails);
-        h.key(0x0D); // enter
-        check("committed", h.text(), "今日はいい天気ですね", &mut fails);
-        println!("     round trip {:.2?}", t.elapsed());
+        h.key(0x1B);
+        check("reading after esc", h.text(), "きょうはいいてんきですね", &mut fails);
+        h.key(0x1B);
+        check("cancel after 2nd esc", h.text(), "", &mut fails);
 
         // 2. candidate window + selection by digit
         h.clear();
@@ -382,9 +396,29 @@ fn main() -> Result<()> {
             check(&format!("context {ctx}"), h.text(), &format!("{ctx}{want}"), &mut fails);
         }
 
+        // 2c. suggestions while typing; Tab enters the list
+        h.clear();
+        h.type_str("arigat");
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            pump();
+        }
+        if let Ok(path) = std::env::var("SWEET_SHOT_SUGGEST") {
+            screenshot(&path);
+        }
+        h.key(0x09); // tab
+        let picked = h.text();
+        h.key(0x0D);
+        check("suggestion", h.text(), &picked, &mut fails);
+        if picked.starts_with("ありがt") || picked.is_empty() {
+            println!("FAIL suggestion not applied: {picked:?}");
+            fails += 1;
+        }
+
         // 3. escape cancels
         h.clear();
         h.type_str("aiueo");
+        h.key(0x1B);
         h.key(0x1B);
         check("escape", h.text(), "", &mut fails);
 

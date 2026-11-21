@@ -10,4 +10,4 @@ pub mod width;
 pub use converter::{Conversion, Converter, Reranker, Segment, Word};
 pub use dict::Dictionary;
 pub use learning::UserHistory;
-pub use session::{CandidateList, Key, Preedit, Session, SpanAttr};
+pub use session::{CandidateList, Key, ListKind, Options, Preedit, Session, SpanAttr};

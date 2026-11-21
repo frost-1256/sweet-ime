@@ -53,11 +53,53 @@ pub struct Preedit {
     pub spans: Vec<(usize, usize, SpanAttr)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind {
+    /// Conversion candidates for the focused segment.
+    Conversion,
+    /// Predictions shown while typing (Tab to pick).
+    Suggestion,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateList {
     pub items: Vec<String>,
     pub selected: usize,
     pub page_size: usize,
+    pub kind: ListKind,
+}
+
+/// User-facing behaviour switches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// Show the converted text while typing; Enter commits it.
+    pub live_conversion: bool,
+    /// Show predictions while typing.
+    pub suggestions: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { live_conversion: true, suggestions: true }
+    }
+}
+
+impl Options {
+    /// Parses `key = value` lines (`#` comments). Unknown keys are ignored.
+    pub fn parse(text: &str) -> Self {
+        let mut o = Self::default();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let on = matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes");
+            match k.trim() {
+                "live_conversion" => o.live_conversion = on,
+                "suggestions" => o.suggestions = on,
+                _ => {}
+            }
+        }
+        o
+    }
 }
 
 impl CandidateList {
@@ -72,6 +114,8 @@ struct SegState {
     /// Whether `cands` beyond the first entry have been expanded.
     expanded: bool,
     selected: usize,
+    /// Candidates are predictions (not conversions of `reading`); don't learn.
+    predicted: bool,
 }
 
 struct Converting {
@@ -86,6 +130,11 @@ struct Composing {
     composer: Composer,
     after: String,
     raw: String,
+    /// Live conversion of the settled kana (`before` + composer kana).
+    live: Option<String>,
+    /// Live conversion turned off for this composition (Esc / caret moves).
+    live_off: bool,
+    suggestions: Vec<String>,
 }
 
 impl Composing {
@@ -109,6 +158,7 @@ pub struct Session {
     conv: Option<Converting>,
     commit: String,
     pub page_size: usize,
+    pub options: Options,
     /// Text before the composition (for context-aware conversion).
     left_context: String,
 }
@@ -121,7 +171,7 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self { comp: Composing::default(), conv: None, commit: String::new(), page_size: 9, left_context: String::new() }
+        Self { comp: Composing::default(), conv: None, commit: String::new(), page_size: 9, options: Options::default(), left_context: String::new() }
     }
 
     pub fn is_active(&self) -> bool {
@@ -164,28 +214,73 @@ impl Session {
             return p;
         }
         let c = &self.comp;
+        if let Some(live) = &c.live {
+            let text = format!("{live}{}", c.composer.pending());
+            let spans = if text.is_empty() { vec![] } else { vec![(0, text.len(), SpanAttr::Input)] };
+            return Preedit { caret: text.len(), text, spans };
+        }
         let text = format!("{}{}{}", c.before, c.composer.preedit(), c.after);
         let caret = c.before.len() + c.composer.preedit().len();
         let spans = if text.is_empty() { vec![] } else { vec![(0, text.len(), SpanAttr::Input)] };
         Preedit { text, caret, spans }
     }
 
+    /// Recomputes live conversion and suggestions after a composing edit.
+    fn refresh(&mut self, conv: &Converter) {
+        let c = &mut self.comp;
+        c.live = None;
+        c.suggestions.clear();
+        if self.conv.is_some() || c.is_empty() {
+            return;
+        }
+        let settled = format!("{}{}", c.before, c.composer.kana());
+        if self.options.live_conversion && !c.live_off && c.after.is_empty() && !settled.is_empty() {
+            // Lattice only: this runs on every keystroke.
+            c.live = conv.convert(&settled, &[], 1).first().map(|r| r.surface());
+        }
+        if self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2 {
+            let shown = c.live.clone().unwrap_or_else(|| settled.clone());
+            c.suggestions = conv
+                .predict(&settled, 5)
+                .into_iter()
+                .filter(|s| *s != shown)
+                .collect();
+        }
+    }
+
     pub fn candidates(&self) -> Option<CandidateList> {
-        let cv = self.conv.as_ref()?;
+        let Some(cv) = self.conv.as_ref() else {
+            if self.comp.suggestions.is_empty() {
+                return None;
+            }
+            return Some(CandidateList {
+                items: self.comp.suggestions.clone(),
+                selected: 0,
+                page_size: self.page_size,
+                kind: ListKind::Suggestion,
+            });
+        };
         if !cv.window {
             return None;
         }
         let s = &cv.segs[cv.focus];
-        Some(CandidateList { items: s.cands.clone(), selected: s.selected, page_size: self.page_size })
+        Some(CandidateList {
+            items: s.cands.clone(),
+            selected: s.selected,
+            page_size: self.page_size,
+            kind: ListKind::Conversion,
+        })
     }
 
     /// Handles a key. Returns whether the key was consumed.
     pub fn handle(&mut self, conv: &Converter, key: Key) -> bool {
-        if self.conv.is_some() {
+        let consumed = if self.conv.is_some() {
             self.handle_converting(conv, key)
         } else {
             self.handle_composing(conv, key)
-        }
+        };
+        self.refresh(conv);
+        consumed
     }
 
     fn handle_composing(&mut self, conv: &Converter, key: Key) -> bool {
@@ -206,8 +301,25 @@ impl Session {
                 true
             }
             Key::Enter => {
-                self.commit.push_str(&self.comp.kana());
+                let kana = self.comp.kana();
+                let text = if self.comp.live.is_some() {
+                    // Commit what live conversion shows (pending romaji resolved).
+                    conv.convert(&kana, &[], 1).first().map(|r| r.surface()).unwrap_or(kana)
+                } else {
+                    kana
+                };
+                self.commit.push_str(&text);
                 self.reset();
+                true
+            }
+            Key::Tab if !self.comp.suggestions.is_empty() => {
+                let kana = self.comp.kana();
+                let cands = std::mem::take(&mut self.comp.suggestions);
+                self.conv = Some(Converting {
+                    segs: vec![SegState { reading: kana, cands, expanded: true, selected: 0, predicted: true }],
+                    focus: 0,
+                    window: true,
+                });
                 true
             }
             Key::Backspace => {
@@ -225,10 +337,16 @@ impl Session {
                 true
             }
             Key::Escape => {
-                self.reset();
+                if self.comp.live.is_some() {
+                    // First Esc shows the reading; the second cancels.
+                    self.comp.live_off = true;
+                } else {
+                    self.reset();
+                }
                 true
             }
             Key::Left => {
+                self.comp.live_off = true;
                 self.comp.settle();
                 if let Some(ch) = self.comp.before.pop() {
                     self.comp.after.insert(0, ch);
@@ -244,6 +362,7 @@ impl Session {
                 true
             }
             Key::Home => {
+                self.comp.live_off = true;
                 self.comp.settle();
                 let b = std::mem::take(&mut self.comp.before);
                 self.comp.after.insert_str(0, &b);
@@ -262,7 +381,7 @@ impl Session {
                 // Collapse to a single segment showing the transliteration.
                 let text = transliterate(key, &kana, &raw);
                 self.conv = Some(Converting {
-                    segs: vec![SegState { reading: kana, cands: vec![text], expanded: false, selected: 0 }],
+                    segs: vec![SegState { reading: kana, cands: vec![text], expanded: false, selected: 0, predicted: false }],
                     focus: 0,
                     window: false,
                 });
@@ -308,7 +427,7 @@ impl Session {
             for s in &cv.segs {
                 let surface = &s.cands[s.selected];
                 // Learn explicit choices (anything but the first suggestion).
-                if s.selected != 0 {
+                if s.selected != 0 && !s.predicted {
                     conv.learn(&s.reading, surface);
                 }
                 self.commit.push_str(surface);
@@ -494,9 +613,10 @@ fn segs_from(conv: Option<&Conversion>, kana: &str) -> Vec<SegState> {
                 cands: vec![s.surface.clone()],
                 expanded: false,
                 selected: 0,
+                predicted: false,
             })
             .collect(),
-        _ => vec![SegState { reading: kana.into(), cands: vec![kana.into()], expanded: false, selected: 0 }],
+        _ => vec![SegState { reading: kana.into(), cands: vec![kana.into()], expanded: false, selected: 0, predicted: false }],
     }
 }
 
@@ -522,5 +642,17 @@ mod tests {
         assert_eq!(transliterate(Key::ToHalfAscii, "こーひー", "ko-hi-"), "ko-hi-");
         assert_eq!(transliterate(Key::ToFullAscii, "こーひー", "ko-hi-"), "ｋｏ－ｈｉ－");
         assert_eq!(transliterate(Key::ToHalfKatakana, "がっこう", ""), "ｶﾞｯｺｳ");
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::Options;
+
+    #[test]
+    fn parse_options() {
+        let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
+        assert_eq!(o, Options { live_conversion: false, suggestions: true });
+        assert_eq!(Options::parse(""), Options::default());
     }
 }

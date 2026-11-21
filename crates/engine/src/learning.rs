@@ -164,6 +164,18 @@ impl UserHistory {
         self.entries.get(reading).map_or(&[], Vec::as_slice)
     }
 
+    /// Learned entries whose reading strictly extends `prefix`, most recent first.
+    pub fn predictive(&self, prefix: &str) -> Vec<(&str, &Learned)> {
+        let mut v: Vec<(&str, &Learned)> = self
+            .entries
+            .iter()
+            .filter(|(r, _)| r.len() > prefix.len() && r.starts_with(prefix))
+            .flat_map(|(r, es)| es.iter().map(move |e| (r.as_str(), e)))
+            .collect();
+        v.sort_by(|a, b| b.1.last.cmp(&a.1.last));
+        v
+    }
+
     /// Calls `f(len_bytes, entry)` for learned readings that are a prefix of `text`.
     pub fn common_prefix(&self, text: &str, mut f: impl FnMut(usize, &Learned)) {
         if self.entries.is_empty() {

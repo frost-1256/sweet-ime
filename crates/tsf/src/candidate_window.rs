@@ -8,14 +8,14 @@ use std::cell::RefCell;
 use std::sync::Once;
 use std::time::Instant;
 
-use sweet_engine::CandidateList;
+use sweet_engine::{CandidateList, ListKind};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     GWLP_USERDATA, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
+    PostMessageW, SetTimer, SetWindowLongPtrW, WM_APP, SetWindowPos, ShowWindow, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{HSTRING, PCWSTR, Result, w};
@@ -143,6 +143,8 @@ struct State {
     page_start: usize,
     page_len: usize,
     total: usize,
+    /// Showing predictions while typing (no selection; Tab enters the list).
+    suggest: bool,
     scale: f32,
     width: f32,
     /// Animated highlight row (fractional) and animation start.
@@ -251,6 +253,7 @@ impl CandidateWindow {
                 page_start: 0,
                 page_len: 0,
                 total: 0,
+                suggest: false,
                 scale: 1.0,
                 width: MIN_W,
                 anim_from: 0.0,
@@ -283,6 +286,7 @@ impl CandidateWindow {
             st.page_len = page_end - page_start;
             st.selected = list.selected;
             st.total = list.items.len();
+            st.suggest = list.kind == ListKind::Suggestion;
             st.anim_from = prev_row;
             st.anim_start = Instant::now();
             if !was_visible {
@@ -330,6 +334,15 @@ impl CandidateWindow {
         }
     }
 
+    /// Creates the Direct2D render target (and its D3D device) ahead of
+    /// time; doing it on first show costs ~200 ms.
+    /// Runs from the message loop so activation itself stays fast.
+    pub fn warm_up(&self) {
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), WM_APP_WARM_UP, WPARAM(0), LPARAM(0));
+        }
+    }
+
     pub fn hide(&self) {
         with_state(self.hwnd, |st| st.visible = false);
         unsafe {
@@ -357,7 +370,7 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
                 pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_UNKNOWN },
                 ..Default::default()
             };
-            let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
+            let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY };
             st.target = Some(st.d2d.CreateHwndRenderTarget(&props, &hprops)?);
         }
         let rt = st.target.clone().unwrap();
@@ -373,6 +386,7 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
 
         // Selection pill + accent bar (animated).
         let row = st.highlight_row();
+        if !st.suggest {
         let top = PAD + row * ROW_H;
         let pill = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F { left: PAD, top: top + 2.0, right: st.width - PAD, bottom: top + ROW_H - 2.0 },
@@ -386,10 +400,13 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             radiusY: 1.5,
         };
         rt.FillRoundedRectangle(&bar, &accent);
+        }
 
         for (i, it) in st.items.iter().enumerate() {
             let y = PAD + i as f32 * ROW_H;
-            let idx = wide(&format!("{}", i + 1));
+            // Digits are typed as text while composing, so suggestions
+            // are not numbered.
+            let idx = wide(&if st.suggest { String::new() } else { format!("{}", i + 1) });
             if let Ok(l) = st.dwrite.CreateTextLayout(&idx, &st.small, INDEX_W, ROW_H) {
                 let mut m = DWRITE_TEXT_METRICS::default();
                 let _ = l.GetMetrics(&mut m);
@@ -404,7 +421,11 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             }
         }
         // Footer: position / total.
-        let footer = wide(&format!("{} / {}", st.selected + 1, st.total));
+        let footer = wide(&if st.suggest {
+            "Tab".to_string()
+        } else {
+            format!("{} / {}", st.selected + 1, st.total)
+        });
         if let Ok(l) = st.dwrite.CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H) {
             let mut m = DWRITE_TEXT_METRICS::default();
             let _ = l.GetMetrics(&mut m);
@@ -427,6 +448,8 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
     Ok(())
 }
 
+const WM_APP_WARM_UP: u32 = WM_APP + 1;
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -440,6 +463,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }));
                 }
                 let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_APP_WARM_UP => {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    with_state(hwnd, |st| {
+                        if st.target.is_none() {
+                            let _ = render(hwnd, st);
+                        }
+                    });
+                }));
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == TIMER_ID => {
