@@ -72,6 +72,28 @@ pub fn save_options(o: &crate::Options) -> std::io::Result<()> {
     std::fs::write(p, o.to_text())
 }
 
+/// Per-application modes (see [`crate::app_modes`]).
+pub fn apps_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("apps.txt"))
+}
+
+/// Reads the per-application modes; none when the file is missing.
+pub fn load_app_modes() -> crate::app_modes::AppModes {
+    apps_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| crate::app_modes::AppModes::parse(&t))
+        .unwrap_or_default()
+}
+
+/// Writes the per-application modes.
+pub fn save_app_modes(m: &crate::app_modes::AppModes) -> std::io::Result<()> {
+    let p = apps_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(p, m.to_text())
+}
+
 /// Key bindings (see [`crate::keymap`]).
 pub fn keymap_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("keymap.txt"))

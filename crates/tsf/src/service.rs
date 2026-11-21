@@ -48,7 +48,9 @@ struct State {
     indicator: Option<ModeIndicator>,
     keymap: Keymap,
     /// Settings file times when last loaded.
-    settings_stamp: [Option<std::time::SystemTime>; 2],
+    settings_stamp: [Option<std::time::SystemTime>; 3],
+    /// The per-application settings turn the IME off in this application.
+    app_off: bool,
     /// Open/close compartment event sink: (compartment source, cookie).
     openclose_sink: Option<(ITfSource, u32)>,
     /// Registered preserved keys for IME mode changes.
@@ -195,6 +197,7 @@ impl TextService_Impl {
             st.settings_stamp = stamp;
             st.session.options = crate::load_options();
             st.keymap = sweet_engine::paths::load_keymap();
+            st.app_off = crate::app_mode() == sweet_engine::app_modes::AppMode::Off;
             drop(st);
             self.update_preserved_keys();
         }
@@ -301,6 +304,9 @@ impl TextService_Impl {
 
     fn translate(&self, vk: u32, lparam: isize) -> Option<Input> {
         let st = self.st.borrow();
+        if st.app_off {
+            return None;
+        }
         keys::translate(&st.keymap, vk, lparam, st.session.is_active())
     }
 
@@ -622,6 +628,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
 impl ITfTextInputProcessorEx_Impl for TextService_Impl {
     fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, flags: u32) -> Result<()> {
         let hot_swap = flags & crate::ACTIVATE_HOT_SWAP != 0;
+        use sweet_engine::app_modes::AppMode;
+        let app_mode = crate::app_mode();
         crate::guard(|| {
             let tm = ptim.ok()?.clone();
             {
@@ -665,6 +673,7 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 st.session.options = crate::load_options();
                 st.keymap = sweet_engine::paths::load_keymap();
                 st.settings_stamp = crate::settings_stamp();
+                st.app_off = app_mode == AppMode::Off;
                 let imm = st.thread_mgr.as_ref().is_some_and(immersive);
                 crate::debug_log!("activate: immersive={imm}");
                 if st.window.is_none() && !imm {
@@ -696,7 +705,8 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                     b.set_open(self.is_open());
                 }
             } else {
-                self.set_open(true);
+                // Hiragana, unless this application starts in direct input.
+                self.set_open(app_mode == AppMode::Normal);
             }
             // Watch the open/close state (changed by keys, the taskbar or
             // other components) to show the mode badge.
@@ -716,7 +726,7 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             }
             self.update_preserved_keys();
             // Switched to Sweet IME (e.g. Win+Space): show the mode.
-            if !hot_swap {
+            if !hot_swap && app_mode != AppMode::Off {
                 self.show_mode_indicator(self.is_open());
             }
             Ok(())
@@ -858,7 +868,9 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             let g = unsafe { *rguid };
             crate::debug_log!("preserved key {g:?}");
-            let t = self.st.borrow().preserved.iter().find(|(x, _, _)| *x == g).map(|(_, _, t)| *t);
+            let st = self.st.borrow();
+            let t = st.preserved.iter().find(|(x, _, _)| *x == g).filter(|_| !st.app_off).map(|(_, _, t)| *t);
+            drop(st);
             let Some(t) = t else { return Ok(BOOL(0)) };
             self.handle_toggle(pic.as_ref(), t);
             Ok(BOOL(1))

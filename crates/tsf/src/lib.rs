@@ -142,9 +142,21 @@ pub(crate) fn theme_colors() -> sweet_engine::theme::Colors {
 
 /// Modification times of the settings files; a change means the settings
 /// app saved something and the service should reload.
-pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 2] {
+pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 3] {
     let mtime = |p: Option<PathBuf>| p.and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
-    [mtime(sweet_engine::paths::config_file()), mtime(sweet_engine::paths::keymap_file())]
+    [
+        mtime(sweet_engine::paths::config_file()),
+        mtime(sweet_engine::paths::keymap_file()),
+        mtime(sweet_engine::paths::apps_file()),
+    ]
+}
+
+/// This application's mode from the per-application settings (the text
+/// service runs inside the application's process).
+pub(crate) fn app_mode() -> sweet_engine::app_modes::AppMode {
+    let exe = std::env::current_exe().ok();
+    let exe = exe.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+    sweet_engine::paths::load_app_modes().mode_for(exe)
 }
 
 /// Optional neural reranker. Not bundled (the model is CC BY-SA 4.0); the

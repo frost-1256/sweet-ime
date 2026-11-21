@@ -835,6 +835,31 @@ fn main() -> Result<()> {
         }
 
         tip.Deactivate()?;
+
+        // Per-application modes: this process is harness.exe.
+        let exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        let apps = appdata.join("SweetIME").join("apps.txt");
+        let a = MapVirtualKeyW(u32::from(b'A'), MAPVK_VK_TO_VSC);
+        let key_a = (windows::Win32::Foundation::WPARAM(usize::from(b'A')), windows::Win32::Foundation::LPARAM(((a as isize) << 16) | 1));
+        for (mode, want_open) in [("english", false), ("off", false), ("normal", true)] {
+            std::fs::write(&apps, format!("{} = {mode}\n", exe.as_deref().unwrap_or("harness.exe"))).unwrap();
+            let t: ITfTextInputProcessor = factory.CreateInstance(None)?;
+            t.Activate(&tm, tip_tid)?;
+            pump();
+            let sink: ITfKeyEventSink = t.cast()?;
+            let wants = sink.OnTestKeyDown(&h.ctx, key_a.0, key_a.1)?.as_bool();
+            check(&format!("app mode {mode}: typing converts"), wants.to_string(), &want_open.to_string(), &mut fails);
+            // 半角/全角 (VK_KANJI, VK_OEM_AUTO / VK_OEM_ENLW) toggles the IME,
+            // except where the IME is off for the application.
+            let toggle = [0x19usize, 0xF3, 0xF4].iter().any(|&vk| {
+                let wp = windows::Win32::Foundation::WPARAM(vk);
+                sink.OnTestKeyDown(&h.ctx, wp, windows::Win32::Foundation::LPARAM(1)).is_ok_and(|b| b.as_bool())
+            });
+            check(&format!("app mode {mode}: 半角/全角 toggles"), toggle.to_string(), &(mode != "off").to_string(), &mut fails);
+            t.Deactivate()?;
+        }
+        let _ = std::fs::remove_file(&apps);
+
         hot_swap(&tm, tip_tid, &dll, &appdata, &mut fails)?;
         tm.Deactivate()?;
         let _ = std::fs::remove_dir_all(&appdata);

@@ -213,6 +213,11 @@ emoji = on             # えがお -> 😊, かお -> kaomoji
 calculator = on        # 1+2*3= -> 7
 ```
 
+Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one
+program per line as `program.exe = normal | english | off` (start in
+hiragana, start in direct input, or leave the program alone). The settings
+app edits them on the アプリ page.
+
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
 
 Your own words are stored in `%APPDATA%\SweetIME\user_dict.tsv`, one per

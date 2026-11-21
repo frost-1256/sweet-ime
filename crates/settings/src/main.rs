@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod apps_page;
 mod dict_page;
 mod keys_page;
 mod theme_page;
@@ -42,6 +43,7 @@ fn main() -> eframe::Result<()> {
 enum Page {
     Input,
     Keys,
+    Apps,
     Theme,
     Neural,
     Learning,
@@ -51,7 +53,7 @@ enum Page {
 
 impl Page {
     #[cfg(windows)]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Apps, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
     /// Elsewhere the candidate window is drawn by the input method framework.
     #[cfg(not(windows))]
     const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
@@ -60,6 +62,7 @@ impl Page {
         match self {
             Page::Input => "入力",
             Page::Keys => "キー",
+            Page::Apps => "アプリ",
             Page::Theme => "テーマ",
             Page::Neural => "AI 変換",
             Page::Learning => "学習",
@@ -87,6 +90,7 @@ struct App {
     model: &'static str,
     download: Option<Download>,
     keys: keys_page::KeysPage,
+    apps: apps_page::AppsPage,
     dict: dict_page::DictPage,
     updater: update::Updater,
 }
@@ -104,6 +108,7 @@ impl App {
         let page = match std::env::args().skip_while(|a| a != "--page").nth(1).as_deref() {
             Some("neural") => Page::Neural,
             Some("keys") => Page::Keys,
+            Some("apps") => Page::Apps,
             Some("theme") => Page::Theme,
             Some("learning") => Page::Learning,
             Some("dictionary") => Page::Dictionary,
@@ -126,6 +131,7 @@ impl App {
             model: MODELS[0].0,
             download: None,
             keys: keys_page::KeysPage::new(),
+            apps: apps_page::AppsPage::new(),
             dict: dict_page::DictPage::new(),
             updater,
         };
@@ -270,6 +276,7 @@ impl eframe::App for App {
                 match self.page {
                     Page::Input => self.input_page(ui),
                     Page::Keys => self.keys.ui(ui, &mut self.status),
+                    Page::Apps => self.apps.ui(ui, &mut self.status),
                     Page::Theme => {
                         if theme_page::ui(ui, &mut self.opts.theme) {
                             self.save();
@@ -302,7 +309,7 @@ impl App {
         card(ui, "日付と時刻", "「きょう」「あした」で日付、「いま」で時刻を候補に出します。", |ui| {
             changed |= toggle(ui, &mut self.opts.dates).changed();
         });
-        card(ui, "絵文字と顔文字", "「えがお」で 😊、「かお」で顔文字を候補に出します。", |ui| {
+        card(ui, "絵文字と顔文字", "「えがお」「ねこ」で絵文字、「かお」で顔文字を候補に出します。", |ui| {
             changed |= toggle(ui, &mut self.opts.emoji).changed();
         });
         card(ui, "計算", "「1+2*3=」のように = で終わる式を打つと、答えを候補に出します。", |ui| {

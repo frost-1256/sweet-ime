@@ -1,5 +1,6 @@
 //! sweet-ime conversion engine.
 
+pub mod app_modes;
 pub mod converter;
 pub mod dict;
 pub mod english;
