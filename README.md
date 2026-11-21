@@ -14,6 +14,9 @@ A Japanese input method written from scratch in Rust.
   It has a Direct2D candidate window that follows light/dark mode and the
   accent color and accepts mouse clicks, plus a taskbar input mode
   indicator ("あ" / "A").
+- **Linux**: an fcitx5 addon. It works on Wayland compositors that support
+  `input-method-v2` (such as niri, Sway and Hyprland) and with fcitx5's
+  other frontends. fcitx5 draws the candidate window.
 - **Features**: live conversion, predictive suggestions (including
   mid-sentence), romaji typo correction, per-user learning, bunsetsu
   resizing, and F6–F10 transliteration.
@@ -86,6 +89,53 @@ loads the next time it is activated. Pass
 model. Without the model, the IME converts with the dictionary lattice
 only.
 
+## Linux (fcitx5)
+
+The flake builds the fcitx5 addon, the system dictionary, the settings app
+and the model packer:
+
+```sh
+nix build github:frost-1256/sweet-ime
+```
+
+On NixOS, add the package to the fcitx5 addons and to the input method
+group:
+
+```nix
+# flake inputs
+sweet-ime.url = "github:frost-1256/sweet-ime";
+
+# NixOS or Home Manager
+i18n.inputMethod.fcitx5.addons = [ inputs.sweet-ime.packages.${pkgs.system}.default ];
+```
+
+Then add **Sweet IME** to the input method list (input method name
+`sweetime`), for example in `~/.config/fcitx5/profile` or through the fcitx5
+settings. Its **設定** entry opens `sweet-settings`.
+
+Without Nix, build with CMake. It runs cargo for the Rust part, so you
+need Rust, CMake and the fcitx5 development files:
+
+```sh
+cmake -S crates/fcitx5 -B build -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build && sudo cmake --install build
+cargo build --release -p sweet-dictc
+target/release/sweet-dictc third_party/mozc-data/src/data/dictionary_oss system.dict
+sudo install -Dm644 system.dict /usr/share/sweet-ime/system.dict
+```
+
+On Linux the files live in XDG directories:
+
+- Settings, key bindings and learned words: `~/.config/sweet-ime/`
+- The zenz model: `~/.local/share/sweet-ime/zenz.swz`. Download it from
+  **Settings → AI 変換** or with `share/sweet-ime/get-zenz.sh`, then restart
+  fcitx5.
+
+The key bindings file is shared with Windows. Japanese keyboard keys
+(半角/全角, 変換, 無変換, ひらがな, 英数) work the same way. fcitx5's own
+trigger key (Ctrl+Space by default) switches between Sweet IME and the
+keyboard layout.
+
 ## Keys
 
 | Key                      | While typing                      | While converting                 |
@@ -130,6 +180,7 @@ focus.
 In the app you can:
 
 - Turn live conversion, suggestions and the "あ" / "A" indicator on or off
+- Choose a color theme for the candidate window (Windows)
 - Change key bindings
 - Turn AI conversion on or off, and download or remove the zenz model
 - Turn learning on or off, and review, delete or clear learned words
@@ -141,6 +192,7 @@ live_conversion = on   # show converted text while typing
 suggestions = on       # show predictions while typing
 neural = on            # rerank with the zenz model when installed
 learning = on          # learn from chosen candidates
+theme = default        # default, light, dark, sakura, matcha, midnight, lavender
 ```
 
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
@@ -150,6 +202,8 @@ Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
 - `cargo test --workspace`
 - `target\release\examples\harness.exe` drives the real TSF DLL in-process
   without registering it.
+- `crates/fcitx5/tests/run-dbus-harness.sh result` drives the fcitx5 addon
+  through a private fcitx5 over D-Bus (Linux, after `nix build`).
 - `sweet-cli data\system.dict eval <evaluation.tsv>` measures accuracy.
   Set `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
 

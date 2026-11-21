@@ -21,20 +21,16 @@ fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     // One Japanese font for everything (mixing a Latin font gives uneven
     // baselines), then a fallback.
-    let candidates: [(&str, &str, u32); 2] = [
-        ("yugothic", r"C:\Windows\Fonts\YuGothM.ttc", 0),
-        ("meiryo", r"C:\Windows\Fonts\meiryo.ttc", 0),
-    ];
     let mut loaded = Vec::new();
-    for (name, path, index) in candidates {
-        if let Ok(bytes) = std::fs::read(path) {
+    for (name, path, index) in system_fonts() {
+        if let Ok(bytes) = std::fs::read(&path) {
             let mut data = egui::FontData::from_owned(bytes);
             data.index = index;
             // Japanese fonts have a tall ascent; nudge glyphs down so text
             // is centred in buttons.
             data.tweak.y_offset_factor = 0.12;
-            fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(data));
-            loaded.push(name.to_owned());
+            fonts.font_data.insert(name.clone(), std::sync::Arc::new(data));
+            loaded.push(name);
         }
     }
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -44,6 +40,38 @@ fn install_fonts(ctx: &egui::Context) {
         }
     }
     ctx.set_fonts(fonts);
+}
+
+/// Japanese UI fonts to try, as (name, file, face index).
+#[cfg(windows)]
+fn system_fonts() -> Vec<(String, String, u32)> {
+    vec![
+        ("yugothic".into(), r"C:\Windows\Fonts\YuGothM.ttc".into(), 0),
+        ("meiryo".into(), r"C:\Windows\Fonts\meiryo.ttc".into(), 0),
+    ]
+}
+
+/// Japanese UI fonts to try, as (name, file, face index): the best match
+/// fontconfig has that covers Japanese.
+#[cfg(not(windows))]
+fn system_fonts() -> Vec<(String, String, u32)> {
+    let out = std::process::Command::new("fc-match")
+        .args(["-s", "-f", "%{file}\t%{index}\t%{lang}\n", "sans-serif:lang=ja"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split('\t');
+            let (file, index, langs) = (f.next()?, f.next()?, f.next()?);
+            let outline = [".ttf", ".otf", ".ttc"].iter().any(|ext| file.to_ascii_lowercase().ends_with(ext));
+            let japanese = langs.split('|').any(|l| l == "ja");
+            // The upper bits select a named instance of a variable font.
+            let index = index.trim().parse::<u32>().ok()? & 0xffff;
+            (outline && japanese).then(|| ("ja".to_string(), file.to_string(), index))
+        })
+        .take(1)
+        .collect()
 }
 
 /// A Windows 11 style on/off switch.

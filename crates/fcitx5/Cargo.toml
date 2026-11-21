@@ -1,0 +1,13 @@
+[package]
+name = "sweet-fcitx5"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI over the Sweet IME engine for the fcitx5 addon"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+sweet-engine = { path = "../engine" }
+sweet-zenz = { path = "../zenz" }

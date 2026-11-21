@@ -1,12 +1,13 @@
 //! Sweet IME settings.
 //!
-//! Edits `%APPDATA%\SweetIME\config.txt` and `keymap.txt` (saved on every
+//! Edits `config.txt` and `keymap.txt` (saved on every
 //! change), manages the learning history and downloads the optional neural
 //! model.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod keys_page;
+mod theme_page;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -32,18 +33,24 @@ fn main() -> eframe::Result<()> {
 enum Page {
     Input,
     Keys,
+    Theme,
     Neural,
     Learning,
     About,
 }
 
 impl Page {
-    const ALL: [Page; 5] = [Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::About];
+    #[cfg(windows)]
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::About];
+    /// Elsewhere the candidate window is drawn by the input method framework.
+    #[cfg(not(windows))]
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::About];
 
     fn label(self) -> &'static str {
         match self {
             Page::Input => "入力",
             Page::Keys => "キー",
+            Page::Theme => "テーマ",
             Page::Neural => "AI 変換",
             Page::Learning => "学習",
             Page::About => "情報",
@@ -84,6 +91,7 @@ impl App {
         let page = match std::env::args().skip_while(|a| a != "--page").nth(1).as_deref() {
             Some("neural") => Page::Neural,
             Some("keys") => Page::Keys,
+            Some("theme") => Page::Theme,
             Some("learning") => Page::Learning,
             Some("about") => Page::About,
             _ => Page::Input,
@@ -123,26 +131,54 @@ fn human_size(bytes: u64) -> String {
     format!("{:.0} MB", bytes as f64 / 1_000_000.0)
 }
 
-/// get-zenz.ps1: next to this program (installed) or in scripts/ (dev).
+#[cfg(windows)]
+const GET_ZENZ: &str = "get-zenz.ps1";
+#[cfg(not(windows))]
+const GET_ZENZ: &str = "get-zenz.sh";
+
+/// The model download script: next to this program (Windows install), in
+/// `../share/sweet-ime` (Linux install) or in scripts/ (development).
 fn get_zenz_script() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    [dir.join("get-zenz.ps1"), dir.join("../../scripts/get-zenz.ps1")].into_iter().find(|p| p.exists())
+    [dir.join(GET_ZENZ), dir.join("../share/sweet-ime").join(GET_ZENZ), dir.join("../../scripts").join(GET_ZENZ)]
+        .into_iter()
+        .find(|p| p.exists())
+}
+
+/// Opens a folder in the file manager.
+fn open_folder(dir: &std::path::Path) {
+    #[cfg(windows)]
+    let opener = "explorer.exe";
+    #[cfg(not(windows))]
+    let opener = "xdg-open";
+    let _ = std::process::Command::new(opener).arg(dir).spawn();
 }
 
 fn start_download(model: &str, ctx: egui::Context) -> Result<Download, String> {
     use std::io::BufRead;
-    use std::os::windows::process::CommandExt;
-    let script = get_zenz_script().ok_or("get-zenz.ps1 が見つかりません")?;
-    let mut child = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .args(["-Model", model])
+    let script = get_zenz_script().ok_or_else(|| format!("{GET_ZENZ} が見つかりません"))?;
+    #[cfg(windows)]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        let mut c = std::process::Command::new("powershell.exe");
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .args(["-Model", model])
+            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut c = std::process::Command::new("sh");
+        c.arg(&script).arg(model);
+        c
+    };
+    let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .spawn()
-        .map_err(|e| format!("PowerShell を起動できません: {e}"))?;
+        .map_err(|e| format!("ダウンロードを開始できません: {e}"))?;
     let (tx, rx) = channel();
     let out = child.stdout.take().unwrap();
     let err = child.stderr.take().unwrap();
@@ -184,7 +220,7 @@ impl eframe::App for App {
             ui.add_space(18.0);
             ui.label(RichText::new("Sweet IME").size(20.0).strong());
             ui.add_space(14.0);
-            for p in Page::ALL {
+            for &p in Page::ALL {
                 let selected = self.page == p;
                 let text = RichText::new(p.label()).size(15.5);
                 let b = egui::Button::selectable(selected, text).min_size(Vec2::new(ui.available_width(), 34.0));
@@ -205,6 +241,11 @@ impl eframe::App for App {
                 match self.page {
                     Page::Input => self.input_page(ui),
                     Page::Keys => self.keys.ui(ui, &mut self.status),
+                    Page::Theme => {
+                        if theme_page::ui(ui, &mut self.opts.theme) {
+                            self.save();
+                        }
+                    }
                     Page::Neural => self.neural_page(ui),
                     Page::Learning => self.learning_page(ui),
                     Page::About => about_page(ui),
@@ -228,6 +269,7 @@ impl App {
         card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
             changed |= toggle(ui, &mut self.opts.suggestions).changed();
         });
+        #[cfg(windows)]
         card(ui, "入力モードを表示", "IME のオン/オフを切り替えたとき、文字カーソルの近くに「あ」「A」を表示します。", |ui| {
             changed |= toggle(ui, &mut self.opts.mode_indicator).changed();
         });
@@ -410,9 +452,13 @@ fn about_page(ui: &mut egui::Ui) {
         ui.label("Sweet IME 本体: MIT License");
         ui.label("システム辞書: Mozc OSS 辞書(IPAdic・沖縄辞書を含む)。それぞれのライセンスに従います。");
         ui.label("AI 変換モデル(任意・別途ダウンロード): zenz by Miwa Keita, CC BY-SA 4.0");
-        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("licenses"))) {
-            if dir.exists() && ui.button("ライセンス文書を開く").clicked() {
-                let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let licenses = exe_dir.and_then(|d| {
+            [d.join("licenses"), d.join("../share/sweet-ime/licenses")].into_iter().find(|p| p.exists())
+        });
+        if let Some(dir) = licenses {
+            if ui.button("ライセンス文書を開く").clicked() {
+                open_folder(&dir);
             }
         }
     });
@@ -420,7 +466,7 @@ fn about_page(ui: &mut egui::Ui) {
         card(ui, "設定フォルダー", &dir.to_string_lossy(), |ui| {
             if ui.button("開く").clicked() {
                 let _ = std::fs::create_dir_all(&dir);
-                let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+                open_folder(&dir);
             }
         });
     }
