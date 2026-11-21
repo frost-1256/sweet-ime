@@ -25,6 +25,8 @@ struct TextStore {
     text: RefCell<Vec<u16>>,
     sel: Cell<(i32, i32)>,
     sink: RefCell<Option<ITextStoreACPSink>>,
+    /// The "application" window the document lives in.
+    hwnd: HWND,
 }
 
 impl TextStore {
@@ -189,7 +191,7 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         Ok(RECT { left: 0, top: 0, right: 800, bottom: 600 })
     }
     fn GetWnd(&self, _v: u32) -> Result<HWND> {
-        Ok(HWND::default())
+        Ok(self.hwnd)
     }
 }
 
@@ -245,9 +247,9 @@ impl Harness {
 /// Saves the candidate window's screen area as a 32-bit BMP.
 fn screenshot(path: &str) {
     use windows::Win32::Graphics::Gdi::*;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
     unsafe {
-        let Ok(hwnd) = FindWindowW(windows_core::w!("SweetImeCandidateWindow"), None) else {
+        let Some(hwnd) = own_candidate_window() else {
             println!("FAIL screenshot: window not found");
             return;
         };
@@ -288,6 +290,25 @@ fn screenshot(path: &str) {
     }
 }
 
+/// The candidate window of this process (an installed IME may have others
+/// in other processes).
+fn own_candidate_window() -> Option<HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId};
+    let pid = std::process::id();
+    let mut after: Option<HWND> = None;
+    unsafe {
+        loop {
+            let h = FindWindowExW(None, after, windows_core::w!("SweetImeCandidateWindow"), None).ok()?;
+            let mut p = 0;
+            GetWindowThreadProcessId(h, Some(&mut p));
+            if p == pid {
+                return Some(h);
+            }
+            after = Some(h);
+        }
+    }
+}
+
 fn check(name: &str, got: String, want: &str, fails: &mut u32) {
     if got == want {
         println!("ok   {name}: {got}");
@@ -319,10 +340,18 @@ fn main() -> Result<()> {
         let tid = tm.Activate()?;
         eprintln!("step: tm activated {tid}");
         let dim = tm.CreateDocumentMgr()?;
+        let app_hwnd = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+            Default::default(),
+            windows_core::w!("STATIC"),
+            windows_core::w!("harness app"),
+            windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW,
+            0, 0, 200, 100, None, None, None, None,
+        )?;
         let store = windows_core::ComObject::new(TextStore {
             text: RefCell::new(Vec::new()),
             sel: Cell::new((0, 0)),
             sink: RefCell::new(None),
+            hwnd: app_hwnd,
         });
         let store_unk: IUnknown = store.to_interface();
         let mut ctx = None;
@@ -428,8 +457,11 @@ fn main() -> Result<()> {
         pump();
         {
             use windows::Win32::UI::HiDpi::GetDpiForWindow;
-            use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SendMessageW, WM_LBUTTONUP};
-            let hwnd = FindWindowW(windows_core::w!("SweetImeCandidateWindow"), None)?;
+            use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_LBUTTONUP};
+            let hwnd = own_candidate_window().expect("candidate window in this process");
+            let owner = windows::Win32::UI::WindowsAndMessaging::GetWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::GW_OWNER)
+                .unwrap_or_default();
+            check("candidate window owner", format!("{:?}", owner.0), &format!("{:?}", app_hwnd.0), &mut fails);
             let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
             // Rows start at PAD=4 and are ROW_H=32 tall (logical px).
             let y = ((4.0 + 2.5 * 32.0) * scale) as isize;

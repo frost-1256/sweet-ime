@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     GWLP_USERDATA, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    PostMessageW, SetTimer, SetWindowLongPtrW, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
+    PostMessageW, SetTimer, SetWindowLongPtrW, GWLP_HWNDPARENT, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{HSTRING, PCWSTR, Result, w};
@@ -205,6 +205,7 @@ fn wide(s: &str) -> Vec<u16> {
 
 pub struct CandidateWindow {
     hwnd: HWND,
+    owner: std::cell::Cell<isize>,
 }
 
 fn register_class() {
@@ -224,7 +225,11 @@ fn register_class() {
 }
 
 impl CandidateWindow {
-    pub fn new() -> Result<Self> {
+    /// Creates the window owned by `owner` (the application window the
+    /// text is in). Owned windows stay above their owner, including in
+    /// immersive hosts such as Windows Search, where an unowned topmost
+    /// window would end up behind the host's UI.
+    pub fn new(owner: Option<HWND>) -> Result<Self> {
         register_class();
         unsafe {
             let hwnd = CreateWindowExW(
@@ -236,7 +241,7 @@ impl CandidateWindow {
                 0,
                 1,
                 1,
-                None,
+                owner,
                 None,
                 Some(crate::dll_instance()),
                 None,
@@ -284,7 +289,18 @@ impl CandidateWindow {
             };
             STATES.with(|s| s.borrow_mut().push((hwnd.0 as isize, Box::new(state))));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
-            Ok(Self { hwnd })
+            Ok(Self { hwnd, owner: std::cell::Cell::new(owner.map_or(0, |h| h.0 as isize)) })
+        }
+    }
+
+    /// Changes the owner window (e.g. focus moved to another window of the
+    /// same thread).
+    pub fn set_owner(&self, owner: HWND) {
+        if self.owner.get() != owner.0 as isize {
+            self.owner.set(owner.0 as isize);
+            unsafe {
+                SetWindowLongPtrW(self.hwnd, GWLP_HWNDPARENT, owner.0 as _);
+            }
         }
     }
 

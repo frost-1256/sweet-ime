@@ -3,7 +3,8 @@
 use std::cell::RefCell;
 
 use sweet_engine::{Session, SpanAttr};
-use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::TextServices::{
@@ -13,7 +14,7 @@ use windows::Win32::UI::TextServices::{
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
     ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr,
+    ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, TF_TMF_IMMERSIVEMODE,
     TF_AE_NONE, TF_ANCHOR_END, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
     TF_SELECTIONSTYLE,
 };
@@ -277,6 +278,23 @@ fn ensure_composition(
     }
 }
 
+/// Creates the candidate window with its handlers. The closures keep the
+/// service alive; Deactivate drops the window, which breaks the cycle.
+fn make_window(this: &ComObject<TextService>, owner: Option<HWND>) -> Option<CandidateWindow> {
+    let w = CandidateWindow::new(owner).ok()?;
+    w.warm_up();
+    let t = this.clone();
+    w.set_on_click(move |i| t.on_candidate_click(i));
+    let t = this.clone();
+    w.set_on_live(move |r, s| t.on_live_result(r, s));
+    Some(w)
+}
+
+/// Whether the thread hosts an immersive (UWP / shell) application.
+fn immersive(tm: &ITfThreadMgr) -> bool {
+    unsafe { tm.cast::<ITfThreadMgrEx>().and_then(|t| t.GetActiveFlags()).is_ok_and(|f| f & TF_TMF_IMMERSIVEMODE != 0) }
+}
+
 fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> Result<()> {
     let Ok(mut st) = this.st.try_borrow_mut() else { return Ok(()) };
     let st = &mut *st;
@@ -339,10 +357,20 @@ fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> 
                 if let Ok(view) = ctx.GetActiveView() {
                     let _ = view.GetTextExt(ec, &target, &mut rc, &mut clipped);
                 }
+                // Own the window by the application window holding the text.
+                let owner = ctx
+                    .GetActiveView()
+                    .and_then(|v| v.GetWnd())
+                    .ok()
+                    .filter(|h| !h.is_invalid())
+                    .or_else(|| Some(GetFocus()).filter(|h| !h.is_invalid()));
                 if st.window.is_none() {
-                    st.window = CandidateWindow::new().ok();
+                    st.window = make_window(this, owner);
                 }
                 if let Some(w) = &st.window {
+                    if let Some(o) = owner {
+                        w.set_owner(o);
+                    }
                     w.show(&list, rc);
                 }
             }
@@ -428,20 +456,16 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             let _ = crate::converter();
             // Create the candidate window now so the first keystroke that
             // shows suggestions does not pay for Direct2D initialization.
+            // In immersive hosts it is created on first use instead, owned
+            // by the host window from the start.
             {
+                let this: ComObject<TextService> = self.to_object();
                 let mut st = self.st.borrow_mut();
                 st.session.options = crate::load_options();
-                if st.window.is_none() {
-                    st.window = CandidateWindow::new().ok();
-                    if let Some(w) = &st.window {
-                        w.warm_up();
-                        // The closure keeps the service alive; Deactivate
-                        // drops the window, which breaks the cycle.
-                        let this: ComObject<TextService> = self.to_object();
-                        w.set_on_click(move |i| this.on_candidate_click(i));
-                        let this: ComObject<TextService> = self.to_object();
-                        w.set_on_live(move |r, s| this.on_live_result(r, s));
-                    }
+                let imm = st.thread_mgr.as_ref().is_some_and(immersive);
+                crate::debug_log!("activate: immersive={imm}");
+                if st.window.is_none() && !imm {
+                    st.window = make_window(&this, None);
                 }
             }
             // Taskbar indicator ("あ" / "A"). The handler holds the service;
