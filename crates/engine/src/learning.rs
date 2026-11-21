@@ -159,6 +159,25 @@ impl UserHistory {
         Ok(())
     }
 
+    /// Every learned entry as (reading, entry), most recent first.
+    pub fn all(&mut self) -> Vec<(String, Learned)> {
+        self.reload_if_changed();
+        let mut v: Vec<(String, Learned)> = self
+            .entries
+            .iter()
+            .flat_map(|(r, es)| es.iter().map(move |e| (r.clone(), e.clone())))
+            .collect();
+        v.sort_by(|a, b| b.1.last.cmp(&a.1.last));
+        v
+    }
+
+    /// Forgets everything.
+    pub fn clear(&mut self) -> io::Result<()> {
+        self.entries.clear();
+        self.max_reading_len = 0;
+        self.save()
+    }
+
     /// Learned surfaces for exactly `reading`, most recent first.
     pub fn lookup(&self, reading: &str) -> &[Learned] {
         self.entries.get(reading).map_or(&[], Vec::as_slice)

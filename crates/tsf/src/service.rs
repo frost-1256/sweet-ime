@@ -14,7 +14,7 @@ use windows::Win32::UI::TextServices::{
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
     ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, TF_TMF_IMMERSIVEMODE,
+    ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, TF_TMF_IMMERSIVEMODE,
     TF_AE_NONE, TF_ANCHOR_END, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
     TF_SELECTIONSTYLE,
 };
@@ -47,7 +47,9 @@ struct State {
     ITfKeyEventSink,
     ITfCompositionSink,
     ITfThreadFocusSink,
-    ITfDisplayAttributeProvider
+    ITfDisplayAttributeProvider,
+    ITfFnConfigure,
+    ITfFunction
 )]
 pub struct TextService {
     st: RefCell<State>,
@@ -565,6 +567,20 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
                 w.hide();
             }
         }
+        Ok(())
+    }
+}
+
+/// "Options" in Windows language settings.
+impl ITfFunction_Impl for TextService_Impl {
+    fn GetDisplayName(&self) -> Result<windows_core::BSTR> {
+        Ok(windows_core::BSTR::from("Sweet IME の設定"))
+    }
+}
+
+impl ITfFnConfigure_Impl for TextService_Impl {
+    fn Show(&self, _parent: HWND, _langid: u16, _profile: *const GUID) -> Result<()> {
+        crate::launch_settings();
         Ok(())
     }
 }

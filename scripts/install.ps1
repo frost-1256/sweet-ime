@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Installs Sweet IME from dist\ into Program Files and registers the TSF
   text service (64-bit and 32-bit). Must run elevated.
@@ -28,7 +28,7 @@ foreach ($arch in 'x64', 'x86') {
     }
     Copy-Item "$Source\$arch\sweet_tsf.dll" $dll
 }
-foreach ($f in 'system.dict', 'get-zenz.ps1', 'tools\sweet-zenz-pack.exe') {
+foreach ($f in 'system.dict', 'sweet-settings.exe', 'get-zenz.ps1', 'tools\sweet-zenz-pack.exe') {
     if (Test-Path "$Source\$f") {
         $dst = "$Target\$f"
         New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
@@ -63,5 +63,13 @@ if ($AddToLanguageList) {
         Set-WinUserLanguageList $list -Force
     }
 }
+# Start menu shortcut to the settings app (all users). This file is saved
+# as UTF-8 with BOM so Windows PowerShell 5.1 reads the name correctly.
+$lnk = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Sweet IME の設定.lnk"
+$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+$shortcut.TargetPath = "$Target\sweet-settings.exe"
+$shortcut.WorkingDirectory = $Target
+$shortcut.Save()
+
 Write-Host "Sweet IME installed to $Target"
-Write-Host "Optional neural reranking: run $Target\get-zenz.ps1 (no admin needed)"
+Write-Host "Settings (including the optional AI model download): Start menu > Sweet IME の設定"

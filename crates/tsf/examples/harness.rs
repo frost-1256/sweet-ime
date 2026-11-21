@@ -371,8 +371,15 @@ fn main() -> Result<()> {
         println!("activated in {:.2?}", t0.elapsed());
         // A real host runs its message loop between activation and typing.
         pump();
+        // Windows language settings open the options through ITfFnConfigure.
+        let configure: windows::Win32::UI::TextServices::ITfFnConfigure = tip.cast()?;
+        let name = configure.GetDisplayName()?.to_string();
+        if std::env::var_os("SWEET_TEST_CONFIGURE").is_some() {
+            configure.Show(HWND::default(), 0x0411, &GUID::zeroed())?;
+        }
         let h = Harness { sink: tip.cast()?, ctx: ctx.clone(), store };
         let mut fails = 0;
+        check("configure name", name, "Sweet IME の設定", &mut fails);
 
         // 1. compose + convert + commit (twice: the first run includes
         // one-time candidate window creation)

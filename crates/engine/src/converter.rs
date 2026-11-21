@@ -97,6 +97,9 @@ pub struct Converter {
     dict: Dictionary,
     reranker: Option<Box<dyn Reranker>>,
     history: Mutex<UserHistory>,
+    /// Runtime switches (see [`Converter::configure`]).
+    rerank_on: std::sync::atomic::AtomicBool,
+    learning_on: std::sync::atomic::AtomicBool,
     /// Recent reranker decisions: (reading, left context, candidates) -> index.
     rerank_cache: Mutex<Vec<(String, String, Vec<String>, Option<usize>)>>,
 }
@@ -109,7 +112,10 @@ fn is_kana(c: char) -> bool {
 
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
-        Self { dict, reranker: None, history: Mutex::new(UserHistory::new()), rerank_cache: Mutex::new(Vec::new()) }
+        Self { dict, reranker: None, history: Mutex::new(UserHistory::new()),
+            rerank_on: std::sync::atomic::AtomicBool::new(true),
+            learning_on: std::sync::atomic::AtomicBool::new(true),
+            rerank_cache: Mutex::new(Vec::new()) }
     }
 
     pub fn with_history(self, h: UserHistory) -> Self {
@@ -123,7 +129,7 @@ impl Converter {
 
     /// Remembers that the user chose `surface` for `reading`.
     pub fn learn(&self, reading: &str, surface: &str) {
-        if reading == surface {
+        if reading == surface || !self.learning_enabled() {
             return; // plain hiragana needs no learning
         }
         // Left/right POS ids: from a lattice path producing exactly this
@@ -156,6 +162,9 @@ impl Converter {
 
     /// Learned words that occur in `text`, as lattice extras.
     fn learned_extras(&self, text: &str) -> Vec<Extra> {
+        if !self.learning_enabled() {
+            return Vec::new();
+        }
         let mut h = self.history();
         h.reload_if_changed();
         let mut out = Vec::new();
@@ -189,16 +198,33 @@ impl Converter {
         self
     }
 
+    /// Whether neural reranking is available and enabled.
     pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some() && self.rerank_on.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether a reranker is loaded at all (regardless of the switch).
+    pub fn reranker_loaded(&self) -> bool {
         self.reranker.is_some()
+    }
+
+    /// Turns neural reranking and user learning on or off.
+    pub fn configure(&self, rerank: bool, learning: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.rerank_on.store(rerank, Relaxed);
+        self.learning_on.store(learning, Relaxed);
+    }
+
+    fn learning_enabled(&self) -> bool {
+        self.learning_on.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Best conversion: lattice N-best refined by the reranker if present.
     /// The chosen candidate is first; the rest follow in lattice order.
     pub fn convert_best(&self, text: &str, boundaries: &[usize], left_context: &str) -> Vec<Conversion> {
-        let n = self.reranker.as_ref().map_or(1, |r| r.candidates().max(1));
+        let n = self.reranker.as_ref().filter(|_| self.has_reranker()).map_or(1, |r| r.candidates().max(1));
         let mut res = self.convert(text, boundaries, n);
-        if let Some(r) = &self.reranker {
+        if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
             // Don't let the model override what the user taught us.
             if res.first().is_some_and(|c| c.learned_words() > 0) {
                 return res;
@@ -478,7 +504,7 @@ impl Converter {
     pub fn predict(&self, prefix: &str, n: usize) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        {
+        if self.learning_enabled() {
             let h = self.history();
             for (_, e) in h.predictive(prefix).into_iter().take(n) {
                 if seen.insert(e.surface.clone()) {
@@ -541,8 +567,10 @@ impl Converter {
             }
         };
         // Learned surfaces for this exact reading come first (most recent first).
-        for e in self.history().lookup(reading) {
-            add(e.surface.clone(), &mut out);
+        if self.learning_enabled() {
+            for e in self.history().lookup(reading) {
+                add(e.surface.clone(), &mut out);
+            }
         }
         let mut lat = self.build_lattice(reading, &[], &[]);
         self.viterbi(&mut lat);

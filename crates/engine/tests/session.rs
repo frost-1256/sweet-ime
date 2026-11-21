@@ -6,7 +6,7 @@ use sweet_engine::{Converter, Dictionary, Key, ListKind, Options, Session, SpanA
 /// Session with live conversion and suggestions off (classic behaviour).
 fn plain() -> Session {
     let mut s = Session::new();
-    s.options = Options { live_conversion: false, suggestions: false };
+    s.options = Options { live_conversion: false, suggestions: false, ..Options::default() };
     s
 }
 
@@ -194,4 +194,34 @@ fn live_refinement_applies_only_to_current_reading() {
     assert_eq!(s.preedit().text, "昨日の会議");
     s.handle(&c, Key::Enter);
     assert_eq!(s.take_commit(), "昨日の会議");
+}
+
+/// Always prefers the last candidate, to make reranking observable.
+struct PickLast;
+
+impl sweet_engine::Reranker for PickLast {
+    fn choose(&self, _r: &str, _l: &str, c: &[sweet_engine::Conversion]) -> Option<usize> {
+        Some(c.len() - 1)
+    }
+}
+
+#[test]
+fn neural_and_learning_switches() {
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
+    let Ok(d) = Dictionary::open(p) else { return };
+    let c = Converter::new(d).with_reranker(Box::new(PickLast));
+    let lattice_best = c.convert("きしゃ", &[], 1)[0].surface();
+    assert_ne!(c.convert_best("きしゃ", &[], "")[0].surface(), lattice_best);
+    c.configure(false, true);
+    assert!(!c.has_reranker());
+    assert_eq!(c.convert_best("きしゃ", &[], "")[0].surface(), lattice_best);
+
+    // Learning off: nothing is learned and nothing learned is used.
+    c.configure(false, false);
+    let other = c.segment_candidates("きしゃ", 5)[2].clone();
+    c.learn("きしゃ", &other);
+    assert_eq!(c.convert("きしゃ", &[], 1)[0].surface(), lattice_best);
+    c.configure(false, true);
+    c.learn("きしゃ", &other);
+    assert_eq!(c.convert("きしゃ", &[], 1)[0].surface(), other);
 }

@@ -69,8 +69,8 @@ pub(crate) fn converter() -> Option<&'static Converter> {
             candidates.insert(0, PathBuf::from(p));
         }
         let mut conv = candidates.into_iter().find_map(|p| Dictionary::open(&p).ok()).map(Converter::new)?;
-        if let Some(dir) = std::env::var_os("APPDATA").map(PathBuf::from) {
-            conv = conv.with_history(sweet_engine::UserHistory::with_file(dir.join("SweetIME").join("history.tsv")));
+        if let Some(p) = sweet_engine::paths::history_file() {
+            conv = conv.with_history(sweet_engine::UserHistory::with_file(p));
         }
         Some(match load_zenz() {
             Some(r) => conv.with_reranker(Box::new(r)),
@@ -80,15 +80,39 @@ pub(crate) fn converter() -> Option<&'static Converter> {
     .as_ref()
 }
 
+/// Opens the settings app (`sweet-settings.exe` in the install root, or
+/// next to the DLL during development).
+pub(crate) fn launch_settings() {
+    let Some(dir) = dll_path().parent().map(|d| d.to_path_buf()) else { return };
+    let mut candidates = vec![dir.join("sweet-settings.exe")];
+    if let Some(root) = dir.parent() {
+        candidates.insert(0, root.join("sweet-settings.exe"));
+    }
+    match candidates.into_iter().find(|p| p.exists()) {
+        Some(exe) => {
+            // Don't hand the host's standard handles to the new process.
+            let r = std::process::Command::new(exe)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Err(e) = r {
+                debug_log!("launch settings: {e}");
+            }
+        }
+        None => debug_log!("sweet-settings.exe not found"),
+    }
+}
+
 /// Per-user settings from `%APPDATA%\SweetIME\config.txt` (`key = value`).
 /// Read on every activation, so edits apply the next time the IME is
 /// activated in an application.
 pub(crate) fn load_options() -> sweet_engine::Options {
-    std::env::var_os("APPDATA")
-        .map(|d| PathBuf::from(d).join("SweetIME").join("config.txt"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| sweet_engine::Options::parse(&t))
-        .unwrap_or_default()
+    let o = sweet_engine::paths::load_options();
+    if let Some(c) = converter() {
+        c.configure(o.neural, o.learning);
+    }
+    o
 }
 
 /// Optional neural reranker. Not bundled (the model is CC BY-SA 4.0); the
@@ -99,8 +123,8 @@ fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
     if let Ok(p) = std::env::var("SWEET_IME_ZENZ") {
         paths.push(PathBuf::from(p));
     }
-    if let Some(d) = std::env::var_os("LOCALAPPDATA") {
-        paths.push(PathBuf::from(d).join("SweetIME").join("zenz.swz"));
+    if let Some(p) = sweet_engine::paths::zenz_file() {
+        paths.push(p);
     }
     if let Some(dir) = dll_path().parent() {
         paths.push(dir.join("zenz.swz"));

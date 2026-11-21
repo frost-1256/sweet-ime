@@ -58,8 +58,9 @@ list. To remove it, run `scripts\uninstall.ps1`.
 ### Optional: neural reranking
 
 The zenz model is not bundled, because it is licensed under
-CC BY-SA 4.0. To enable reranking, download and convert it yourself.
-Administrator rights are not needed:
+CC BY-SA 4.0. To enable reranking, download it from **Settings → AI 変換**.
+You can also run the script yourself. Administrator rights are not
+needed:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:ProgramFiles\SweetIME\get-zenz.ps1"
@@ -87,12 +88,28 @@ only.
 
 ## Settings
 
-Settings are read from `%APPDATA%\SweetIME\config.txt` each time the IME
-is activated:
+Open the settings app, `sweet-settings.exe`, in any of these ways:
+
+- From the Start menu entry **Sweet IME の設定**
+- By right-clicking the "あ" / "A" indicator in the taskbar
+- From Windows language settings: Sweet IME → Keyboard options
+
+The app saves changes immediately. They apply the next time the IME is
+activated, for example when you switch to another app.
+
+In the app you can:
+
+- Turn live conversion and suggestions on or off
+- Turn AI conversion on or off, and download or remove the zenz model
+- Turn learning on or off, and review, delete or clear learned words
+
+Settings are stored in `%APPDATA%\SweetIME\config.txt`:
 
 ```
 live_conversion = on   # show converted text while typing
 suggestions = on       # show predictions while typing
+neural = on            # rerank with the zenz model when installed
+learning = on          # learn from chosen candidates
 ```
 
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.

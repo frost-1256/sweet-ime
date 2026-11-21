@@ -76,11 +76,15 @@ pub struct Options {
     pub live_conversion: bool,
     /// Show predictions while typing.
     pub suggestions: bool,
+    /// Rerank conversions with the neural model when it is installed.
+    pub neural: bool,
+    /// Learn from chosen candidates and prefer them later.
+    pub learning: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { live_conversion: true, suggestions: true }
+        Self { live_conversion: true, suggestions: true, neural: true, learning: true }
     }
 }
 
@@ -95,10 +99,29 @@ impl Options {
             match k.trim() {
                 "live_conversion" => o.live_conversion = on,
                 "suggestions" => o.suggestions = on,
+                "neural" => o.neural = on,
+                "learning" => o.learning = on,
                 _ => {}
             }
         }
         o
+    }
+
+    /// Serializes in the format [`Options::parse`] reads.
+    pub fn to_text(&self) -> String {
+        let b = |v: bool| if v { "on" } else { "off" };
+        format!(
+            "# Sweet IME settings (applied when the IME is next activated)
+             live_conversion = {}
+             suggestions = {}
+             neural = {}
+             learning = {}
+",
+            b(self.live_conversion),
+            b(self.suggestions),
+            b(self.neural),
+            b(self.learning),
+        )
     }
 }
 
@@ -703,7 +726,9 @@ mod option_tests {
     #[test]
     fn parse_options() {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
-        assert_eq!(o, Options { live_conversion: false, suggestions: true });
+        assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true };
+        assert_eq!(Options::parse(&o.to_text()), o);
     }
 }

@@ -7,7 +7,7 @@ fn main() {
     let c = Converter::new(Dictionary::open(&dict).unwrap());
     for (live, sugg) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut s = Session::new();
-        s.options = Options { live_conversion: live, suggestions: sugg };
+        s.options = Options { live_conversion: live, suggestions: sugg, ..Options::default() };
         let t = Instant::now();
         let mut worst = 0f64;
         let text = "kyouhaiitenkidesunearigatougozaimasu";

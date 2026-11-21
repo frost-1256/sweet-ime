@@ -3,6 +3,7 @@
 pub mod converter;
 pub mod dict;
 pub mod learning;
+pub mod paths;
 pub mod romaji;
 pub mod session;
 pub mod width;

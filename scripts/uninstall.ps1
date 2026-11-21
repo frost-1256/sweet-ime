@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Unregisters Sweet IME and removes it from the user's language list.
   Files in Program Files are removed when not in use. Must run elevated.
@@ -17,6 +17,7 @@ if (Test-Path "$Target\x64\sweet_tsf.dll") {
 if (Test-Path "$Target\x86\sweet_tsf.dll") {
     & "$env:windir\SysWOW64\regsvr32.exe" /s /u "$Target\x86\sweet_tsf.dll"
 }
+Remove-Item "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Sweet IME の設定.lnk" -ErrorAction SilentlyContinue
 try {
     Remove-Item -Recurse -Force $Target -ErrorAction Stop
 } catch {

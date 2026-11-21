@@ -14,7 +14,7 @@ use windows::Win32::UI::TextServices::{
     GUID_LBI_INPUTMODE, ITfLangBarItem, ITfLangBarItem_Impl, ITfLangBarItemButton,
     ITfLangBarItemButton_Impl, ITfLangBarItemSink, ITfMenu, ITfSource, ITfSource_Impl,
     TF_LANGBARITEMINFO, TF_LBI_ICON, TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_SHOWNINTRAY,
-    TF_LBI_TEXT, TF_LBI_TOOLTIP, TfLBIClick,
+    TF_LBI_CLK_RIGHT, TF_LBI_TEXT, TF_LBI_TOOLTIP, TfLBIClick,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON,
@@ -95,13 +95,21 @@ impl ITfLangBarItem_Impl for ModeButton_Impl {
     }
 
     fn GetTooltipString(&self) -> Result<BSTR> {
-        Ok(BSTR::from(if self.open.get() { "ひらがな (Sweet IME)" } else { "半角英数 (Sweet IME)" }))
+        Ok(BSTR::from(if self.open.get() {
+            "ひらがな (Sweet IME)・右クリックで設定"
+        } else {
+            "半角英数 (Sweet IME)・右クリックで設定"
+        }))
     }
 }
 
 impl ITfLangBarItemButton_Impl for ModeButton_Impl {
-    fn OnClick(&self, _click: TfLBIClick, _pt: &POINT, _area: *const RECT) -> Result<()> {
+    fn OnClick(&self, click: TfLBIClick, _pt: &POINT, _area: *const RECT) -> Result<()> {
         crate::guard(|| {
+            if click == TF_LBI_CLK_RIGHT {
+                crate::launch_settings();
+                return Ok(());
+            }
             // Take the handler out while calling it: it re-enters set_open.
             let f = self.on_click.borrow_mut().take();
             if let Some(f) = f {

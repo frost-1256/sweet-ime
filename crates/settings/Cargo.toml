@@ -1,0 +1,14 @@
+[package]
+name = "sweet-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Settings app for Sweet IME"
+
+[[bin]]
+name = "sweet-settings"
+path = "src/main.rs"
+
+[dependencies]
+sweet-engine = { path = "../engine" }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }

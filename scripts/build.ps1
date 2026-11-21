@@ -3,7 +3,8 @@
   Builds Sweet IME and stages a distributable tree in dist\.
 
   dist\x64\sweet_tsf.dll, dist\x86\sweet_tsf.dll, dist\system.dict,
-  dist\tools\sweet-zenz-pack.exe, dist\get-zenz.ps1, dist\licenses\*
+  dist\sweet-settings.exe, dist\tools\sweet-zenz-pack.exe,
+  dist\get-zenz.ps1, dist\licenses\*
 
   The zenz neural model is NOT bundled (it is CC BY-SA 4.0); users fetch
   it themselves with get-zenz.ps1.
@@ -18,7 +19,7 @@ $env:Path += ";$env:USERPROFILE\.cargo\bin"
 
 Push-Location $root
 try {
-    cargo build --release -p sweet-tsf -p sweet-dictc -p sweet-zenz --bins
+    cargo build --release -p sweet-tsf -p sweet-dictc -p sweet-zenz -p sweet-settings --bins
     if ($LASTEXITCODE) { throw 'x64 build failed' }
     cargo build --release -p sweet-tsf --target i686-pc-windows-msvc
     if ($LASTEXITCODE) { throw 'x86 build failed' }
@@ -28,6 +29,7 @@ try {
     Copy-Item target\release\sweet_tsf.dll "$dist\x64\"
     Copy-Item target\i686-pc-windows-msvc\release\sweet_tsf.dll "$dist\x86\"
     Copy-Item target\release\sweet-zenz-pack.exe "$dist\tools\"
+    Copy-Item target\release\sweet-settings.exe "$dist\"
     Copy-Item scripts\get-zenz.ps1 "$dist\"
 
     & target\release\sweet-dictc.exe $MozcData "$dist\system.dict"
