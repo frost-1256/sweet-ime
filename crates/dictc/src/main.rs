@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::BufWriter;
 use std::path::Path;
-use sweet_engine::dict::{SourceEntry, TECH_TERMS, VRCHAT_TERMS, build};
+use sweet_engine::dict::{NET_SLANG, SourceEntry, TECH_TERMS, VRCHAT_TERMS, build};
 use sweet_engine::romaji;
 
 fn main() -> Result<()> {
@@ -72,7 +72,11 @@ fn main() -> Result<()> {
         });
     }
     if let Some(noun) = features.iter().position(|f| f == "名詞,一般,*,*,*,*,*") {
-        for (file, terms) in [("vrchat.tsv", VRCHAT_TERMS), ("tech_terms.tsv", TECH_TERMS)] {
+        for (file, terms) in [
+            ("vrchat.tsv", VRCHAT_TERMS),
+            ("tech_terms.tsv", TECH_TERMS),
+            ("net_slang.tsv", NET_SLANG),
+        ] {
             for (i, line) in terms.lines().enumerate() {
                 if line.is_empty() || line.starts_with('#') {
                     continue;

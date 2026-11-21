@@ -229,6 +229,47 @@ fn vrchat_terms_convert_from_short_readings_and_ascii() {
 }
 
 #[test]
+fn net_slang_converts_from_meme_readings() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    for (typed, expected) in [
+        ("yarimasunexe", "やりますねぇ！"),
+        ("soudayobinjou", "そうだよ（便乗）"),
+        ("iizo-kore", "いいゾ～これ"),
+        ("iiyokoiyo", "いいよ！こいよ！"),
+        ("sui-toaiemui-", "Sweet IME"),
+    ] {
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+
+    // Ordinary readings keep their ordinary first candidate.
+    for (typed, first) in [("iizokore", "いいぞこれ"), ("yarimasune", "やりますね"), ("hakusin", "迫真")] {
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, first, "{typed}");
+        s.reset();
+    }
+
+    // 男の子 stays first; 男の娘 is the next candidate.
+    type_str(&mut s, &c, "otokonoko");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "男の子");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "男の娘");
+    s.reset();
+
+    type_str(&mut s, &c, "koko");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Space));
+    let list = s.candidates().expect("ここ candidates");
+    assert!(list.items.iter().any(|item| item == "こ↑こ↓"), "{:?}", list.items);
+}
+
+#[test]
 fn compose_convert_commit() {
     let Some(c) = converter() else { return };
     let mut s = plain();

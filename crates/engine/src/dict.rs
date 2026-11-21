@@ -33,6 +33,9 @@ const ENTRY_LEN: usize = 12;
 pub const VRCHAT_TERMS: &str = include_str!("vrchat.tsv");
 /// Canonical technical spellings and their Japanese readings.
 pub const TECH_TERMS: &str = include_str!("tech_terms.tsv");
+/// Internet slang and meme phrases. Dictionary entries only: unlike the
+/// spellings above, the reranker does not prefer them.
+pub const NET_SLANG: &str = include_str!("net_slang.tsv");
 
 /// Coarse part-of-speech class used for bunsetsu segmentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

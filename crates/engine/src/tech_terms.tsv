@@ -3,6 +3,9 @@
 # An optional kana candidate also enables reverse lookup from that form and full-width katakana.
 あいえむいー	IME	2300
 あいえむい	IME	3000
+すいーとあいえむいー	Sweet IME	2300
+すいーとあいえむい	Sweet IME	2800
+すいーといめ	Sweet IME	3500
 # https://standards.ieee.org/wp-content/uploads/import/documents/other/geps-faq.pdf
 あいえええ	IEEE	2600	アイエエエ
 あいとりぷるいー	IEEE	2600	アイトリプルイー
