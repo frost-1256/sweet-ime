@@ -59,7 +59,16 @@ unsafe fn matmul_cols(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: 
             return;
         }
     }
-    unsafe { matmul_generic(x, w, y, m, k, n, j0, j1) };
+    // NEON is part of every aarch64 CPU (phones).
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { matmul_neon(x, w, y, m, k, n, j0, j1) };
+        return;
+    }
+    #[allow(unreachable_code)]
+    unsafe {
+        matmul_generic(x, w, y, m, k, n, j0, j1)
+    };
 }
 
 unsafe fn matmul_generic(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: usize, j0: usize, j1: usize) {
@@ -140,6 +149,60 @@ unsafe fn micro<const R: usize>(x: &[f32], w: &[f32], y: *mut f32, i: usize, j: 
             let yp = y.add((i + r) * n + j);
             _mm256_storeu_ps(yp, _mm256_add_ps(_mm256_loadu_ps(yp), acc0[r]));
             _mm256_storeu_ps(yp.add(8), _mm256_add_ps(_mm256_loadu_ps(yp.add(8)), acc1[r]));
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn matmul_neon(x: &[f32], w: &[f32], y: *mut f32, m: usize, k: usize, n: usize, j0: usize, j1: usize) {
+    // As matmul_avx2: R rows x 16 columns of y in registers (4 x 4 lanes);
+    // aarch64 has 32 vector registers, enough for 6 rows.
+    unsafe {
+        let jend = j0 + (j1 - j0) / 16 * 16;
+        let mut j = j0;
+        while j < jend {
+            let mut i = 0;
+            while i < m {
+                match m - i {
+                    1 => micro_neon::<1>(x, w, y, i, j, k, n),
+                    2 => micro_neon::<2>(x, w, y, i, j, k, n),
+                    3 => micro_neon::<3>(x, w, y, i, j, k, n),
+                    4 => micro_neon::<4>(x, w, y, i, j, k, n),
+                    5 => micro_neon::<5>(x, w, y, i, j, k, n),
+                    _ => micro_neon::<6>(x, w, y, i, j, k, n),
+                }
+                i += 6;
+            }
+            j += 16;
+        }
+        matmul_generic(x, w, y, m, k, n, jend, j1);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn micro_neon<const R: usize>(x: &[f32], w: &[f32], y: *mut f32, i: usize, j: usize, k: usize, n: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let mut acc = [[vdupq_n_f32(0.0); 4]; R];
+        let xp = x.as_ptr().add(i * k);
+        let mut wp = w.as_ptr().add(j);
+        for kk in 0..k {
+            let wv = [vld1q_f32(wp), vld1q_f32(wp.add(4)), vld1q_f32(wp.add(8)), vld1q_f32(wp.add(12))];
+            for r in 0..R {
+                let a = vdupq_n_f32(*xp.add(r * k + kk));
+                for c in 0..4 {
+                    acc[r][c] = vfmaq_f32(acc[r][c], a, wv[c]);
+                }
+            }
+            wp = wp.add(n);
+        }
+        for r in 0..R {
+            let yp = y.add((i + r) * n + j);
+            for c in 0..4 {
+                let p = yp.add(c * 4);
+                vst1q_f32(p, vaddq_f32(vld1q_f32(p), acc[r][c]));
+            }
         }
     }
 }
