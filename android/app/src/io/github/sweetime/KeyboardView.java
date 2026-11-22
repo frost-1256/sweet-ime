@@ -109,9 +109,7 @@ final class KeyboardView extends View {
             if (pressed != null && pressed.hint != null && listener != null) {
                 longPressed = true;
                 if (haptic) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                String h = pressed.hint;
-                if (english && pressed.code == ',') h = "!";
-                if (english && pressed.code == '.') h = "?";
+                String h = hintOf(pressed);
                 // Digits join the reading (1じ converts to 1時); symbols
                 // are typed as they are.
                 if (h.length() == 1 && h.charAt(0) >= '0' && h.charAt(0) <= '9') {
@@ -125,6 +123,7 @@ final class KeyboardView extends View {
     };
     private boolean keyPreview = true;
     private float rowHeightDp = 54;
+    private float punctuationWidth = 1;
 
     // Swiping on the space bar moves the caret.
     private float swipeX;
@@ -160,14 +159,16 @@ final class KeyboardView extends View {
 
     /** Applies the keyboard settings. */
     void configure(Theme theme, boolean haptic, boolean sound, boolean numberRow,
-                   boolean keyPreview, int keyHeight) {
+                   boolean keyPreview, int keyHeight, int symbolWidth) {
         this.theme = theme;
         this.haptic = haptic;
         this.sound = sound;
         this.keyPreview = keyPreview;
         rowHeightDp = keyHeight == 0 ? 48 : keyHeight == 2 ? 62 : 54;
-        if (numberRow != this.numberRow) {
+        float width = symbolWidth == 0 ? 0.85f : symbolWidth == 2 ? 1.35f : 1f;
+        if (numberRow != this.numberRow || punctuationWidth != width) {
             this.numberRow = numberRow;
+            punctuationWidth = width;
             build();
         }
         requestLayout();
@@ -195,14 +196,14 @@ final class KeyboardView extends View {
             r3.add(new KeyDef("⌫", Native.KEY_BACKSPACE, 1.5f));
             rows.add(r3);
             bottom.add(new KeyDef("?123", SYMBOLS, 1.5f));
-            bottom.add(new KeyDef("、", ',', 1).hint(english ? "!" : "！"));
+            bottom.add(new KeyDef("、", ',', punctuationWidth).hint(english ? "!" : "！"));
             bottom.add(new KeyDef("", MODE, 1));
             if (english) {
-                bottom.add(new KeyDef("", Native.KEY_SPACE, 4));
-                bottom.add(new KeyDef("。", '.', 1).hint("?").fn());
+                bottom.add(new KeyDef("", Native.KEY_SPACE, 6 - 2 * punctuationWidth));
+                bottom.add(new KeyDef("。", '.', punctuationWidth).hint("?").fn());
             } else {
-                bottom.add(new KeyDef("", Native.KEY_SPACE, 2.5f));
-                bottom.add(new KeyDef("。", '.', 1).hint("？"));
+                bottom.add(new KeyDef("", Native.KEY_SPACE, 4.5f - 2 * punctuationWidth));
+                bottom.add(new KeyDef("。", '.', punctuationWidth).hint("？"));
                 bottom.add(new KeyDef("◀", Native.KEY_LEFT, 1).fn());
                 bottom.add(new KeyDef("▶", Native.KEY_RIGHT, 1).fn());
             }
@@ -343,6 +344,10 @@ final class KeyboardView extends View {
         return shift || capsLock;
     }
 
+    private String hintOf(KeyDef key) {
+        return english && key.code == ',' ? "!" : english && key.code == '.' ? "?" : key.hint;
+    }
+
     private String labelOf(KeyDef k) {
         switch (k.code) {
             case MODE:
@@ -392,10 +397,9 @@ final class KeyboardView extends View {
                 keyPaint.setColor(color);
                 canvas.drawRoundRect(k.rect, r, r, keyPaint);
                 if (k.hint != null) {
-                    String h = english && k.code == ',' ? "!" : english && k.code == '.' ? "?" : k.hint;
                     textPaint.setTextSize(10 * density);
                     textPaint.setColor(theme.subText);
-                    canvas.drawText(h, k.rect.right - 7 * density, k.rect.top + 12 * density, textPaint);
+                    canvas.drawText(hintOf(k), k.rect.right - 7 * density, k.rect.top + 12 * density, textPaint);
                 }
                 int icon = iconOf(k);
                 if (icon != 0) {
@@ -438,7 +442,7 @@ final class KeyboardView extends View {
             textPaint.setTextSize(28 * density);
             textPaint.setColor(theme.text);
             float y = p.centerY() - (textPaint.descent() + textPaint.ascent()) / 2;
-            canvas.drawText(longPressed && pressed.hint != null ? pressed.hint : labelOf(pressed),
+            canvas.drawText(longPressed && pressed.hint != null ? hintOf(pressed) : labelOf(pressed),
                     p.centerX(), y, textPaint);
         }
     }

@@ -23,6 +23,7 @@ final class Prefs {
     static final String KEY_PREVIEW = "key_preview";
     /** 0 small, 1 normal, 2 large. */
     static final String KEY_HEIGHT = "key_height";
+    static final String PUNCTUATION_WIDTH = "punctuation_width";
     /** 0 system, 1 light, 2 dark. */
     static final String THEME = "theme";
 

@@ -1,8 +1,13 @@
 package io.github.sweetime;
 
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
 import android.content.pm.PackageInfo;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.inputmethodservice.InputMethodService;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.SpannableString;
@@ -19,8 +24,11 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputContentInfo;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.File;
@@ -44,6 +52,17 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private KeyboardView keyboard;
     private LinearLayout candidateRow;
     private HorizontalScrollView candidateScroll;
+    private ScrollView expandedScroll;
+    private CandidateFlow expandedCandidates;
+    private ClipboardPanel clipboardPanel;
+    private final java.util.ArrayList<String> recentClips = new java.util.ArrayList<>();
+    private View expandButton;
+    private View clipboardButton;
+    private TextView panelTitle;
+    private String[] candidateItems = new String[0];
+    private boolean candidatesExpanded;
+    private boolean clipboardOpen;
+    private boolean privateField;
     /** Direct English input (the あ/A key) or a field that wants no conversion. */
     private boolean english;
     /** The globe key's choice for ordinary text fields, kept across fields. */
@@ -71,6 +90,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onDestroy() {
+        if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         if (ctx != 0) {
             Native.free(ctx);
             ctx = 0;
@@ -125,6 +145,9 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public View onCreateInputView() {
         theme = Theme.of(this);
+        if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
+        candidatesExpanded = false;
+        clipboardOpen = false;
         LinearLayout root = new LinearLayout(this);
         inputRoot = root;
         root.setOrientation(LinearLayout.VERTICAL);
@@ -137,14 +160,63 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         candidateRow = new LinearLayout(this);
         candidateRow.setOrientation(LinearLayout.HORIZONTAL);
         candidateScroll.addView(candidateRow);
-        root.addView(candidateScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.addView(candidateScroll, new LinearLayout.LayoutParams(0, dp(48), 1));
+        panelTitle = new TextView(this);
+        panelTitle.setTextSize(16);
+        panelTitle.setGravity(Gravity.CENTER_VERTICAL);
+        panelTitle.setPadding(dp(14), 0, 0, 0);
+        toolbar.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
+        expandButton = iconButton(() -> candidatesExpanded ? Icons.COLLAPSE : Icons.EXPAND,
+                "候補を展開", () -> {
+                    candidatesExpanded = !candidatesExpanded;
+                    if (candidatesExpanded) {
+                        renderExpandedCandidates();
+                        expandedScroll.scrollTo(0, 0);
+                    }
+                    updatePanelVisibility();
+                });
+        toolbar.addView(expandButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        clipboardButton = iconButton(() -> clipboardOpen ? Icons.BACK : Icons.CLIPBOARD,
+                "クリップボード", () -> {
+                    clipboardOpen = !clipboardOpen;
+                    candidatesExpanded = false;
+                    updatePanelVisibility();
+                    if (clipboardOpen) clipboardPanel.open(theme);
+                });
+        toolbar.addView(clipboardButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        root.addView(toolbar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
         keyboard = new KeyboardView(this, theme);
         keyboard.setListener(this);
         keyboard.setEnglish(english);
         configureKeyboard();
-        root.addView(keyboard, new LinearLayout.LayoutParams(
+        KeyboardView keys = keyboard;
+        FrameLayout board = new FrameLayout(this) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                keys.measure(widthSpec, heightSpec);
+                super.onMeasure(widthSpec,
+                        MeasureSpec.makeMeasureSpec(keys.getMeasuredHeight(), MeasureSpec.EXACTLY));
+            }
+        };
+        board.setClipChildren(false);
+        board.addView(keyboard, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        expandedScroll = new ScrollView(this);
+        expandedCandidates = new CandidateFlow(this, dp(5));
+        expandedScroll.addView(expandedCandidates);
+        board.addView(expandedScroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        clipboardPanel = new ClipboardPanel(this, recentClips, new ClipboardPanel.Listener() {
+            @Override public void pasteText(String value) {
+                onText(value);
+                closeClipboard();
+            }
+            @Override public void pasteCurrent() { pasteSystemClipboard(); }
+        });
+        board.addView(clipboardPanel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(board, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         // Keep the keys above the navigation bar (edge to edge since Android 15).
         root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -164,6 +236,9 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private void refreshTheme() {
         theme = Theme.of(this);
         inputRoot.setBackgroundColor(theme.background);
+        panelTitle.setTextColor(theme.text);
+        clipboardButton.invalidate();
+        expandButton.invalidate();
         for (int i = 0; i < candidateRow.getChildCount(); i++) {
             View child = candidateRow.getChildAt(i);
             if (child instanceof TextView) {
@@ -185,7 +260,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 Prefs.flag(this, Prefs.SOUND, false),
                 Prefs.flag(this, Prefs.NUMBER_ROW, false),
                 Prefs.flag(this, Prefs.KEY_PREVIEW, true),
-                Prefs.number(this, Prefs.KEY_HEIGHT, 1));
+                Prefs.number(this, Prefs.KEY_HEIGHT, 1),
+                Prefs.number(this, Prefs.PUNCTUATION_WIDTH, 1));
     }
 
     private int dp(int v) {
@@ -200,9 +276,15 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         composingLength = 0;
         int cls = attr.inputType & EditorInfo.TYPE_MASK_CLASS;
         int variation = attr.inputType & EditorInfo.TYPE_MASK_VARIATION;
-        boolean password = variation == EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
-                || variation == EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-                || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_PASSWORD;
+        boolean password = (cls == EditorInfo.TYPE_CLASS_TEXT
+                && (variation == EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+                    || variation == EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                    || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_PASSWORD))
+                || (cls == EditorInfo.TYPE_CLASS_NUMBER
+                    && variation == EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD);
+        privateField = password || (attr.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0;
+        if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
+        clipboardOpen = false;
         boolean url = variation == EditorInfo.TYPE_TEXT_VARIATION_URI
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS;
@@ -223,6 +305,9 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (keyboard != null) {
             refreshTheme();
             configureKeyboard();
+            clipboardPanel.setInputActive(true, privateField);
+            if (candidatesExpanded) renderExpandedCandidates();
+            if (clipboardOpen) clipboardPanel.open(theme);
         }
         if (ctx != 0) Native.reloadOptions(ctx);
         if (keyboard != null) {
@@ -234,6 +319,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onFinishInputView(boolean finishingInput) {
+        if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
+        clipboardOpen = false;
+        candidatesExpanded = false;
+        updatePanelVisibility();
         // Hiding the keyboard keeps the text being typed, as it is shown.
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         super.onFinishInputView(finishingInput);
@@ -300,6 +389,47 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) ic.commitText(text, 1);
         updateKeys();
+    }
+
+    private void closeClipboard() {
+        clipboardOpen = false;
+        updatePanelVisibility();
+    }
+
+    private void pasteSystemClipboard() {
+        if (composing && ctx != 0) apply(Native.commitAll(ctx));
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        if (pasteClipboardImage(ic) || ic.performContextMenuAction(android.R.id.paste)) {
+            closeClipboard();
+            updateKeys();
+        } else {
+            android.widget.Toast.makeText(this, "貼り付けられませんでした", android.widget.Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private boolean pasteClipboardImage(InputConnection ic) {
+        EditorInfo editor = getCurrentInputEditorInfo();
+        if (privateField || editor == null || editor.contentMimeTypes == null) return false;
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        if (clipboard == null) return false;
+        try {
+            ClipData clip = clipboard.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return false;
+            ClipDescription description = clip.getDescription();
+            Uri uri = clip.getItemAt(0).getUri();
+            if (uri == null || !"content".equals(uri.getScheme())
+                    || !description.hasMimeType("image/*")) return false;
+            for (String mime : editor.contentMimeTypes) {
+                if (description.hasMimeType(mime)) {
+                    return ic.commitContent(new InputContentInfo(uri, description, null),
+                            InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null);
+                }
+            }
+        } catch (IllegalArgumentException | SecurityException ignored) {
+            // The editor can still try the system paste operation.
+        }
+        return false;
     }
 
     /** The action Enter performs in this field, or IME_ACTION_NONE for a new line. */
@@ -480,24 +610,95 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         updateKeys();
     }
 
+    private View iconButton(java.util.function.IntSupplier icon, String label, Runnable action) {
+        Icons icons = new Icons();
+        android.graphics.RectF bounds = new android.graphics.RectF();
+        View button = new View(this) {
+            @Override protected void onDraw(android.graphics.Canvas canvas) {
+                bounds.set(0, 0, getWidth(), getHeight());
+                icons.draw(canvas, icon.getAsInt(), bounds, dp(22), theme.subText);
+            }
+
+            @Override public CharSequence getAccessibilityClassName() {
+                return android.widget.Button.class.getName();
+            }
+        };
+        button.setContentDescription(label);
+        button.setTooltipText(label);
+        button.setFocusable(true);
+        button.setOnClickListener(v -> action.run());
+        return button;
+    }
+
+    private void updatePanelVisibility() {
+        if (keyboard == null) return;
+        boolean panel = clipboardOpen || candidatesExpanded;
+        keyboard.setVisibility(panel ? View.INVISIBLE : View.VISIBLE);
+        candidateScroll.setVisibility(panel ? View.GONE : View.VISIBLE);
+        expandedScroll.setVisibility(candidatesExpanded ? View.VISIBLE : View.GONE);
+        if (!clipboardOpen && clipboardPanel.getVisibility() == View.VISIBLE) clipboardPanel.close();
+        clipboardPanel.setVisibility(clipboardOpen ? View.VISIBLE : View.GONE);
+        panelTitle.setVisibility(panel ? View.VISIBLE : View.GONE);
+        panelTitle.setText(clipboardOpen ? "クリップボード" : "候補一覧");
+        panelTitle.setTextColor(theme.text);
+        expandButton.setVisibility(!clipboardOpen && candidateItems.length > 1 ? View.VISIBLE : View.GONE);
+        String expandLabel = candidatesExpanded ? "候補を閉じる" : "候補を展開";
+        expandButton.setContentDescription(expandLabel);
+        expandButton.setTooltipText(expandLabel);
+        expandButton.invalidate();
+        String clipboardLabel = clipboardOpen ? "キーボードに戻る" : "クリップボード";
+        clipboardButton.setContentDescription(clipboardLabel);
+        clipboardButton.setTooltipText(clipboardLabel);
+        clipboardButton.invalidate();
+    }
+
+    private void renderExpandedCandidates() {
+        expandedCandidates.removeAllViews();
+        for (int i = 0; i < candidateItems.length; i++) {
+            expandedCandidates.addView(candidateView(i, true));
+        }
+    }
+
+    private TextView candidateView(int index, boolean expanded) {
+        TextView view = new TextView(this);
+        view.setText(candidateItems[index]);
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        view.setTextColor(theme.text);
+        view.setGravity(Gravity.CENTER);
+        view.setMinWidth(dp(44));
+        view.setPadding(dp(12), 0, dp(12), 0);
+        if (expanded) {
+            view.setMinHeight(dp(44));
+            view.setMaxLines(2);
+            view.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            GradientDrawable background = new GradientDrawable();
+            background.setCornerRadius(dp(8));
+            background.setColor(index == selectedCandidate ? theme.focus : theme.key);
+            view.setBackground(background);
+        } else if (index == selectedCandidate) {
+            view.setBackgroundColor(theme.focus);
+        }
+        if (index == selectedCandidate) view.setTypeface(Typeface.DEFAULT_BOLD);
+        view.setOnClickListener(v -> {
+            if (ctx != 0) apply(Native.select(ctx, index));
+        });
+        return view;
+    }
+
     private void showCandidates(String[] items, int selected, boolean suggestions) {
         if (candidateRow == null) return;
+        boolean newItems = !java.util.Arrays.equals(candidateItems, items);
+        candidateItems = items;
         selectedCandidate = selected;
+        if (items.length <= 1) candidatesExpanded = false;
+        updatePanelVisibility();
+        if (candidatesExpanded) {
+            renderExpandedCandidates();
+            if (newItems) expandedScroll.scrollTo(0, 0);
+        }
         candidateRow.removeAllViews();
         if (items.length == 0) {
-            // Nothing to pick: the settings button.
-            Icons icons = new Icons();
-            android.graphics.RectF bounds = new android.graphics.RectF();
-            View gear = new View(this) {
-                @Override
-                protected void onDraw(android.graphics.Canvas canvas) {
-                    bounds.set(0, 0, getWidth(), getHeight());
-                    icons.draw(canvas, Icons.SETTINGS, bounds, dp(22), theme.subText);
-                }
-            };
-            gear.setContentDescription("設定");
-            gear.setMinimumWidth(dp(52));
-            gear.setOnClickListener(v -> {
+            View gear = iconButton(() -> Icons.SETTINGS, "設定", () -> {
                 android.content.Intent i = new android.content.Intent(this, SettingsActivity.class);
                 i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(i);
@@ -508,22 +709,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             return;
         }
         for (int i = 0; i < items.length; i++) {
-            final int index = i;
-            TextView tv = new TextView(this);
-            tv.setText(items[i]);
-            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-            tv.setTextColor(theme.text);
-            tv.setGravity(Gravity.CENTER);
-            tv.setPadding(dp(14), 0, dp(14), 0);
-            tv.setMinWidth(dp(44));
-            if (i == selected) {
-                tv.setBackgroundColor(theme.focus);
-                tv.setTypeface(Typeface.DEFAULT_BOLD);
-            }
-            tv.setOnClickListener(v -> {
-                if (ctx != 0) apply(Native.select(ctx, index));
-            });
-            candidateRow.addView(tv, new LinearLayout.LayoutParams(
+            candidateRow.addView(candidateView(i, false), new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
             if (i + 1 < items.length) {
                 View sep = new View(this);

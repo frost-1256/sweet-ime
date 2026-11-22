@@ -24,6 +24,9 @@ final class Icons {
     static final int RIGHT = 12;
     static final int GLOBE = 13;
     static final int SETTINGS = 14;
+    static final int CLIPBOARD = 15;
+    static final int EXPAND = 16;
+    static final int COLLAPSE = 17;
 
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -47,6 +50,20 @@ final class Icons {
         fill.setColor(color);
         path.reset();
         switch (icon) {
+            case CLIPBOARD:
+                c.drawRoundRect(5, 4, 19, 21, 2, 2, stroke);
+                c.drawRoundRect(9, 2, 15, 6, 1, 1, stroke);
+                c.drawLine(8.5f, 11, 15.5f, 11, stroke);
+                c.drawLine(8.5f, 15.5f, 15.5f, 15.5f, stroke);
+                break;
+            case EXPAND:
+            case COLLAPSE:
+                float outerY = icon == EXPAND ? 9 : 15;
+                path.moveTo(6, outerY);
+                path.lineTo(12, 24 - outerY);
+                path.lineTo(18, outerY);
+                c.drawPath(path, stroke);
+                break;
             case SHIFT:
             case SHIFT_ON:
             case CAPS_LOCK: {
