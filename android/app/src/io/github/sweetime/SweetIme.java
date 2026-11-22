@@ -97,6 +97,12 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private volatile String[] liveJob;
     /** The last request sent, so a refined result does not ask again. */
     private String lastLive = "";
+    /**
+     * How long typing must pause before the model runs: one run per pause
+     * instead of one per key keeps the phone cool. Space still converts with
+     * the model right away.
+     */
+    private static final long LIVE_DELAY_MS = 250;
 
     /**
      * Refines the live conversion with the model in the background; the
@@ -109,7 +115,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         lastLive = req;
         liveJob = req.split("\u001f", 2);
         refiner.removeCallbacksAndMessages(null);
-        refiner.post(() -> {
+        refiner.postDelayed(() -> {
             String[] job = liveJob;
             liveJob = null;
             if (job == null || job.length < 2) return;
@@ -120,7 +126,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 String snap = Native.applyLive(ctx, job[0], surface);
                 if (snap != null) apply(snap);
             });
-        });
+        }, LIVE_DELAY_MS);
     }
 
     @Override
