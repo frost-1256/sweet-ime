@@ -714,6 +714,39 @@ fn listed_english_words_convert_inside_sentences() {
     c.set_english_words(true, true);
 }
 
+/// Prefers the first candidate that spells "best", like a model reading the
+/// typed keys.
+struct PickSpelling;
+
+impl sweet_engine::Reranker for PickSpelling {
+    fn choose(&self, _r: &str, _l: &str, c: &[sweet_engine::Conversion]) -> Option<usize> {
+        c.iter().position(|c| c.surface().contains("best"))
+    }
+}
+
+#[test]
+fn reranking_keeps_the_katakana_loanword() {
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
+    let Ok(d) = Dictionary::open(p) else { return };
+    let c = Converter::new(d).with_reranker(Box::new(PickSpelling));
+    let reading = sweet_engine::romaji::to_hiragana("korehabestdesu");
+    assert_eq!(c.convert_best(&reading, &[], "")[0].surface(), "これはベストです");
+    c.set_english_words(true, false);
+    assert_eq!(c.convert_best(&reading, &[], "")[0].surface(), "これはbestです");
+}
+
+#[test]
+fn a_word_ending_in_n_takes_the_n_row_kana() {
+    let Some(c) = converter() else { return };
+    // "nn" reads ん, so "pythonno" would be Python + お.
+    for (typed, want) in [("pythonnoscriptwokaita", "Pythonの"), ("designnoteian", "designの")] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert!(s.preedit().text.starts_with(want), "{typed}: {}", s.preedit().text);
+    }
+}
+
 #[test]
 fn english_words_not_on_the_list_are_learned() {
     let Some(c) = converter() else { return };

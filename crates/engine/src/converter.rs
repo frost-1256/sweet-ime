@@ -322,6 +322,8 @@ impl Converter {
                     surface: (*spelling).to_string(),
                     origin: Origin::Spelling,
                 });
+                let end = start + reading.len();
+                self.n_row_after(spelling, reading, &text[end..], end, out);
             }
         }
         if !self.english_words_enabled() {
@@ -360,8 +362,32 @@ impl Converter {
                         surface: word.to_string(),
                         origin: Origin::Spelling,
                     });
+                    self.n_row_after(word, &rest[..end], &rest[end..], start + end, out);
                 }
             }
+        }
+    }
+
+    /// After a word ending in n, "nn" reads ん: "pythonno" is ぴyてょんお,
+    /// not Python + の. Lets the vowel after such a word read as the n-row
+    /// kana (お -> の) when it is a dictionary word spelled in kana.
+    fn n_row_after(&self, word: &str, reading: &str, next: &str, at: usize, out: &mut Vec<Extra>) {
+        if !word.ends_with(['n', 'N']) || !reading.ends_with('ん') {
+            return;
+        }
+        let Some(vowel) = next.chars().next() else { return };
+        let Some(i) = "あいうえお".chars().position(|v| v == vowel) else { return };
+        let kana = "なにぬねの".chars().nth(i).unwrap_or('の').to_string();
+        for e in self.dict.lookup(&kana).into_iter().filter(|e| e.surface == kana) {
+            out.push(Extra {
+                start: at,
+                end: at + vowel.len_utf8(),
+                lid: e.lid,
+                rid: e.rid,
+                cost: i32::from(e.cost),
+                surface: kana.clone(),
+                origin: Origin::Spelling,
+            });
         }
     }
 
@@ -525,8 +551,15 @@ impl Converter {
             }
             if res.len() > 1 {
                 let surfaces: Vec<String> = res.iter().map(|c| c.surface()).collect();
-                if let Some(i) = self.cached_choice(r.as_ref(), text, left_context, &res, surfaces) {
+                if let Some(mut i) = self.cached_choice(r.as_ref(), text, left_context, &res, surfaces) {
                     if i < res.len() {
+                        // The model reads the typed spelling, so it favors
+                        // "best" over ベスト. Keep the lattice's (and the
+                        // user's) choice between a word and its loanword.
+                        if self.katakana_on.load(std::sync::atomic::Ordering::Relaxed) {
+                            let key = english_key(&res[i]);
+                            i = res.iter().position(|c| english_key(c) == key).unwrap_or(i);
+                        }
                         let c = res.remove(i);
                         res.insert(0, c);
                     }
@@ -1017,4 +1050,23 @@ impl Converter {
         add(crate::romaji::to_katakana(reading), &mut out);
         out
     }
+}
+
+/// The surface with each listed English word spelled out, so that a word
+/// and its katakana loanword compare equal.
+fn english_key(c: &Conversion) -> String {
+    let index = crate::english::word_index();
+    let mut key = String::new();
+    for w in c.segments.iter().flat_map(|s| &s.words) {
+        match index.get(&w.reading) {
+            Some(word)
+                if w.surface.eq_ignore_ascii_case(word)
+                    || w.surface.chars().all(|ch| ('\u{30A1}'..='\u{30FC}').contains(&ch)) =>
+            {
+                key.push_str(word)
+            }
+            _ => key.push_str(&w.surface),
+        }
+    }
+    key
 }
