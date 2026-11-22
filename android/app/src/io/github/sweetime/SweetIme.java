@@ -503,6 +503,12 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onKey(int code) {
         if (!english && engine()) {
+            // A new reading: the text before it is the model's context
+            // (it changes with every commit and caret move).
+            if (!composing) {
+                String before = textBeforeCursor();
+                Native.setLeftContext(ctx, before != null ? before : "");
+            }
             String s = Native.key(ctx, code);
             if (s != null) {
                 apply(s);
