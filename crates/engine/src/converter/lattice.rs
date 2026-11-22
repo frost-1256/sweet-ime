@@ -496,6 +496,11 @@ impl Converter {
         {
             add(x.surface.clone(), &mut out);
         }
+        // A name written both ways: katakana, then English (エヌビディア, NVIDIA).
+        if let Some((katakana, spelling)) = crate::english::katakana_name(reading) {
+            add(katakana.to_string(), &mut out);
+            add(spelling.to_string(), &mut out);
+        }
         self.number_extras(reading, &mut extras);
         self.spelling_extras(reading, &mut extras);
         let mut lat = self.build_lattice(reading, &[], &extras);

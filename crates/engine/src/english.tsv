@@ -2,9 +2,13 @@
 # English words typed as their spelling ("google", "iphone"). Typed letters
 # are matched case-insensitively, ignoring spaces, dots and hyphens in the
 # spelling. These are not dictionary entries: they are only offered when the
-# typed keys spell the word. Leave out words whose spelling is also ordinary
-# romaji (amazon, line, ruby), so Japanese input is not taken over.
+# typed keys spell the word, or when the reading of the kana candidate is
+# typed (えぬびでぃあ gives エヌビディア, then NVIDIA). Spellings that are
+# ordinary romaji are kept only when they read as the kana candidate
+# (amazon reads アマゾン) or as no Japanese word (nvidia reads んゔぃぢあ),
+# so Japanese input is not taken over (leave out line, ruby).
 Google	グーグル
+Amazon	アマゾン
 Gmail	ジーメール
 Twitter	ツイッター
 Facebook	フェイスブック
@@ -54,3 +58,76 @@ VALORANT	ヴァロラント
 npm
 Svelte	スベルト
 Perl	パール
+# Hardware, services, AI and developer tools
+NVIDIA	エヌビディア
+GeForce	ジーフォース
+RTX
+AMD
+Ryzen	ライゼン
+Radeon	ラデオン
+Intel	インテル
+Qualcomm	クアルコム
+Snapdragon	スナップドラゴン
+Samsung	サムスン
+Pixel	ピクセル
+Sony	ソニー
+Nintendo	ニンテンドー
+Logicool	ロジクール
+Razer	レイザー
+Corsair	コルセア
+ASUS	エイスース
+Lenovo	レノボ
+Dell	デル
+Huawei	ファーウェイ
+Xiaomi	シャオミ
+Raspberry Pi	ラズベリーパイ
+Arduino	アルドゥイーノ
+Bluetooth	ブルートゥース
+Wi-Fi	ワイファイ
+HDMI
+MacBook	マックブック
+iMac	アイマック
+iOS
+AirPods	エアーポッズ
+Oculus	オキュラス
+SteamVR
+Steam Deck	スチームデック
+Epic Games	エピックゲームズ
+Roblox	ロブロックス
+Godot	ゴドー
+OBS
+Trello	トレロ
+Visual Studio	ビジュアルスタジオ
+IntelliJ	インテリジェイ
+JetBrains	ジェットブレインズ
+Xcode	エックスコード
+Gradle	グレードル
+Firebase	ファイアベース
+Vercel	バーセル
+Netlify	ネットリファイ
+Supabase	スーパベース
+Heroku	ヘロク
+Jenkins	ジェンキンス
+Ansible	アンシブル
+Kafka	カフカ
+Elasticsearch	エラスティックサーチ
+Prometheus	プロメテウス
+Podman	ポッドマン
+Midjourney	ミッドジャーニー
+Hugging Face	ハギングフェイス
+Stable Diffusion	ステーブルディフュージョン
+ComfyUI
+Ollama	オラマ
+DeepSeek	ディープシーク
+Mistral	ミストラル
+Qwen
+Grok	グロック
+Bluesky	ブルースカイ
+Misskey	ミスキー
+Mastodon	マストドン
+WhatsApp	ワッツアップ
+LinkedIn	リンクトイン
+Pinterest	ピンタレスト
+PayPal	ペイパル
+Qiita	キータ
+Wantedly	ウォンテッドリー

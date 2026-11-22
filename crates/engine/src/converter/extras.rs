@@ -139,25 +139,30 @@ impl Converter {
             .dict
             .pos_id("名詞,一般,*,*,*,*,*")
             .unwrap_or(self.dict.unknown_id());
-        // Spellings typed as romaji (ime reads いめ), at the start only.
+        // Spellings typed as romaji (ime reads いめ), at the start only, or
+        // anywhere when no Japanese word starts like them (nvidia reads
+        // んゔぃぢあ).
         for (reading, spelling) in crate::english::kana_spelled_readings() {
-            if text.starts_with(reading.as_str()) {
+            let anywhere = reading.starts_with(['ん', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ']);
+            let starts: Vec<usize> = if anywhere {
+                text.match_indices(reading.as_str()).map(|(i, _)| i).collect()
+            } else if text.starts_with(reading.as_str()) {
+                vec![0]
+            } else {
+                Vec::new()
+            };
+            for start in starts {
+                let end = start + reading.len();
                 out.push(Extra {
-                    start: 0,
-                    end: reading.len(),
+                    start,
+                    end,
                     lid: id,
                     rid: id,
                     cost: SPELLING_COST,
                     surface: (*spelling).to_string(),
                     origin: Origin::Spelling,
                 });
-                self.n_row_after(
-                    spelling,
-                    reading,
-                    &text[reading.len()..],
-                    reading.len(),
-                    out,
-                );
+                self.n_row_after(spelling, reading, &text[end..], end, out);
             }
         }
         if !text.bytes().any(|b| b.is_ascii_alphabetic()) {

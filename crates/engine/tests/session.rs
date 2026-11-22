@@ -654,6 +654,28 @@ fn user_dictionary_words_convert_and_connect() {
 }
 
 #[test]
+fn names_written_both_ways_offer_katakana_then_english() {
+    let Some(c) = converter() else { return };
+    for (typed, katakana, english) in [
+        ("enubidhia", "エヌビディア", "NVIDIA"),
+        ("amazon", "アマゾン", "Amazon"),
+        ("gu-guru", "グーグル", "Google"),
+        ("interu", "インテル", "Intel"),
+    ] {
+        let mut s = plain();
+        type_str(&mut s, &c, typed);
+        s.handle(&c, Key::Space);
+        assert_eq!(s.preedit().text, katakana, "{typed}");
+        s.handle(&c, Key::Space);
+        let list = s.candidates().expect("candidate list");
+        assert_eq!(&list.items[..2], [katakana, english], "{typed}");
+        s.handle(&c, Key::Escape);
+        s.handle(&c, Key::Escape);
+        s.take_commit();
+    }
+}
+
+#[test]
 fn english_words_typed_by_spelling_show_as_words() {
     let Some(c) = converter() else { return };
     for (typed, expected) in [
@@ -662,12 +684,17 @@ fn english_words_typed_by_spelling_show_as_words() {
         ("linux", "Linux"),
         ("iphone", "iPhone"),
         ("vscode", "VS Code"),
+        ("nvidia", "NVIDIA"),
+        ("geforce", "GeForce"),
+        ("xiaomi", "Xiaomi"),
+        ("huggingface", "Hugging Face"),
         // Keys that are not romaji, shown as typed.
         ("discord", "Discord"),
         ("server", "server"),
         // Inside a sentence.
         ("vrchatdeasobu", "VRChatで遊ぶ"),
         ("githubnipusshusuru", "GitHubにプッシュする"),
+        ("kyouhanvidianokabu", "今日はNVIDIAの株"),
         ("kyouhadiscorddehanasu", "今日はDiscordで話す"),
         // Japanese is unchanged, typos included.
         ("kyouhaiitenkidesu", "今日はいい天気です"),

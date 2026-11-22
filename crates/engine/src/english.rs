@@ -3,6 +3,7 @@
 //! those readings back their word, also inside a sentence ("githubni" ->
 //! GitHubに).
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::dict::{TECH_TERMS, VRCHAT_TERMS};
@@ -21,6 +22,35 @@ pub const WORD_LIST: &str = include_str!("english_words.txt");
 /// VRChat terms first (in file order), then the English word list.
 pub fn spellings() -> impl Iterator<Item = (&'static str, Option<&'static str>)> {
     word_keys::bundled_spellings(TECH_TERMS, VRCHAT_TERMS, ENGLISH_WORDS)
+}
+
+/// Names written both in katakana and in English (アマゾン, Amazon): the
+/// katakana and the spelling for a hiragana reading of the katakana. The
+/// katakana comes first among the candidates, then the spelling.
+pub fn katakana_name(reading: &str) -> Option<(&'static str, &'static str)> {
+    static NAMES: OnceLock<HashMap<String, (&'static str, &'static str)>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            let mut names = HashMap::new();
+            for line in ENGLISH_WORDS.lines().filter(|line| !line.starts_with('#')) {
+                if let Some((spelling, kana)) = line.split_once('\t').filter(|(_, kana)| !kana.is_empty()) {
+                    names.entry(to_hiragana(kana)).or_insert((kana, spelling));
+                }
+            }
+            names
+        })
+        .get(reading)
+        .copied()
+}
+
+fn to_hiragana(katakana: &str) -> String {
+    katakana
+        .chars()
+        .map(|c| match c {
+            'ァ'..='ヶ' => char::from_u32(c as u32 - 0x60).unwrap_or(c),
+            _ => c,
+        })
+        .collect()
 }
 
 /// Whether `word` is a bundled spelling or on the word list, in any case
@@ -106,6 +136,11 @@ pub fn kana_spelled_readings() -> &'static [(String, &'static str)] {
                 continue;
             }
             let reading = romaji::to_hiragana(&keys.to_ascii_lowercase());
+            // Typing "amazon" is typing the reading of アマゾン: the katakana
+            // comes first there (katakana_name).
+            if katakana_name(&reading).is_some() {
+                continue;
+            }
             // A doubled first kana is usually Japanese (aao reads ああお,
             // as in ああおいしい).
             let mut kana = reading.chars();

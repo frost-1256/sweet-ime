@@ -133,7 +133,8 @@ impl Composing {
     }
 
     fn bundled_candidates(&self, reading: &str) -> Option<Vec<String>> {
-        if !self.raw_spells(reading) {
+        // "amazon" is also the reading あまぞん: katakana first there.
+        if !self.raw_spells(reading) || english::katakana_name(reading).is_some() {
             return None;
         }
         let mut candidates = Vec::new();
