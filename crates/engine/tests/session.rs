@@ -496,6 +496,31 @@ fn typo_correction_on_space_and_escape() {
 }
 
 #[test]
+fn decimal_point_between_digits() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "5.5");
+    assert_eq!(s.preedit().text, "5.5");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "5.5");
+
+    type_str(&mut s, &c, "1,000enn");
+    s.handle(&c, Key::Space);
+    s.handle(&c, Key::Enter);
+    assert!(s.take_commit().starts_with("1,000"));
+
+    type_str(&mut s, &c, "5.");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "5。");
+
+    // Live conversion keeps the number as typed.
+    let mut s = Session::new();
+    type_str(&mut s, &c, "5.5kai");
+    s.handle(&c, Key::Enter);
+    assert!(s.take_commit().starts_with("5.5"));
+}
+
+#[test]
 fn typo_early_in_a_long_reading_is_fixed() {
     let Some(c) = converter() else { return };
     let mut s = plain();

@@ -113,6 +113,26 @@ impl Composer {
         let ch = ch.to_ascii_lowercase();
         self.pending.push(ch);
         self.resolve(false);
+        if is_digit(ch) {
+            self.number_separator();
+        }
+    }
+
+    /// Between digits, 。 and 、 are a decimal point and a thousands
+    /// separator ("5.5", "1,000"); elsewhere they stay Japanese ("5。").
+    fn number_separator(&mut self) {
+        let mut tail = self.kana.chars().rev();
+        let (Some(last), Some(sep), Some(before)) = (tail.next(), tail.next(), tail.next()) else { return };
+        if !is_digit(last) || !is_digit(before) {
+            return;
+        }
+        let ascii = match sep {
+            '。' => '.',
+            '、' => ',',
+            _ => return,
+        };
+        let at = self.kana.len() - last.len_utf8() - sep.len_utf8();
+        self.kana.replace_range(at..at + sep.len_utf8(), ascii.encode_utf8(&mut [0; 4]));
     }
 
     pub fn push_str(&mut self, s: &str) {
@@ -195,6 +215,10 @@ impl Composer {
     }
 }
 
+fn is_digit(c: char) -> bool {
+    c.is_ascii_digit() || ('０'..='９').contains(&c)
+}
+
 /// Convert a whole romaji string to hiragana.
 pub fn to_hiragana(romaji: &str) -> String {
     let mut c = Composer::new();
@@ -229,6 +253,23 @@ mod tests {
         assert_eq!(to_hiragana("tyotto"), "ちょっと");
         assert_eq!(to_hiragana("ra-menn"), "らーめん");
         assert_eq!(to_hiragana("watashiha,"), "わたしは、");
+    }
+
+    #[test]
+    fn separators_between_digits() {
+        assert_eq!(to_hiragana("5.5"), "5.5");
+        assert_eq!(to_hiragana("1,000en"), "1,000えん");
+        assert_eq!(to_hiragana("3.14"), "3.14");
+        // Not between digits: Japanese punctuation.
+        assert_eq!(to_hiragana("5."), "5。");
+        assert_eq!(to_hiragana("5.desu"), "5。です");
+        assert_eq!(to_hiragana("a.5"), "あ。5");
+        // Typed one key at a time, the point turns once the digit comes.
+        let mut c = Composer::new();
+        c.push_str("5.");
+        assert_eq!(c.preedit(), "5。");
+        c.push('5');
+        assert_eq!(c.preedit(), "5.5");
     }
 
     #[test]
