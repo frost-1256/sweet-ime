@@ -12,6 +12,7 @@
   fetchFromGitHub,
   fontconfig,
   curl,
+  dbus,
   xdg-utils,
 }:
 
@@ -85,7 +86,7 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm644 ${mozc}/src/data/dictionary_oss/README.txt "$out/share/sweet-ime/licenses/dictionary-oss.txt"
     wrapProgram "$out/bin/sweet-settings" \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiLibs} \
-      --prefix PATH : ${lib.makeBinPath [ fontconfig curl xdg-utils ]}
+      --prefix PATH : ${lib.makeBinPath [ fontconfig curl dbus xdg-utils ]}
   '';
 
   meta = {

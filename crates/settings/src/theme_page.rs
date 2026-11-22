@@ -20,11 +20,11 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme) -> bool {
     card_frame(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("候補ウィンドウのテーマ").size(15.5));
-        ui.label(
-            RichText::new("変換候補と入力モード表示の色を選びます。デフォルトは Windows のライト/ダークとアクセントカラーに合わせます。")
-                .small()
-                .weak(),
-        );
+        #[cfg(windows)]
+        let note = "変換候補と入力モード表示の色を選びます。デフォルトは Windows のライト/ダークとアクセントカラーに合わせます。";
+        #[cfg(not(windows))]
+        let note = "fcitx5 の候補ウィンドウのテーマとして書き込みます (ほかの入力メソッドにも使われます)。デフォルトはデスクトップのライト/ダークに合わせます。";
+        ui.label(RichText::new(note).small().weak());
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(12.0, 12.0);

@@ -16,7 +16,8 @@ A Japanese input method written from scratch in Rust.
   indicator ("あ" / "A").
 - **Linux**: an fcitx5 addon. It works on Wayland compositors that support
   `input-method-v2` (such as niri, Sway and Hyprland) and with fcitx5's
-  other frontends. fcitx5 draws the candidate window.
+  other frontends. fcitx5 draws the candidate window, with a Sweet IME
+  theme chosen in the settings app.
 - **Features**: live conversion, predictive suggestions (including
   mid-sentence), romaji typo correction, per-user learning, a user
   dictionary, numbers read out in kana (さんぜんえん → 三千円 / 3000円),
@@ -144,6 +145,13 @@ On Linux the files live in XDG directories:
   **Settings → AI 変換** or with `share/sweet-ime/get-zenz.sh`, then restart
   fcitx5.
 
+The **テーマ** page writes the chosen colors as an fcitx5 classicui theme
+(`~/.local/share/fcitx5/themes/sweet-ime`) and selects it in
+`~/.config/fcitx5/conf/classicui.conf`, which also styles other input
+methods. **fcitx5 の標準テーマに戻す** selects fcitx5's own theme again. If
+Home Manager manages `classicui.conf`, set `Theme = sweet-ime` there
+instead (`sweet-ime-dark` as `DarkTheme` for the default theme).
+
 The key bindings file is shared with Windows. Japanese keyboard keys
 (半角/全角, 変換, 無変換, ひらがな, 英数) work the same way. fcitx5's own
 trigger key (Ctrl+Space by default) switches between Sweet IME and the
@@ -202,7 +210,8 @@ focus.
 In the app you can:
 
 - Turn live conversion, suggestions and the "あ" / "A" indicator on or off
-- Choose a color theme for the candidate window (Windows)
+- Choose a color theme for the candidate window (on Linux, as an fcitx5
+  theme)
 - Change key bindings
 - Turn AI conversion on or off, and download or remove the zenz model
 - Turn learning on or off, and review, delete or clear learned words, or

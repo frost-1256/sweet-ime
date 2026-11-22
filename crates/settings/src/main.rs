@@ -8,6 +8,7 @@
 
 mod apps_page;
 mod dict_page;
+mod fcitx_theme;
 mod keys_page;
 mod theme_page;
 mod update;
@@ -54,9 +55,10 @@ enum Page {
 impl Page {
     #[cfg(windows)]
     const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Apps, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
-    /// Elsewhere the candidate window is drawn by the input method framework.
+    /// Elsewhere the input method framework picks the program's mode, and
+    /// the theme is written as an fcitx5 theme.
     #[cfg(not(windows))]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
 
     fn label(self) -> &'static str {
         match self {
@@ -280,6 +282,20 @@ impl eframe::App for App {
                     Page::Theme => {
                         if theme_page::ui(ui, &mut self.opts.theme) {
                             self.save();
+                            #[cfg(not(windows))]
+                            {
+                                self.status = Some(match fcitx_theme::apply(self.opts.theme) {
+                                    Ok(()) => ("fcitx5 のテーマに設定しました。".into(), true),
+                                    Err(e) => (e, false),
+                                });
+                            }
+                        }
+                        #[cfg(not(windows))]
+                        if ui.button("fcitx5 の標準テーマに戻す").clicked() {
+                            self.status = Some(match fcitx_theme::restore() {
+                                Ok(()) => ("fcitx5 の標準テーマに戻しました。".into(), true),
+                                Err(e) => (e, false),
+                            });
                         }
                     }
                     Page::Neural => self.neural_page(ui),
