@@ -16,6 +16,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.ExtractedText;
+import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -43,9 +45,22 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private HorizontalScrollView candidateScroll;
     /** Direct English input (the あ/A key) or a field that wants no conversion. */
     private boolean english;
+    /** The globe key's choice for ordinary text fields, kept across fields. */
+    private boolean chosenEnglish;
+    /** This field wants no conversion (passwords, URLs, numbers). */
+    private boolean fieldEnglish;
     private boolean composing;
     private String themeKey = "";
     private int composingLength;
+    /** When Space last typed a space (for the double-space period). */
+    private long lastSpace;
+    /** The editor reported the current composing text (see onUpdateSelection). */
+    private boolean compositionSeen;
+    /**
+     * Recent composing states we showed, as length << 32 | caret: a caret
+     * inside the composing text that matches none was moved by the user.
+     */
+    private final java.util.ArrayDeque<Long> shown = new java.util.ArrayDeque<>();
 
     @Override
     public void onCreate() {
@@ -181,7 +196,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         boolean url = variation == EditorInfo.TYPE_TEXT_VARIATION_URI
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS;
-        english = cls != EditorInfo.TYPE_CLASS_TEXT || password || url;
+        fieldEnglish = cls != EditorInfo.TYPE_CLASS_TEXT || password || url;
+        english = fieldEnglish || chosenEnglish;
         if (keyboard != null) keyboard.setEnglish(english);
         if (ctx != 0) {
             String before = textBeforeCursor();
@@ -208,6 +224,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     }
 
     @Override
+    public void onFinishInputView(boolean finishingInput) {
+        // Hiding the keyboard keeps the text being typed, as it is shown.
+        if (composing && ctx != 0) apply(Native.commitAll(ctx));
+        super.onFinishInputView(finishingInput);
+    }
+
+    @Override
     public void onFinishInput() {
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         super.onFinishInput();
@@ -218,8 +241,23 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                                   int candidatesStart, int candidatesEnd) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd,
                 candidatesStart, candidatesEnd);
-        // The caret left the composing text (a tap elsewhere): commit it.
-        if (composing && candidatesStart >= 0
+        // The editor shows our composing text: from now on, losing it
+        // means the app committed it (e.g. on a tap). Updates can be late,
+        // so only one matching the current text counts.
+        if (composing && candidatesStart >= 0 && candidatesEnd - candidatesStart == composingLength) {
+            compositionSeen = true;
+        }
+        boolean lost = composing && compositionSeen && candidatesStart < 0;
+        // A tap inside the composing text: the reading's caret cannot
+        // follow it, so the text is kept as it is.
+        boolean moved = composing && candidatesStart >= 0 && newSelStart == newSelEnd
+                && newSelStart >= candidatesStart && newSelStart <= candidatesEnd
+                && !shown.contains(((long) (candidatesEnd - candidatesStart) << 32)
+                        | (newSelStart - candidatesStart));
+        // The caret left the composing text (a tap elsewhere), or the app
+        // finished it: keep the text and start over, or the next key
+        // would type the old reading again.
+        if (lost || moved || composing && candidatesStart >= 0
                 && (newSelStart != newSelEnd || newSelStart < candidatesStart
                 || newSelStart > candidatesEnd)) {
             Native.reset(ctx);
@@ -242,6 +280,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     public void onToggleMode() {
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         english = !english;
+        if (!fieldEnglish) chosenEnglish = english;
         keyboard.setEnglish(english);
         updateKeys();
     }
@@ -259,9 +298,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         EditorInfo ei = getCurrentInputEditorInfo();
         if (ei == null) return EditorInfo.IME_ACTION_NONE;
         int action = ei.imeOptions & EditorInfo.IME_MASK_ACTION;
-        boolean multiLine = (ei.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+        // Multi-line text views set IME_FLAG_NO_ENTER_ACTION themselves; a
+        // multi-line web field can still ask for an action (enterkeyhint).
         boolean noEnterAction = (ei.imeOptions & EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0;
-        if (multiLine || noEnterAction || action == EditorInfo.IME_ACTION_UNSPECIFIED) {
+        if (noEnterAction || action == EditorInfo.IME_ACTION_UNSPECIFIED) {
             return EditorInfo.IME_ACTION_NONE;
         }
         return action;
@@ -338,20 +378,63 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                     sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
                 }
                 break;
-            case Native.KEY_SPACE:
-                ic.commitText(" ", 1);
+            case Native.KEY_SPACE: {
+                // English: a second space right after a word ends the
+                // sentence (". "), as on common keyboards.
+                long now = android.os.SystemClock.uptimeMillis();
+                CharSequence before = english && now - lastSpace < 700
+                        ? ic.getTextBeforeCursor(2, 0) : null;
+                if (before != null && before.length() == 2 && before.charAt(1) == ' '
+                        && Character.isLetterOrDigit(before.charAt(0))) {
+                    ic.beginBatchEdit();
+                    ic.deleteSurroundingText(1, 0);
+                    ic.commitText(". ", 1);
+                    ic.endBatchEdit();
+                    lastSpace = 0;
+                } else {
+                    ic.commitText(" ", 1);
+                    lastSpace = now;
+                }
                 break;
+            }
             case Native.KEY_LEFT:
-                sendDownUpKeyEvents(KeyEvent.KEYCODE_DPAD_LEFT);
-                break;
             case Native.KEY_RIGHT:
-                sendDownUpKeyEvents(KeyEvent.KEYCODE_DPAD_RIGHT);
+                moveCaret(ic, code == Native.KEY_RIGHT);
                 break;
             case Native.KEY_ESCAPE:
                 break;
             default:
                 if (code >= 0) ic.commitText(new String(Character.toChars(code & ~Native.SHIFTED)), 1);
         }
+    }
+
+    /**
+     * Moves the caret one character. Arrow key events would move the focus
+     * to another view at either end of the text, so the caret is set
+     * directly when the editor reports its text.
+     */
+    private void moveCaret(InputConnection ic, boolean right) {
+        ExtractedText et = ic.getExtractedText(new ExtractedTextRequest(), 0);
+        if (et == null || et.text == null || et.selectionStart < 0) {
+            sendDownUpKeyEvents(right ? KeyEvent.KEYCODE_DPAD_RIGHT : KeyEvent.KEYCODE_DPAD_LEFT);
+            return;
+        }
+        CharSequence t = et.text;
+        int start = Math.min(et.selectionStart, et.selectionEnd);
+        int end = Math.max(et.selectionStart, et.selectionEnd);
+        int pos;
+        if (start != end) {
+            // A selection collapses to the side of the arrow.
+            pos = right ? end : start;
+        } else if (right) {
+            if (end >= t.length()) return;
+            pos = end + Character.charCount(Character.codePointAt(t, end));
+        } else {
+            if (start <= 0) return;
+            pos = start - Character.charCount(Character.codePointBefore(t, start));
+        }
+        pos += et.startOffset;
+        ic.setSelection(pos, pos);
     }
 
     /** Shows a snapshot from the engine. */
@@ -365,6 +448,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             if (composing && st.commit.isEmpty()) ic.commitText("", 1);
             composing = false;
         } else {
+            if (!composing) compositionSeen = false;
             SpannableString text = new SpannableString(st.preedit);
             for (int[] span : st.spans) {
                 int a = Math.max(0, Math.min(span[0], st.preedit.length()));
@@ -382,8 +466,25 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             }
             ic.setComposingText(text, 1);
             composing = true;
+            // The caret inside the reading (moved with the arrow keys).
+            int back = st.preedit.length() - Math.max(0, Math.min(st.caret, st.preedit.length()));
+            if (back > 0) {
+                ExtractedText et = ic.getExtractedText(new ExtractedTextRequest(), 0);
+                if (et != null && et.selectionEnd >= 0) {
+                    int pos = et.startOffset + et.selectionEnd - back;
+                    ic.setSelection(pos, pos);
+                }
+            }
         }
         composingLength = st.preedit.length();
+        if (composing) {
+            long state = ((long) composingLength << 32)
+                    | Math.max(0, Math.min(st.caret, composingLength));
+            shown.addLast(state);
+            // setComposingText leaves the caret at the end first.
+            shown.addLast(((long) composingLength << 32) | composingLength);
+            while (shown.size() > 32) shown.removeFirst();
+        }
         ic.endBatchEdit();
         showCandidates(st.candidates, st.selected, st.suggestions);
         updateKeys();

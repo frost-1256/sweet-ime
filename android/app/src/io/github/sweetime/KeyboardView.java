@@ -109,7 +109,13 @@ final class KeyboardView extends View {
                 String h = pressed.hint;
                 if (english && pressed.code == ',') h = "!";
                 if (english && pressed.code == '.') h = "?";
-                listener.onText(h);
+                // Digits join the reading (1じ converts to 1時); symbols
+                // are typed as they are.
+                if (h.length() == 1 && h.charAt(0) >= '0' && h.charAt(0) <= '9') {
+                    listener.onKey(h.charAt(0));
+                } else {
+                    listener.onText(h);
+                }
                 invalidate();
             }
         }
@@ -121,12 +127,21 @@ final class KeyboardView extends View {
     private float swipeX;
     private boolean swiped;
 
+    /** Backspace and the arrows act on press and repeat while held. */
+    private static boolean repeats(KeyDef k) {
+        return k.code == Native.KEY_BACKSPACE || k.code == Native.KEY_LEFT
+                || k.code == Native.KEY_RIGHT;
+    }
+
+    /** The pressed key already acted (repeat, long press, swipe): releasing types nothing. */
+    private boolean used;
+
     private final Runnable repeat = new Runnable() {
         @Override
         public void run() {
-            if (pressed != null && pressed.code == Native.KEY_BACKSPACE && listener != null) {
-                listener.onKey(Native.KEY_BACKSPACE);
-                handler.postDelayed(this, 50);
+            if (pressed != null && repeats(pressed) && listener != null) {
+                listener.onKey(pressed.code);
+                handler.postDelayed(this, pressed.code == Native.KEY_BACKSPACE ? 50 : 70);
             }
         }
     };
@@ -330,7 +345,7 @@ final class KeyboardView extends View {
             case MODE:
                 return "";
             case Native.KEY_SPACE:
-                if (english || page != 0) return english ? "English" : "日本語";
+                if (english || (page != 0 && !composing)) return english ? "English" : "日本語";
                 return converting ? "次候補" : composing ? "変換" : "日本語";
             case Native.KEY_ENTER:
                 return composing ? "確定" : enterLabel;
@@ -480,9 +495,11 @@ final class KeyboardView extends View {
         swipeX = e.getX(index);
         swiped = false;
         longPressed = false;
+        used = false;
         if (pressed.hint != null) handler.postDelayed(longPress, 350);
-        if (pressed.code == Native.KEY_BACKSPACE) {
+        if (repeats(pressed)) {
             fire(pressed);
+            used = true;
             handler.postDelayed(repeat, 400);
         }
     }
@@ -494,7 +511,7 @@ final class KeyboardView extends View {
         KeyDef k = pressed;
         pressed = null;
         pointerId = -1;
-        if (k != null && k.code != Native.KEY_BACKSPACE && !swiped && !longPressed) fire(k);
+        if (k != null && !used && !swiped && !longPressed) fire(k);
     }
 
     @Override
@@ -525,10 +542,13 @@ final class KeyboardView extends View {
                     }
                     return true;
                 }
+                // A finger sliding off a key types the key it ends on;
+                // keys that already acted stay pressed.
                 KeyDef k = keyAt(x, e.getY(index));
-                if (k != pressed && !longPressed && pressed.code != Native.KEY_BACKSPACE) {
+                if (k != pressed && k != null && !longPressed && !used) {
                     handler.removeCallbacks(longPress);
                     pressed = k;
+                    if (k.code == Native.KEY_SPACE) swipeX = x;
                     invalidate();
                 }
                 return true;
@@ -599,7 +619,12 @@ final class KeyboardView extends View {
                 build();
                 return;
             case TEXT:
-                listener.onText(k.label);
+                // Digits join the reading, as from the letters page.
+                if (k.label.length() == 1 && k.label.charAt(0) >= '0' && k.label.charAt(0) <= '9') {
+                    listener.onKey(k.label.charAt(0));
+                } else {
+                    listener.onText(k.label);
+                }
                 return;
             default:
                 break;

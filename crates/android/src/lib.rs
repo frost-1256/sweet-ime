@@ -66,6 +66,14 @@ pub fn init(dict: PathBuf, files_dir: &str) -> bool {
 
 pub struct Context {
     session: Session,
+    /// Candidates shown before the suggestions while typing: the text as
+    /// shown and its reading, each committed as is when tapped.
+    typed: Vec<String>,
+    /// For each candidate in the last snapshot after `typed`, its index in
+    /// the session's list (duplicates of `typed` are left out).
+    listed: Vec<usize>,
+    /// Text committed by tapping one of `typed`, for the next snapshot.
+    commit: String,
 }
 
 impl Default for Context {
@@ -78,7 +86,12 @@ impl Context {
     pub fn new() -> Self {
         let mut session = Session::new();
         session.options = paths::load_options();
-        Self { session }
+        Self {
+            session,
+            typed: Vec::new(),
+            listed: Vec::new(),
+            commit: String::new(),
+        }
     }
 
     pub fn key_of(code: i32) -> Option<Key> {
@@ -126,11 +139,38 @@ impl Context {
     }
 
     pub fn select(&mut self, index: usize) -> String {
+        if let Some(text) = self.typed.get(index).cloned() {
+            self.session.reset();
+            self.commit.push_str(&text);
+            return self.snapshot();
+        }
+        let Some(&index) = self.listed.get(index - self.typed.len()) else {
+            return self.snapshot();
+        };
         if let Some(conv) = converter() {
             self.session.select_candidate(conv, index);
             self.session.open_candidates(conv);
         }
         self.snapshot()
+    }
+
+    /// What `typed` holds for the current state: nothing while converting
+    /// or idle, else the preedit and (if it differs) the reading.
+    fn typed_items(&self) -> Vec<String> {
+        if self.session.is_converting() || !self.session.is_active() {
+            return Vec::new();
+        }
+        let shown = self.session.preedit().text;
+        if shown.is_empty() {
+            return Vec::new();
+        }
+        let mut items = vec![shown];
+        if let Some((reading, _)) = self.session.live_request() {
+            if !items.contains(&reading) && !reading.is_empty() {
+                items.push(reading);
+            }
+        }
+        items
     }
 
     pub fn commit_all(&mut self) -> String {
@@ -141,6 +181,9 @@ impl Context {
     pub fn reset(&mut self) {
         self.session.reset();
         self.session.take_commit();
+        self.commit.clear();
+        self.typed.clear();
+        self.listed.clear();
     }
 
     /// Reads the settings file again (the settings screen wrote it).
@@ -166,12 +209,14 @@ impl Context {
 
     /// The state for the Java side, fields joined by U+001F: commit text,
     /// preedit, caret, spans, candidate kind, selected candidate, then the
-    /// candidates joined by U+001E. Offsets are UTF-16 units; spans are
+    /// candidates joined by U+001E. While typing, the candidates start with
+    /// the text as shown and its reading. Offsets are UTF-16 units; spans are
     /// `start,end,attr` joined by `;` (attr 0 input, 1 converted, 2
     /// focused); kind is 0 for conversion and 1 for predictions; the
     /// selected candidate is -1 for predictions.
     pub fn snapshot(&mut self) -> String {
-        let commit = self.session.take_commit();
+        let commit = std::mem::take(&mut self.commit) + &self.session.take_commit();
+        self.typed = self.typed_items();
         let p = self.session.preedit();
         let u16_at = |byte: usize| p.text[..byte.min(p.text.len())].encode_utf16().count();
         let spans: Vec<String> = p
@@ -186,13 +231,21 @@ impl Context {
                 format!("{},{},{attr}", u16_at(a), u16_at(b))
             })
             .collect();
-        let (kind, selected, items) = match self.session.candidates() {
+        let (kind, selected, session_items) = match self.session.candidates() {
             Some(list) => match list.kind {
                 ListKind::Conversion => (0, list.selected as i64, list.items),
                 ListKind::Suggestion => (1, -1, list.items),
             },
-            None => (0, -1, Vec::new()),
+            None => (1, -1, Vec::new()),
         };
+        self.listed = (0..session_items.len())
+            .filter(|&i| !self.typed.contains(&session_items[i]))
+            .collect();
+        let items: Vec<&String> = self
+            .typed
+            .iter()
+            .chain(self.listed.iter().map(|&i| &session_items[i]))
+            .collect();
         let clean = |s: &str| s.replace([FIELD, ITEM], "");
         let items: Vec<String> = items.iter().map(|s| clean(s)).collect();
         [
@@ -394,5 +447,18 @@ mod tests {
         c.reset();
         // Nothing to compose: the app gets Enter.
         assert_eq!(c.key(KEY_ENTER), None);
+        // While typing, the text as shown and its reading come first and
+        // commit as they are.
+        c.session.options.live_conversion = true;
+        for ch in "kawaii".chars() {
+            c.key(ch as i32);
+        }
+        let typing = c.snapshot();
+        let fields: Vec<&str> = typing.split(FIELD).collect();
+        let items: Vec<&str> = fields[6].split(ITEM).collect();
+        assert_eq!(items[0], fields[1], "{typing}");
+        assert_eq!(items[1], "かわいい", "{typing}");
+        let done = c.select(1);
+        assert!(done.starts_with("かわいい\u{1f}\u{1f}0"), "{done}");
     }
 }

@@ -131,7 +131,9 @@ public final class SettingsActivity extends Activity {
         scroll.setOnApplyWindowInsetsListener((v, insets) -> {
             android.graphics.Insets bars = insets.getInsets(
                     android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
-            box.setPadding(dp(16), dp(24) + bars.top, dp(16), dp(32) + bars.bottom);
+            // The status bar area stays clear while scrolling.
+            v.setPadding(0, bars.top, 0, 0);
+            box.setPadding(dp(16), dp(24), dp(16), dp(32) + bars.bottom);
             return android.view.WindowInsets.CONSUMED;
         });
         getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
