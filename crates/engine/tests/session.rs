@@ -947,3 +947,10 @@ fn a_shift_word_ends_when_japanese_follows() {
         ("", "Googlehakensaku")
     );
 }
+
+#[test]
+fn full_names_do_not_lead_predictions() {
+    let Some(c) = converter() else { return };
+    let predictions = c.predict("ほしいな", 5);
+    assert_ne!(predictions.first().map(String::as_str), Some("星井七瀬"), "{predictions:?}");
+}

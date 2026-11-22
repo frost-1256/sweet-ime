@@ -997,10 +997,16 @@ impl Converter {
         if out.len() >= n {
             return out;
         }
+        // Full names (a family name joined to a given name) are seldom what
+        // a prefix means and read like other words: ほしいな would suggest
+        // 星井七瀬. Learned and user words above still predict them.
+        let family = self.dict.pos_id("名詞,固有名詞,人名,姓,*,*,*");
+        let given = self.dict.pos_id("名詞,固有名詞,人名,名,*,*,*");
         let mut scored: Vec<(i32, &str)> = Vec::new();
         self.dict.for_each_prediction(prefix, 3000, |reading, e| {
             let extra = reading[prefix.len()..].chars().count();
-            if extra != 0 {
+            let full_name = family == Some(e.lid) && given == Some(e.rid);
+            if extra != 0 && !full_name {
                 scored.push((e.cost as i32 + 700 * extra as i32, e.surface));
             }
         });
