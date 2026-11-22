@@ -399,7 +399,12 @@ final class KeyboardView extends View {
                 if (k.hint != null) {
                     textPaint.setTextSize(10 * density);
                     textPaint.setColor(theme.subText);
-                    canvas.drawText(hintOf(k), k.rect.right - 7 * density, k.rect.top + 12 * density, textPaint);
+                    // Further in on rounder keys (Expressive), clear of the
+                    // corner; it stays put while the pressed key changes shape.
+                    float corner = Math.min(radius, Math.min(k.rect.width(), k.rect.height()) / 2);
+                    float in = Math.max(0, 0.6f * (corner - 8 * density));
+                    canvas.drawText(hintOf(k), k.rect.right - 7 * density - in,
+                            k.rect.top + 12 * density + in, textPaint);
                 }
                 int icon = iconOf(k);
                 if (icon != 0) {

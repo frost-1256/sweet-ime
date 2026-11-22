@@ -54,7 +54,11 @@ final class Theme {
     }
 
     static Theme of(Context c) {
-        int setting = Prefs.number(c, Prefs.THEME, 0);
+        return of(c, Prefs.number(c, Prefs.THEME, 0));
+    }
+
+    /** The theme for THEME setting value `setting`. */
+    static Theme of(Context c, int setting) {
         int night = c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         boolean systemDark = night == Configuration.UI_MODE_NIGHT_YES;
         switch (setting) {

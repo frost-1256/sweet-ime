@@ -3,8 +3,17 @@ package io.github.sweetime;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.util.TypedValue;
@@ -22,6 +31,8 @@ import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -33,16 +44,72 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
-/** Setup steps, conversion settings and keyboard settings. */
+/**
+ * The settings: a home page with the setup state, a try-it field and the
+ * categories, each of which opens its own page.
+ */
 public final class SettingsActivity extends Activity {
+    private static final String HOME = "";
+    private static final String CONVERSION = "conversion";
+    private static final String AI = "ai";
+    private static final String LEARNING = "learning";
+    private static final String KEYBOARD = "keyboard";
+    private static final String THEME = "theme";
+    private static final String ABOUT = "about";
+
+    /** The page shown: HOME or one of the categories. */
+    private String page = HOME;
+    private ScrollView scroll;
     private LinearLayout box;
-    private TextView status;
+    private int bottomInset;
     private Theme theme;
+    private Prefs.Engine engine;
+    private TextView status;
+    private Button enable;
+    private Button pick;
+    /** Home page summaries, refreshed on resume. */
+    private TextView aiSummary;
+    private TextView learningSummary;
+    /** Handles back on a category page (Android 13 and later). */
+    private Object backCallback;
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        build();
+        if (getActionBar() != null) getActionBar().hide();
+        theme = Theme.of(this);
+        engine = new Prefs.Engine(this);
+        getWindow().getDecorView().setBackgroundColor(theme.background);
+        // Dark status bar icons on the light theme.
+        int light = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+        android.view.WindowInsetsController controller = getWindow().getInsetsController();
+        if (controller != null) controller.setSystemBarsAppearance(theme.dark ? 0 : light, light);
+        scroll = new ScrollView(this);
+        scroll.setBackgroundColor(theme.background);
+        // Not the try-it field: no keyboard until it is tapped.
+        scroll.setFocusableInTouchMode(true);
+        // Below the status bar and above the navigation bar and the keyboard.
+        scroll.setOnApplyWindowInsetsListener((v, insets) -> {
+            android.graphics.Insets bars = insets.getInsets(
+                    android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
+            // The status bar area stays clear while scrolling.
+            v.setPadding(0, bars.top, 0, 0);
+            bottomInset = bars.bottom;
+            if (box != null) padBox();
+            return android.view.WindowInsets.CONSUMED;
+        });
+        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+                | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        setContentView(scroll);
+        show(saved != null ? saved.getString("page", HOME) : HOME);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        // A theme change recreates the activity; stay on the theme page.
+        out.putString("page", page);
     }
 
     @Override
@@ -50,6 +117,7 @@ public final class SettingsActivity extends Activity {
         super.onResume();
         updateStatus();
         updateLearned();
+        updateSummaries();
     }
 
     @Override
@@ -59,100 +127,340 @@ public final class SettingsActivity extends Activity {
         if (hasFocus) updateStatus();
     }
 
+    /** Before Android 13: back from a category page goes home. */
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        if (!page.equals(HOME)) show(HOME);
+        else super.onBackPressed();
+    }
+
     private int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
-    private void build() {
-        if (getActionBar() != null) getActionBar().hide();
-        theme = Theme.of(this);
-        getWindow().getDecorView().setBackgroundColor(theme.background);
-        // Dark status bar icons on the light theme.
-        int light = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-        android.view.WindowInsetsController controller = getWindow().getInsetsController();
-        if (controller != null) controller.setSystemBarsAppearance(theme.dark ? 0 : light, light);
+    private void padBox() {
+        box.setPadding(dp(16), dp(8), dp(16), dp(32) + bottomInset);
+    }
+
+    /** Replaces the content with page `p`. */
+    private void show(String p) {
+        page = p;
+        status = null;
+        enable = null;
+        pick = null;
+        learnedStatus = null;
+        aiStatus = null;
+        aiSummary = null;
+        learningSummary = null;
         box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(16), dp(24), dp(16), dp(32));
-        // Not the try-it field: no keyboard until it is tapped.
-        box.setFocusableInTouchMode(true);
-        box.requestFocus();
+        padBox();
+        switch (p) {
+            case CONVERSION:
+                conversionPage();
+                break;
+            case AI:
+                aiPage();
+                break;
+            case LEARNING:
+                learningPage();
+                break;
+            case KEYBOARD:
+                keyboardPage();
+                break;
+            case THEME:
+                themePage();
+                break;
+            case ABOUT:
+                aboutPage();
+                break;
+            default:
+                page = HOME;
+                homePage();
+                break;
+        }
+        scroll.removeAllViews();
+        scroll.addView(box);
+        scroll.scrollTo(0, 0);
+        scroll.requestFocus();
+        updateBack();
+        updateStatus();
+        updateSummaries();
+    }
 
-        TextView title = text("Sweet IME", 28, theme.text);
+    /** Lets back return home from a category page (Android 13 and later). */
+    private void updateBack() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        OnBackInvokedDispatcher d = getOnBackInvokedDispatcher();
+        if (page.equals(HOME)) {
+            if (backCallback != null) {
+                d.unregisterOnBackInvokedCallback((OnBackInvokedCallback) backCallback);
+                backCallback = null;
+            }
+        } else if (backCallback == null) {
+            OnBackInvokedCallback cb = () -> show(HOME);
+            d.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+            backCallback = cb;
+        }
+    }
+
+    // ---- Pages ----
+
+    private void homePage() {
+        TextView title = text("Sweet IME", 30, theme.text);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setPadding(dp(4), dp(24), 0, 0);
         box.addView(title);
-        box.addView(text("Rust で書いた日本語入力", 14, theme.subText));
+        TextView sub = text("Rust で書いた日本語入力", 14, theme.subText);
+        sub.setPadding(dp(4), 0, 0, 0);
+        box.addView(sub);
 
-        // Setup.
-        LinearLayout setup = section("はじめに");
-        status = text("", 15, theme.text);
-        status.setPadding(0, 0, 0, dp(8));
+        LinearLayout setup = card(null);
+        status = text("", 16, theme.text);
+        status.setPadding(0, dp(4), 0, dp(10));
         setup.addView(status);
-        Button enable = button("キーボードを有効にする");
+        enable = button("キーボードを有効にする");
         enable.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
         setup.addView(enable);
-        Button pick = button("キーボードを切り替える");
+        pick = button("キーボードを切り替える");
         pick.setOnClickListener(v -> ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE))
                 .showInputMethodPicker());
         setup.addView(pick);
+
+        LinearLayout tryIt = card("試し打ち");
         EditText test = new EditText(this);
-        test.setHint("ここで試せます");
+        test.setHint("ここをタップして入力してみてください");
         test.setTextColor(theme.text);
         test.setHintTextColor(theme.subText);
         test.setMinLines(2);
-        setup.addView(test, new LinearLayout.LayoutParams(
+        test.setBackground(null);
+        tryIt.addView(test, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        setup.addView(text("Shift で始めた英字は英単語になり、日本語が続くと日本語入力に戻ります。"
-                + "地球儀のキーで英字の直接入力と切り替え、スペースキーを左右になぞるとカーソルが動きます。",
-                13, theme.subText));
 
-        // Conversion (the engine's settings file).
-        LinearLayout conv = section("変換");
-        Prefs.Engine engine = new Prefs.Engine(this);
-        for (String[] sw : Prefs.Engine.SWITCHES) {
-            final String key = sw[0];
-            conv.addView(toggle(sw[1], sw[2], engine.get(key), on -> {
-                engine.set(key, on);
-                try {
-                    engine.save();
-                } catch (IOException e) {
-                    Toast.makeText(this, "保存できませんでした: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                }
-            }));
-        }
+        LinearLayout list = card("設定");
+        list.setPadding(0, dp(6), 0, dp(6));
+        entry(list, Icons.CONVERT, "変換", "ライブ変換・予測・英単語・絵文字など", CONVERSION);
+        aiSummary = entry(list, Icons.SPARKLE, "AI 変換", "", AI);
+        learningSummary = entry(list, Icons.HISTORY, "学習とプライバシー", "", LEARNING);
+        entry(list, Icons.KEYBOARD, "キーボード", "数字の段・キーの高さ・振動と音・使い方", KEYBOARD);
+        int t = Math.min(Prefs.number(this, Prefs.THEME, 0), Theme.LABELS.length - 1);
+        entry(list, Icons.PALETTE, "テーマ", Theme.LABELS[t], THEME);
+        entry(list, Icons.INFO, "このアプリについて", "バージョン " + version() + "・ライセンス", ABOUT);
 
-        learningSection();
-        aiSection(engine);
-
-        // Keyboard.
-        LinearLayout kb = section("キーボード");
-        kb.addView(prefToggle("数字の段", "文字キーの上に数字の段を表示します。オフのときは q〜p の長押しで数字を入力します。", Prefs.NUMBER_ROW, false));
-        kb.addView(prefToggle("キーのプレビュー", "押したキーを大きく表示します。", Prefs.KEY_PREVIEW, true));
-        kb.addView(prefToggle("振動", "キーを押したときに振動します。", Prefs.HAPTIC, true));
-        kb.addView(prefToggle("キー音", "キーを押したときに音を鳴らします。", Prefs.SOUND, false));
-        kb.addView(choice("キーの高さ", new String[] {"低め", "標準", "高め"}, Prefs.KEY_HEIGHT, 1));
-        kb.addView(choice("句読点キーの幅", new String[] {"細め", "標準", "広め"}, Prefs.PUNCTUATION_WIDTH, 1));
-        kb.addView(choice("テーマ", Theme.LABELS, Prefs.THEME, 0));
-
-        box.addView(text("設定はキーボードを次に表示したときに反映されます。", 13, theme.subText));
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(theme.background);
-        scroll.addView(box);
-        // Below the status bar and above the navigation bar and the keyboard.
-        scroll.setOnApplyWindowInsetsListener((v, insets) -> {
-            android.graphics.Insets bars = insets.getInsets(
-                    android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
-            // The status bar area stays clear while scrolling.
-            v.setPadding(0, bars.top, 0, 0);
-            box.setPadding(dp(16), dp(24), dp(16), dp(32) + bars.bottom);
-            return android.view.WindowInsets.CONSUMED;
-        });
-        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
-                | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        setContentView(scroll);
+        TextView note = text("設定はキーボードを次に表示したときに反映されます。", 13, theme.subText);
+        note.setPadding(dp(4), dp(16), dp(4), 0);
+        box.addView(note);
     }
+
+    private void conversionPage() {
+        header("変換");
+        LinearLayout input = card("入力中");
+        engineToggle(input, "live_conversion");
+        engineToggle(input, "suggestions");
+        LinearLayout english = card("英単語");
+        engineToggle(english, "english_words");
+        engineToggle(english, "english_katakana");
+        engineToggle(english, "shift_one_word");
+        LinearLayout extra = card("候補に出すもの");
+        engineToggle(extra, "dates");
+        engineToggle(extra, "emoji");
+        engineToggle(extra, "calculator");
+    }
+
+    private void aiPage() {
+        header("AI 変換");
+        aiSection();
+    }
+
+    private void learningPage() {
+        header("学習とプライバシー");
+        LinearLayout learn = card("学習");
+        engineToggle(learn, "learning");
+        engineToggle(learn, "private_fields");
+        learningSection();
+    }
+
+    private void keyboardPage() {
+        header("キーボード");
+        LinearLayout layout = card("レイアウト");
+        layout.addView(prefToggle("数字の段",
+                "文字キーの上に数字の段を表示します。オフのときは q〜p の長押しで数字を入力します。",
+                Prefs.NUMBER_ROW, false));
+        layout.addView(choice("キーの高さ", new String[] {"低め", "標準", "高め"}, Prefs.KEY_HEIGHT, 1));
+        layout.addView(choice("句読点キーの幅", new String[] {"細め", "標準", "広め"}, Prefs.PUNCTUATION_WIDTH, 1));
+        LinearLayout feedback = card("押したときの反応");
+        feedback.addView(prefToggle("キーのプレビュー", "押したキーを大きく表示します。", Prefs.KEY_PREVIEW, true));
+        feedback.addView(prefToggle("振動", "キーを押したときに振動します。", Prefs.HAPTIC, true));
+        feedback.addView(prefToggle("キー音", "キーを押したときに音を鳴らします。", Prefs.SOUND, false));
+        LinearLayout help = card("使い方");
+        for (String tip : new String[] {
+            "Shift で始めた英字は英単語になり、日本語が続くと日本語入力に戻ります。",
+            "地球儀のキーで、英字の直接入力と切り替えます。",
+            "スペースキーを左右になぞると、カーソルが動きます。",
+            "候補バーの右の矢印で、すべての候補を一覧できます。",
+            "キーを押したまま次のキーを押しても、両方とも入力されます。",
+        }) {
+            TextView line = text("・" + tip, 14, theme.text);
+            line.setPadding(0, dp(4), 0, dp(4));
+            help.addView(line);
+        }
+    }
+
+    private void themePage() {
+        header("テーマ");
+        int current = Prefs.number(this, Prefs.THEME, 0);
+        LinearLayout row = null;
+        for (int i = 0; i < Theme.LABELS.length; i++) {
+            if (i % 2 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                box.addView(row);
+            }
+            row.addView(themeTile(i, i == current),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        if (Theme.LABELS.length % 2 == 1 && row != null) {
+            row.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
+        }
+        TextView note = text("Material 3 のテーマは、Android 12 以降では壁紙の色に合わせます。", 13, theme.subText);
+        note.setPadding(dp(4), dp(12), dp(4), 0);
+        box.addView(note);
+    }
+
+    /** Theme `index` previewed as a tiny keyboard, with its name. */
+    private View themeTile(int index, boolean selected) {
+        Theme t = Theme.of(this, index);
+        float d = getResources().getDisplayMetrics().density;
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setPadding(dp(6), dp(6), dp(6), dp(10));
+        View preview = new View(this) {
+            private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final RectF r = new RectF();
+
+            @Override
+            protected void onDraw(Canvas c) {
+                float w = getWidth();
+                float h = getHeight();
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(t.background);
+                r.set(0, 0, w, h);
+                c.drawRoundRect(r, 14 * d, 14 * d, paint);
+                float pad = 9 * d;
+                float gap = 4 * d;
+                float rowH = (h - 2 * pad - 2 * gap) / 3;
+                float rad = Math.min(t.radius, rowH / d / 2) * d * 0.7f;
+                for (int y = 0; y < 3; y++) {
+                    int n = y == 2 ? 3 : 5;
+                    float keyW = (w - 2 * pad - (n - 1) * gap) / n;
+                    for (int x = 0; x < n; x++) {
+                        float left = pad + x * (keyW + gap);
+                        float top = pad + y * (rowH + gap);
+                        int color = t.key;
+                        if (y == 2 && x == 0) color = t.specialKey;
+                        if (y == 2 && x == 2) color = t.accent;
+                        paint.setColor(color);
+                        r.set(left, top, left + keyW, top + rowH);
+                        c.drawRoundRect(r, rad, rad, paint);
+                        if (y < 2) {
+                            paint.setColor(t.text);
+                            c.drawCircle(r.centerX(), r.centerY(), 1.6f * d, paint);
+                        }
+                    }
+                }
+                if (selected) {
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(3 * d);
+                    paint.setColor(theme.accent);
+                    r.set(1.5f * d, 1.5f * d, w - 1.5f * d, h - 1.5f * d);
+                    c.drawRoundRect(r, 13 * d, 13 * d, paint);
+                }
+            }
+        };
+        tile.addView(preview, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92)));
+        TextView name = text((selected ? "✓ " : "") + Theme.LABELS[index], 13,
+                selected ? theme.accent : theme.text);
+        name.setGravity(Gravity.CENTER);
+        name.setPadding(0, dp(6), 0, 0);
+        if (selected) name.setTypeface(Typeface.DEFAULT_BOLD);
+        tile.addView(name);
+        tile.setContentDescription(Theme.LABELS[index]);
+        tile.setOnClickListener(v -> {
+            if (selected) return;
+            Prefs.keyboard(this).edit().putInt(Prefs.THEME, index).apply();
+            recreate();
+        });
+        return tile;
+    }
+
+    private void aboutPage() {
+        header("このアプリについて");
+        LinearLayout app = card(null);
+        TextView name = text("Sweet IME " + version(), 18, theme.text);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        app.addView(name);
+        TextView desc = text("辞書と AI で変換する、オープンソースの日本語入力です。", 14, theme.subText);
+        desc.setPadding(0, dp(4), 0, dp(12));
+        app.addView(desc);
+        Button source = button("ソースコード(GitHub)");
+        source.setOnClickListener(v -> open("https://github.com/frost-1256/sweet-ime"));
+        app.addView(source);
+        Button releases = tonalButton("最新のリリース");
+        releases.setOnClickListener(v -> open("https://github.com/frost-1256/sweet-ime/releases/latest"));
+        app.addView(releases);
+        LinearLayout lic = card("ライセンス");
+        for (String[] l : new String[][] {
+            {"プログラム", "MIT License"},
+            {"変換辞書", "Mozc のオープンソース辞書から作成。含まれる IPAdic と沖縄辞書は、それぞれのライセンスに従います。"},
+            {"英単語リスト", "SCOWL / ESDB(Kevin Atkinson)から作成。"},
+            {"AI モデル(別途ダウンロード)", "zenz(作者: Miwa Keita)、CC BY-SA 4.0。アプリには含まれていません。"},
+        }) {
+            TextView h = text(l[0], 15, theme.text);
+            h.setPadding(0, dp(8), 0, 0);
+            lic.addView(h);
+            lic.addView(text(l[1], 13, theme.subText));
+        }
+    }
+
+    private void open(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, url, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private String version() {
+        try {
+            String v = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            return v != null ? v : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void updateSummaries() {
+        if (aiSummary != null) {
+            aiSummary.setText(!zenzFile().exists() ? "モデル未インストール"
+                    : (engine.get("neural") ? "オン・" : "オフ・") + modelName());
+        }
+        if (learningSummary != null) {
+            learningSummary.setText((engine.get("learning") ? "学習オン" : "学習オフ")
+                    + "・覚えた単語 " + Native.learnedCount(historyFile()) + " 件");
+        }
+    }
+
+    private String modelName() {
+        try {
+            String n = new String(Files.readAllBytes(zenzNameFile().toPath()), StandardCharsets.UTF_8).trim();
+            return n.isEmpty() ? "モデルあり" : n.substring(n.indexOf('/') + 1);
+        } catch (IOException e) {
+            return "モデルあり";
+        }
+    }
+
+    // ---- Learning ----
 
     private TextView learnedStatus;
 
@@ -162,25 +470,26 @@ public final class SettingsActivity extends Activity {
 
     /** The conversion history: how much it holds, and ways to forget it. */
     private void learningSection() {
-        LinearLayout box = section("学習データ");
-        learnedStatus = text("", 15, theme.text);
-        learnedStatus.setPadding(0, dp(4), 0, dp(8));
-        box.addView(learnedStatus);
-        Button hour = button("直近 1 時間の学習を消す");
+        LinearLayout data = card("学習データ");
+        learnedStatus = text("", 16, theme.text);
+        learnedStatus.setPadding(0, dp(4), 0, dp(10));
+        data.addView(learnedStatus);
+        Button hour = tonalButton("直近 1 時間の学習を消す");
         hour.setOnClickListener(v -> forget(3600, "直近 1 時間"));
-        box.addView(hour);
-        Button day = button("今日(24 時間)の学習を消す");
+        data.addView(hour);
+        Button day = tonalButton("今日(24 時間)の学習を消す");
         day.setOnClickListener(v -> forget(24 * 3600, "直近 24 時間"));
-        box.addView(day);
+        data.addView(day);
         Button all = button("すべて消去");
         all.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
                 .setTitle("学習データをすべて消去しますか?")
                 .setMessage("覚えた変換をすべて忘れます。元に戻せません。")
-                .setPositiveButton("消去", (d, w) -> forget(0, null))
+                .setPositiveButton("消去", (dialog, w) -> forget(0, null))
                 .setNegativeButton("キャンセル", null)
                 .show());
-        box.addView(all);
-        box.addView(text("うっかり覚えさせた変換を取り消せます。", 13, theme.subText));
+        data.addView(all);
+        data.addView(text("うっかり覚えさせた変換を取り消せます。学習データはこの端末の中だけに保存されます。",
+                13, theme.subText));
         updateLearned();
     }
 
@@ -197,6 +506,8 @@ public final class SettingsActivity extends Activity {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
         updateLearned();
     }
+
+    // ---- AI conversion ----
 
     /** zenz models offered for download: Hugging Face id and label. */
     private static final String[][] MODELS = {
@@ -218,26 +529,21 @@ public final class SettingsActivity extends Activity {
     }
 
     /** AI conversion: the switch and the model download. */
-    private void aiSection(Prefs.Engine engine) {
-        LinearLayout ai = section("AI 変換");
+    private void aiSection() {
+        LinearLayout ai = card(null);
         ai.addView(toggle("AI 変換を使う",
-                "文脈に合わせてニューラル言語モデル(zenz)で変換候補を選び直します。モデルのダウンロードが必要です。",
-                engine.get("neural"), on -> {
-                    engine.set("neural", on);
-                    try {
-                        engine.save();
-                    } catch (IOException e) {
-                        Toast.makeText(this, "保存できませんでした: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                }));
-        aiStatus = text("", 15, theme.text);
-        aiStatus.setPadding(0, dp(8), 0, dp(8));
-        ai.addView(aiStatus);
+                "文脈に合わせて、ニューラル言語モデル(zenz)で変換候補を選び直します。モデルのダウンロードが必要です。",
+                engine.get("neural"), on -> saveEngine("neural", on)));
+        LinearLayout model = card("モデル");
+        aiStatus = text("", 16, theme.text);
+        aiStatus.setPadding(0, dp(4), 0, dp(8));
+        model.addView(aiStatus);
         RadioGroup group = new RadioGroup(this);
         for (int i = 0; i < MODELS.length; i++) {
             RadioButton rb = new RadioButton(this);
             rb.setText(MODELS[i][1]);
             rb.setTextColor(theme.text);
+            rb.setButtonTintList(ColorStateList.valueOf(theme.accent));
             rb.setId(View.generateViewId());
             group.addView(rb);
             final int value = i;
@@ -246,11 +552,13 @@ public final class SettingsActivity extends Activity {
                 if (checked) aiModel = value;
             });
         }
-        ai.addView(group);
+        model.addView(group);
         aiDownload = button("モデルをダウンロード");
         aiDownload.setOnClickListener(v -> startDownload(MODELS[aiModel][0]));
-        ai.addView(aiDownload);
-        aiRemove = button("モデルを削除");
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) aiDownload.getLayoutParams();
+        lp.topMargin = dp(8);
+        model.addView(aiDownload);
+        aiRemove = tonalButton("モデルを削除");
         aiRemove.setOnClickListener(v -> {
             if (!zenzFile().delete() && zenzFile().exists()) {
                 Toast.makeText(this, "削除できませんでした", Toast.LENGTH_LONG).show();
@@ -258,9 +566,9 @@ public final class SettingsActivity extends Activity {
             zenzNameFile().delete();
             updateAi(null);
         });
-        ai.addView(aiRemove);
-        ai.addView(text("zenz モデル(作者: Miwa Keita、ライセンス: CC BY-SA 4.0)を Hugging Face から"
-                + "ダウンロードして、この端末で変換します。モデルはアプリに含まれていません。"
+        model.addView(aiRemove);
+        model.addView(text("zenz モデル(作者: Miwa Keita、ライセンス: CC BY-SA 4.0)を Hugging Face から"
+                + "ダウンロードして、この端末の中で変換します。モデルはアプリに含まれていません。"
                 + "変換が正確になる代わりに、電池と処理時間を使います。", 13, theme.subText));
         updateAi(null);
     }
@@ -269,22 +577,16 @@ public final class SettingsActivity extends Activity {
     private void updateAi(String progress) {
         if (aiStatus == null) return;
         File f = zenzFile();
-        String name = "";
-        try {
-            name = new String(Files.readAllBytes(zenzNameFile().toPath()), StandardCharsets.UTF_8).trim();
-        } catch (IOException ignored) {
-            // Unknown model name.
-        }
         if (progress != null) {
             aiStatus.setText(progress);
         } else if (f.exists()) {
-            String label = name.isEmpty() ? "" : "(" + name.substring(name.indexOf('/') + 1) + ")";
-            aiStatus.setText("✓ モデルをインストール済み" + label + " · " + (f.length() >> 20) + " MB");
+            aiStatus.setText("✓ " + modelName() + " をインストール済み · " + (f.length() >> 20) + " MB");
         } else {
-            aiStatus.setText("モデルはまだありません。");
+            aiStatus.setText("モデルはまだありません。下から選んでダウンロードしてください。");
         }
         aiDownload.setEnabled(!downloading);
         aiDownload.setAlpha(downloading ? 0.5f : 1f);
+        aiDownload.setText(f.exists() ? "選んだモデルに入れ替える" : "モデルをダウンロード");
         aiRemove.setVisibility(f.exists() && !downloading ? View.VISIBLE : View.GONE);
     }
 
@@ -304,6 +606,9 @@ public final class SettingsActivity extends Activity {
                 runOnUiThread(() -> updateAi("モデルを変換しています…"));
                 error = Native.packZenz(dir.getAbsolutePath(), zenzFile().getAbsolutePath());
                 if (error == null) Files.write(zenzNameFile().toPath(), model.getBytes(StandardCharsets.UTF_8));
+            } catch (java.net.UnknownHostException e) {
+                error = "サーバーに接続できません。インターネット接続と、このアプリのネットワークアクセスが"
+                        + "許可されているかを確認してください。";
             } catch (Exception e) {
                 error = e.getMessage() != null ? e.getMessage() : e.toString();
             } finally {
@@ -317,6 +622,7 @@ public final class SettingsActivity extends Activity {
             runOnUiThread(() -> {
                 downloading = false;
                 updateAi(null);
+                updateSummaries();
                 Toast.makeText(this, failed == null
                         ? "AI 変換の準備ができました。キーボードを次に表示したときから使われます。"
                         : "ダウンロードできませんでした: " + failed, Toast.LENGTH_LONG).show();
@@ -355,6 +661,8 @@ public final class SettingsActivity extends Activity {
         }
     }
 
+    // ---- Setup state ----
+
     private void updateStatus() {
         if (status == null) return;
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -367,7 +675,14 @@ public final class SettingsActivity extends Activity {
         status.setText(selected ? "✓ Sweet IME を使っています"
                 : enabled ? "Sweet IME は有効です。「キーボードを切り替える」で選んでください。"
                 : "まず「キーボードを有効にする」で Sweet IME をオンにしてください。");
+        // Only the next step stands out; switching stays available.
+        enable.setVisibility(enabled ? View.GONE : View.VISIBLE);
+        pick.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        pick.setBackground(pill(selected ? theme.specialKey : theme.accent));
+        pick.setTextColor(selected ? theme.text : theme.onAccent);
     }
+
+    // ---- Building blocks ----
 
     private TextView text(String s, int sp, int color) {
         TextView t = new TextView(this);
@@ -377,56 +692,178 @@ public final class SettingsActivity extends Activity {
         return t;
     }
 
+    private GradientDrawable pill(int color) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(color);
+        bg.setCornerRadius(dp(22));
+        return bg;
+    }
+
     private Button button(String label) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(theme.onAccent);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(theme.accent);
-        bg.setCornerRadius(dp(22));
-        b.setBackground(bg);
+        b.setBackground(pill(theme.accent));
+        b.setStateListAnimator(null);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
         lp.bottomMargin = dp(8);
         b.setLayoutParams(lp);
         return b;
     }
 
-    /** A titled card added to the page; returns its body. */
-    private LinearLayout section(String title) {
-        TextView t = text(title, 14, theme.accent);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setPadding(dp(4), dp(24), 0, dp(8));
-        box.addView(t);
+    /** A quieter button for secondary actions. */
+    private Button tonalButton(String label) {
+        Button b = button(label);
+        b.setTextColor(theme.text);
+        b.setBackground(pill(theme.specialKey));
+        return b;
+    }
+
+    /** A card added to the page, under `title` if given; returns its body. */
+    private LinearLayout card(String title) {
+        if (title != null) {
+            TextView t = text(title, 14, theme.accent);
+            t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setPadding(dp(4), dp(20), 0, dp(8));
+            box.addView(t);
+        }
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(12), dp(16), dp(12));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(theme.key);
-        bg.setCornerRadius(dp(16));
+        bg.setCornerRadius(dp(20));
         card.setBackground(bg);
-        box.addView(card);
+        card.setClipToOutline(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        if (title == null) lp.topMargin = dp(16);
+        box.addView(card, lp);
         return card;
+    }
+
+    /** A category page's top bar: back and the title. */
+    private void header(String title) {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(0, dp(8), 0, 0);
+        View back = icon(Icons.BACK, theme.text, 24);
+        back.setContentDescription("戻る");
+        back.setOnClickListener(v -> show(HOME));
+        back.setBackground(new RippleDrawable(ColorStateList.valueOf(theme.pressed), null, null));
+        bar.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        TextView t = text(title, 24, theme.text);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setPadding(dp(8), 0, 0, 0);
+        bar.addView(t);
+        box.addView(bar);
+    }
+
+    /** A row opening category `target`; returns its summary line. */
+    private TextView entry(LinearLayout list, int iconId, String title, String summary, String target) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(16), dp(10), dp(12), dp(10));
+        row.setBackground(ripple());
+        View ic = icon(iconId, theme.accent, 22);
+        ic.setBackground(roundRect(theme.specialKey, 14));
+        row.addView(ic, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setPadding(dp(16), 0, dp(8), 0);
+        texts.addView(text(title, 16, theme.text));
+        TextView sub = text(summary, 13, theme.subText);
+        texts.addView(sub);
+        row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(icon(Icons.RIGHT, theme.subText, 20), new LinearLayout.LayoutParams(dp(24), dp(24)));
+        row.setOnClickListener(v -> show(target));
+        list.addView(row);
+        return sub;
+    }
+
+    private GradientDrawable roundRect(int color, int radiusDp) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(color);
+        bg.setCornerRadius(dp(radiusDp));
+        return bg;
+    }
+
+    /** A view drawing one of the line icons, centered. */
+    private View icon(int id, int color, int sizeDp) {
+        Icons icons = new Icons();
+        float size = dp(sizeDp);
+        return new View(this) {
+            private final RectF r = new RectF();
+
+            @Override
+            protected void onDraw(Canvas c) {
+                r.set(0, 0, getWidth(), getHeight());
+                icons.draw(c, id, r, size, color);
+            }
+        };
+    }
+
+    private Drawable ripple() {
+        return new RippleDrawable(ColorStateList.valueOf(theme.pressed), null, new ColorDrawable(0xffffffff));
     }
 
     private interface OnToggle {
         void changed(boolean on);
     }
 
+    /** A switch for engine option `key`, described in Prefs.Engine.SWITCHES. */
+    private void engineToggle(LinearLayout parent, String key) {
+        for (String[] sw : Prefs.Engine.SWITCHES) {
+            if (!sw[0].equals(key)) continue;
+            parent.addView(toggle(sw[1], sw[2], engine.get(key), on -> saveEngine(key, on)));
+            return;
+        }
+        throw new IllegalArgumentException("no engine switch " + key);
+    }
+
+    private void saveEngine(String key, boolean on) {
+        engine.set(key, on);
+        try {
+            engine.save();
+        } catch (IOException e) {
+            Toast.makeText(this, "保存できませんでした: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
     private View toggle(String title, String desc, boolean on, OnToggle onToggle) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(8), 0, dp(8));
+        row.setPadding(0, dp(10), 0, dp(10));
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setPadding(0, 0, dp(12), 0);
         texts.addView(text(title, 16, theme.text));
         texts.addView(text(desc, 13, theme.subText));
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Switch sw = new Switch(this);
         sw.setChecked(on);
-        sw.setOnCheckedChangeListener((b, checked) -> onToggle.changed(checked));
+        int[][] states = {{android.R.attr.state_checked}, {}};
+        // Material 3 style: a solid pill track and a round thumb.
+        GradientDrawable track = new GradientDrawable();
+        track.setCornerRadius(dp(16));
+        track.setSize(dp(52), dp(32));
+        track.setColor(new ColorStateList(states, new int[] {theme.accent, theme.specialKey}));
+        GradientDrawable knob = new GradientDrawable();
+        knob.setShape(GradientDrawable.OVAL);
+        knob.setSize(dp(22), dp(22));
+        knob.setColor(new ColorStateList(states, new int[] {theme.onAccent, theme.subText}));
+        sw.setTrackDrawable(track);
+        sw.setThumbDrawable(new android.graphics.drawable.InsetDrawable(knob, dp(5)));
+        sw.setShowText(false);
+        sw.setOnCheckedChangeListener((b, checked) -> {
+            onToggle.changed(checked);
+            updateSummaries();
+        });
         row.addView(sw);
         row.setOnClickListener(v -> sw.toggle());
         return row;
@@ -440,24 +877,22 @@ public final class SettingsActivity extends Activity {
     private View choice(String title, String[] labels, String key, int def) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(0, dp(8), 0, dp(8));
+        col.setPadding(0, dp(10), 0, dp(6));
         col.addView(text(title, 16, theme.text));
         RadioGroup group = new RadioGroup(this);
-        // Long lists (the themes) stack; short ones fit on one line.
-        group.setOrientation(labels.length > 3 ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
+        group.setOrientation(RadioGroup.HORIZONTAL);
         int current = Prefs.number(this, key, def);
         for (int i = 0; i < labels.length; i++) {
             RadioButton rb = new RadioButton(this);
             rb.setText(labels[i]);
             rb.setTextColor(theme.text);
+            rb.setButtonTintList(ColorStateList.valueOf(theme.accent));
             rb.setId(View.generateViewId());
             final int value = i;
-            group.addView(rb);
+            group.addView(rb, new RadioGroup.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             if (i == current) rb.setChecked(true);
             rb.setOnCheckedChangeListener((b, checked) -> {
-                if (!checked) return;
-                Prefs.keyboard(this).edit().putInt(key, value).apply();
-                if (key.equals(Prefs.THEME)) recreate();
+                if (checked) Prefs.keyboard(this).edit().putInt(key, value).apply();
             });
         }
         col.addView(group);

@@ -27,6 +27,13 @@ final class Icons {
     static final int CLIPBOARD = 15;
     static final int EXPAND = 16;
     static final int COLLAPSE = 17;
+    /** Settings pages: conversion, AI, learning, keyboard, theme, about. */
+    static final int CONVERT = 18;
+    static final int SPARKLE = 19;
+    static final int HISTORY = 20;
+    static final int KEYBOARD = 21;
+    static final int PALETTE = 22;
+    static final int INFO = 23;
 
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -158,6 +165,51 @@ final class Icons {
             case SETTINGS:
                 gear(c);
                 break;
+            case CONVERT:
+                c.drawRoundRect(3, 3, 21, 21, 4, 4, stroke);
+                fill.setTextSize(12.5f);
+                fill.setTextAlign(Paint.Align.CENTER);
+                c.drawText("あ", 12, 16.5f, fill);
+                break;
+            case SPARKLE:
+                sparkle(10, 13, 7.5f);
+                sparkle(18.5f, 5.5f, 3.5f);
+                c.drawPath(path, stroke);
+                break;
+            case HISTORY:
+                c.drawArc(3.5f, 3.5f, 20.5f, 20.5f, 200, 290, false, stroke);
+                arrowHead(c, 4.3f, 9.2f, -1);
+                c.drawLine(12, 7.5f, 12, 12, stroke);
+                c.drawLine(12, 12, 15.5f, 14.5f, stroke);
+                break;
+            case KEYBOARD:
+                c.drawRoundRect(2.5f, 5.5f, 21.5f, 18.5f, 2.5f, 2.5f, stroke);
+                for (int i = 0; i < 4; i++) {
+                    c.drawCircle(6.5f + i * 3.7f, 9.5f, 0.9f, fill);
+                    c.drawCircle(6.5f + i * 3.7f, 12.3f, 0.9f, fill);
+                }
+                c.drawLine(8, 15.3f, 16, 15.3f, stroke);
+                break;
+            case PALETTE:
+                path.moveTo(12, 3);
+                path.cubicTo(6.5f, 3, 3, 7, 3, 12);
+                path.cubicTo(3, 17, 7, 21, 12, 21);
+                path.cubicTo(13.5f, 21, 14, 20, 13.3f, 18.8f);
+                path.cubicTo(12.5f, 17.3f, 13.5f, 15.5f, 15.3f, 15.5f);
+                path.lineTo(17, 15.5f);
+                path.cubicTo(19.5f, 15.5f, 21, 13.8f, 21, 11.5f);
+                path.cubicTo(21, 6.8f, 17, 3, 12, 3);
+                c.drawPath(path, stroke);
+                c.drawCircle(7.5f, 11, 1.3f, fill);
+                c.drawCircle(10, 7, 1.3f, fill);
+                c.drawCircle(14.5f, 7, 1.3f, fill);
+                c.drawCircle(17, 10.5f, 1.3f, fill);
+                break;
+            case INFO:
+                c.drawCircle(12, 12, 9, stroke);
+                c.drawLine(12, 11, 12, 16.5f, stroke);
+                c.drawCircle(12, 7.6f, 1.1f, fill);
+                break;
             default:
                 break;
         }
@@ -171,6 +223,17 @@ final class Icons {
         p.lineTo(x, y);
         p.lineTo(x - 5 * dir, y + 5);
         c.drawPath(p, stroke);
+    }
+
+    /** Adds a four-pointed star centered at (x, y) to the path. */
+    private void sparkle(float x, float y, float r) {
+        float k = r * 0.22f;
+        path.moveTo(x, y - r);
+        path.quadTo(x + k, y - k, x + r, y);
+        path.quadTo(x + k, y + k, x, y + r);
+        path.quadTo(x - k, y + k, x - r, y);
+        path.quadTo(x - k, y - k, x, y - r);
+        path.close();
     }
 
     /** A gear with eight teeth and a hole. */
