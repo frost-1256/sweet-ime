@@ -353,7 +353,7 @@ final class KeyboardView extends View {
         // Only our own area: the key preview draws outside it, unclipped.
         keyPaint.setColor(theme.background);
         canvas.drawRect(0, 0, getWidth(), getHeight(), keyPaint);
-        float radius = 8 * density;
+        float radius = theme.radius * density;
         for (List<KeyDef> row : rows) {
             for (KeyDef k : row) {
                 boolean on = (k.code == SHIFT && upper()) || k.code == Native.KEY_ENTER;
@@ -361,11 +361,16 @@ final class KeyboardView extends View {
                         : on ? theme.accent
                         : k.isFunction() ? theme.specialKey : theme.key;
                 // Enter and the page key are pills, as on common keyboards.
-                float r = k.code == Native.KEY_ENTER || k.code == LETTERS
-                        || (k.code == SYMBOLS && page == 0) ? k.rect.height() / 2 : radius;
-                keyPaint.setColor(theme.shadow);
-                canvas.drawRoundRect(k.rect.left, k.rect.top + density, k.rect.right,
-                        k.rect.bottom + density, r, r, keyPaint);
+                boolean pill = k.code == Native.KEY_ENTER || k.code == LETTERS
+                        || (k.code == SYMBOLS && page == 0);
+                float r = k == pressed ? theme.pressedRadius * density
+                        : pill ? k.rect.height() / 2 : radius;
+                r = Math.min(r, Math.min(k.rect.width(), k.rect.height()) / 2);
+                if (theme.shadow != 0) {
+                    keyPaint.setColor(theme.shadow);
+                    canvas.drawRoundRect(k.rect.left, k.rect.top + density, k.rect.right,
+                            k.rect.bottom + density, r, r, keyPaint);
+                }
                 keyPaint.setColor(color);
                 canvas.drawRoundRect(k.rect, r, r, keyPaint);
                 if (k.hint != null) {
@@ -391,8 +396,10 @@ final class KeyboardView extends View {
                 if (label.length() > 1 && k.code == TEXT) size = 18;
                 textPaint.setTextSize(size * density);
                 textPaint.setColor(on ? theme.onAccent : theme.text);
+                textPaint.setFakeBoldText(theme.boldFunctions && k.isFunction());
                 float y = k.rect.centerY() - (textPaint.descent() + textPaint.ascent()) / 2;
                 canvas.drawText(label, k.rect.centerX(), y, textPaint);
+                textPaint.setFakeBoldText(false);
             }
         }
         // The pressed key, enlarged above it.
@@ -402,9 +409,11 @@ final class KeyboardView extends View {
             float h = r.height() * 1.15f;
             float cx = Math.max(w / 2, Math.min(getWidth() - w / 2, r.centerX()));
             RectF p = new RectF(cx - w / 2, r.top - h - 4 * density, cx + w / 2, r.top - 4 * density);
-            keyPaint.setColor(theme.shadow);
-            canvas.drawRoundRect(p.left, p.top + 2 * density, p.right, p.bottom + 2 * density,
-                    radius * 1.5f, radius * 1.5f, keyPaint);
+            if (theme.shadow != 0) {
+                keyPaint.setColor(theme.shadow);
+                canvas.drawRoundRect(p.left, p.top + 2 * density, p.right, p.bottom + 2 * density,
+                        radius * 1.5f, radius * 1.5f, keyPaint);
+            }
             keyPaint.setColor(theme.preview);
             canvas.drawRoundRect(p, radius * 1.5f, radius * 1.5f, keyPaint);
             textPaint.setTextSize(28 * density);

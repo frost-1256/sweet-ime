@@ -180,7 +180,9 @@ English input. Password, URL, email and number fields start in English.
 The layout follows common Android keyboards: long-press q–p for digits,
 **?123** for symbols and a number pad, and swipe along the space bar to
 move the caret. The app holds the conversion and keyboard settings (key
-height, number row, vibration, sound, theme).
+height, number row, vibration, sound, theme). Themes include Material 3 and
+Material 3 Expressive, which take the wallpaper colors (Material You) on
+Android 12 and later, and the desktop color themes.
 Neural reranking is not used on Android yet.
 
 ## Keys

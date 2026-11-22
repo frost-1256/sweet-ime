@@ -120,7 +120,7 @@ public final class SettingsActivity extends Activity {
         kb.addView(prefToggle("振動", "キーを押したときに振動します。", Prefs.HAPTIC, true));
         kb.addView(prefToggle("キー音", "キーを押したときに音を鳴らします。", Prefs.SOUND, false));
         kb.addView(choice("キーの高さ", new String[] {"低め", "標準", "高め"}, Prefs.KEY_HEIGHT, 1));
-        kb.addView(choice("テーマ", new String[] {"システムに合わせる", "ライト", "ダーク"}, Prefs.THEME, 0));
+        kb.addView(choice("テーマ", Theme.LABELS, Prefs.THEME, 0));
 
         box.addView(text("設定はキーボードを次に表示したときに反映されます。", 13, theme.subText));
 
@@ -227,7 +227,8 @@ public final class SettingsActivity extends Activity {
         col.setPadding(0, dp(8), 0, dp(8));
         col.addView(text(title, 16, theme.text));
         RadioGroup group = new RadioGroup(this);
-        group.setOrientation(RadioGroup.HORIZONTAL);
+        // Long lists (the themes) stack; short ones fit on one line.
+        group.setOrientation(labels.length > 3 ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
         int current = Prefs.number(this, key, def);
         for (int i = 0; i < labels.length; i++) {
             RadioButton rb = new RadioButton(this);

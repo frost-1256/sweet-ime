@@ -145,9 +145,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         return root;
     }
 
-    /** What the keyboard looks like depends on: the theme and the system's night mode. */
+    /**
+     * What the keyboard looks like depends on: the theme, the system's night
+     * mode and, for Material You, the wallpaper colors.
+     */
     private String themeKey() {
-        return Prefs.number(this, Prefs.THEME, 0) + "/" + Theme.of(this).dark;
+        Theme t = Theme.of(this);
+        return Prefs.number(this, Prefs.THEME, 0) + "/" + t.dark + "/" + t.key + "/" + t.accent;
     }
 
     private void configureKeyboard() {
