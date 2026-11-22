@@ -774,6 +774,33 @@ fn main() -> Result<()> {
         with_ctrl(false);
         check("ctrl+backspace without a commit", format!("{eaten}"), "false", &mut fails);
 
+        // 6c. Ctrl+F12 right after a commit reports it; the text stays.
+        h.clear();
+        h.type_str("kyou");
+        h.key(0x20);
+        h.key(0x0D);
+        let committed = h.text();
+        with_ctrl(true);
+        let eaten = h.key(0x7B);
+        with_ctrl(false);
+        check("report commit eaten", format!("{eaten}"), "true", &mut fails);
+        check("report commit keeps the text", h.text(), &committed, &mut fails);
+        let reports = sweet_engine::paths::reports_file()
+            .map(|p| sweet_engine::reports::load(&p).unwrap_or_default())
+            .unwrap_or_default();
+        let last = reports.last().map(|r| format!("{} -> {}", r.reading, r.text)).unwrap_or_default();
+        check("report commit saved", last, &format!("きょう -> {committed}"), &mut fails);
+        // Typing again ends the chance to report.
+        h.type_str("a");
+        h.key(0x1B);
+        h.key(0x1B);
+        h.clear();
+        // Nothing to report: the application gets Ctrl+F12.
+        with_ctrl(true);
+        let eaten = h.key(0x7B);
+        with_ctrl(false);
+        check("ctrl+f12 without a commit", format!("{eaten}"), "false", &mut fails);
+
         // 7. Hotkeys delivered as preserved keys.
         h.clear();
         let key_guid = |wanted| {

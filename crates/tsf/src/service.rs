@@ -219,18 +219,26 @@ impl TextService_Impl {
 
     /// Shows "あ" / "A" at the caret of the focused document.
     fn show_mode_indicator(&self, open: bool) {
-        let (enabled, tm, tid) = {
-            let Ok(st) = self.st.try_borrow() else { return };
-            (st.session.options.mode_indicator, st.thread_mgr.clone(), st.tid)
-        };
+        let enabled = self.st.try_borrow().is_ok_and(|st| st.session.options.mode_indicator);
         crate::debug_log!("mode badge: open={open} enabled={enabled}");
-        let Some(tm) = tm.filter(|_| enabled) else { return };
+        if enabled {
+            self.show_badge(if open { "あ" } else { "A" });
+        }
+    }
+
+    /// Shows a short `text` at the caret of the focused document.
+    fn show_badge(&self, text: &'static str) {
+        let (tm, tid) = {
+            let Ok(st) = self.st.try_borrow() else { return };
+            (st.thread_mgr.clone(), st.tid)
+        };
+        let Some(tm) = tm else { return };
         let ctx = unsafe { tm.GetFocus().and_then(|d| d.GetTop()).ok() };
         crate::debug_log!("mode badge: focus context={}", ctx.is_some());
         let this: ComObject<TextService> = self.to_object();
         let Some(ctx) = ctx else {
             if let Some((rc, owner)) = gui_caret() {
-                this.indicator_at(open, rc, owner);
+                this.indicator_at(text, rc, owner);
             }
             return;
         };
@@ -241,14 +249,14 @@ impl TextService_Impl {
             let found = doc.or_else(gui_caret);
             crate::debug_log!("mode badge: caret {found:?}");
             if let Some((rc, owner)) = found {
-                this.indicator_at(open, rc, owner);
+                this.indicator_at(text, rc, owner);
             }
             Ok(())
         });
         crate::debug_log!("mode badge: edit session {r:?}");
     }
 
-    fn indicator_at(&self, open: bool, caret: RECT, owner: Option<HWND>) {
+    fn indicator_at(&self, text: &str, caret: RECT, owner: Option<HWND>) {
         let Ok(mut st) = self.st.try_borrow_mut() else {
             crate::debug_log!("mode badge: state busy");
             return;
@@ -257,8 +265,17 @@ impl TextService_Impl {
             st.indicator = ModeIndicator::new().inspect_err(|e| crate::debug_log!("mode badge: window {e}")).ok();
         }
         if let Some(i) = &st.indicator {
-            i.show(open, caret, owner);
+            i.show(text, caret, owner);
         }
+    }
+
+    /// Stores a reported conversion and says so at the caret.
+    fn save_report(&self, report: sweet_engine::reports::Report) {
+        let saved = sweet_engine::paths::reports_file()
+            .ok_or_else(|| std::io::Error::other("no settings directory"))
+            .and_then(|p| sweet_engine::reports::add(&p, report));
+        crate::debug_log!("report saved: {saved:?}");
+        self.show_badge(if saved.is_ok() { "報告済み" } else { "報告できません" });
     }
 
     /// The taskbar mode indicator was clicked.
@@ -298,6 +315,9 @@ impl TextService_Impl {
             // Otherwise the application keeps the key (Ctrl+Backspace
             // deletes a word).
             return self.st.borrow().session.can_undo();
+        }
+        if key == sweet_engine::Key::ReportCommit {
+            return self.st.borrow().session.reportable_commit().is_some();
         }
         matches!(
             key,
@@ -668,6 +688,11 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             let ctx = pic.ok()?.clone();
             self.track_context(&ctx);
             let consumed = self.st.borrow_mut().session.handle(conv, key);
+            let report = self.st.borrow_mut().session.take_report();
+            if let Some(report) = report {
+                self.save_report(report);
+                return Ok(BOOL(1));
+            }
             if consumed {
                 if let Some(i) = &self.st.borrow().indicator {
                     i.hide();

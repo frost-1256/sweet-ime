@@ -156,6 +156,7 @@ pub const ACTIONS: &[(&str, &str, Action)] = &[
     ("half_ascii", "半角英数に変換", Action::Key(Key::ToHalfAscii)),
     ("suggest", "予測候補を選ぶ", Action::Key(Key::Tab)),
     ("undo_commit", "確定を取り消す", Action::Key(Key::UndoCommit)),
+    ("report_commit", "直前の変換を報告", Action::Key(Key::ReportCommit)),
 ];
 
 pub const WHENS: &[(&str, &str, When)] = &[
@@ -338,6 +339,12 @@ impl Default for Keymap {
                 Binding {
                     chord: Chord { vk: 0x08, ctrl: true, shift: false, alt: false },
                     action: Key(super::Key::UndoCommit),
+                    when: When::Idle,
+                },
+                // Right after committing: report the conversion.
+                Binding {
+                    chord: Chord { vk: 0x7B, ctrl: true, shift: false, alt: false },
+                    action: Key(super::Key::ReportCommit),
                     when: When::Idle,
                 },
             ],

@@ -9,6 +9,7 @@ pub mod learning;
 pub mod live;
 pub mod number;
 pub mod paths;
+pub mod reports;
 pub mod romaji;
 mod word_keys;
 pub mod session;

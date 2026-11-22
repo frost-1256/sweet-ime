@@ -320,6 +320,7 @@ public final class SettingsActivity extends Activity {
         engineToggle(learn, "learning");
         engineToggle(learn, "private_fields");
         learningSection();
+        reportsSection();
     }
 
     private void keyboardPage() {
@@ -739,6 +740,131 @@ public final class SettingsActivity extends Activity {
         }
         Prefs.keyboard(this).edit().putBoolean("asked_notifications", true).apply();
         requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+    }
+
+    // ---- Conversion reports ----
+
+    private static final String REPORTS_HEADER =
+            "# Conversions reported in Sweet IME. Check them with `sweet-cli <dict> eval <this file>`.\n";
+    private static final String ISSUE_URL = "https://github.com/frost-1256/sweet-ime/issues/new";
+    private LinearLayout reportList;
+    private Button reportSend;
+    private Button reportClear;
+
+    /** Written by the keyboard (crates/engine/src/reports.rs), one evaluation row per report. */
+    private File reportsFile() {
+        return new File(new File(getFilesDir(), "sweet-ime"), "reports.tsv");
+    }
+
+    private static String reportLine(String[] r) {
+        return "OK:\t" + r[0] + "\t\tConversion Expected\t" + r[1];
+    }
+
+    /** Reported conversions as {reading, wanted text}, oldest first. */
+    private java.util.List<String[]> loadReports() {
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        File f = reportsFile();
+        if (!f.exists()) return out;
+        try {
+            for (String line : Files.readAllLines(f.toPath(), StandardCharsets.UTF_8)) {
+                if (line.startsWith("#")) continue;
+                String[] p = line.split("\t", -1);
+                if (p.length == 5 && p[3].equals("Conversion Expected")) out.add(new String[] {p[1], p[4]});
+            }
+        } catch (IOException e) {
+            // Unreadable: shown as empty.
+        }
+        return out;
+    }
+
+    private boolean saveReports(java.util.List<String[]> reports) {
+        File f = reportsFile();
+        if (reports.isEmpty()) return !f.exists() || f.delete();
+        StringBuilder text = new StringBuilder(REPORTS_HEADER);
+        for (String[] r : reports) text.append(reportLine(r)).append('\n');
+        try {
+            Files.write(f.toPath(), text.toString().getBytes(StandardCharsets.UTF_8));
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** Conversions reported from the keyboard, and sending them as a GitHub issue. */
+    private void reportsSection() {
+        LinearLayout c = card("変換の報告");
+        TextView about = text("変換を直して確定したあと、候補バーの「報告」を押すと、読みと確定した文字が"
+                + "ここに追加されます。報告は端末の中だけに保存され、「GitHub に送る」で開く画面で"
+                + "内容を確かめて送信するまで、どこにも送られません。項目をタップすると消せます。",
+                13, theme.subText);
+        about.setPadding(0, 0, 0, dp(8));
+        c.addView(about);
+        reportList = new LinearLayout(this);
+        reportList.setOrientation(LinearLayout.VERTICAL);
+        c.addView(reportList);
+        reportSend = button("GitHub に送る");
+        reportSend.setOnClickListener(v -> sendReports());
+        c.addView(reportSend);
+        reportClear = tonalButton("すべて消す");
+        reportClear.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("報告をすべて消しますか?")
+                .setPositiveButton("消去", (dialog, w) -> {
+                    saveReports(new java.util.ArrayList<>());
+                    refreshReports();
+                })
+                .setNegativeButton("キャンセル", null)
+                .show());
+        c.addView(reportClear);
+        refreshReports();
+    }
+
+    private void refreshReports() {
+        if (reportList == null) return;
+        reportList.removeAllViews();
+        java.util.List<String[]> reports = loadReports();
+        if (reports.isEmpty()) {
+            TextView none = text("まだ報告はありません", 15, theme.subText);
+            none.setPadding(0, dp(4), 0, dp(8));
+            reportList.addView(none);
+        }
+        for (int i = 0; i < reports.size(); i++) {
+            String[] r = reports.get(i);
+            int index = i;
+            TextView row = text(r[0] + " → " + r[1], 15, theme.text);
+            row.setPadding(0, dp(8), 0, dp(8));
+            row.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                    .setTitle("この報告を消しますか?")
+                    .setMessage(r[0] + " → " + r[1])
+                    .setPositiveButton("消去", (dialog, w) -> {
+                        java.util.List<String[]> now = loadReports();
+                        if (index < now.size()) now.remove(index);
+                        saveReports(now);
+                        refreshReports();
+                    })
+                    .setNegativeButton("キャンセル", null)
+                    .show());
+            reportList.addView(row);
+        }
+        reportSend.setEnabled(!reports.isEmpty());
+        reportClear.setEnabled(!reports.isEmpty());
+    }
+
+    /** Opens a new GitHub issue with the reports; the user reviews it before submitting. */
+    private void sendReports() {
+        java.util.List<String[]> reports = loadReports();
+        if (reports.isEmpty()) return;
+        StringBuilder body = new StringBuilder("Sweet IME で報告した変換です(読み → 期待する変換)。\n\n```tsv\n");
+        for (String[] r : reports) body.append(reportLine(r)).append('\n');
+        body.append("```\n");
+        open(ISSUE_URL + "?title=" + urlEncode("変換の報告") + "&body=" + urlEncode(body.toString()));
+    }
+
+    private static String urlEncode(String s) {
+        try {
+            return java.net.URLEncoder.encode(s, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            throw new AssertionError(e);
+        }
     }
 
     // ---- Learning ----

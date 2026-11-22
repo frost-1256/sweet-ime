@@ -46,6 +46,9 @@ pub enum Key {
     /// Right after a commit: remove the committed text and edit its
     /// reading again (see [`Session::take_undo`]).
     UndoCommit,
+    /// Right after a commit: report it as the conversion wanted for its
+    /// reading (see [`Session::take_report`]).
+    ReportCommit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,6 +215,8 @@ pub struct Session {
     last_commit: Option<LastCommit>,
     /// A commit just taken back (see [`Session::take_undo`]).
     undo: Option<String>,
+    /// A commit just reported (see [`Session::take_report`]).
+    report: Option<crate::reports::Report>,
 }
 
 /// What a commit replaced, to restore it.
@@ -240,6 +245,7 @@ impl Session {
             left_context: String::new(),
             last_commit: None,
             undo: None,
+            report: None,
         }
     }
 
@@ -268,6 +274,7 @@ impl Session {
         self.conv = None;
         self.last_commit = None;
         self.undo = None;
+        self.report = None;
     }
 
     /// Commit whatever is shown (used when focus is lost).
@@ -408,6 +415,21 @@ impl Session {
             .map(|last| last.text.as_str())
     }
 
+    /// The last commit, while [`Key::ReportCommit`] would report it now.
+    /// Nothing is reported from private fields.
+    pub fn reportable_commit(&self) -> Option<&str> {
+        self.last_commit
+            .as_ref()
+            .filter(|last| !self.private && !self.is_active() && !last.kana.is_empty())
+            .map(|last| last.text.as_str())
+    }
+
+    /// The commit that [`Key::ReportCommit`] reported, for the frontend to
+    /// store (see [`crate::reports::add`]).
+    pub fn take_report(&mut self) -> Option<crate::reports::Report> {
+        self.report.take()
+    }
+
     /// Text to remove before the caret: the commit that
     /// [`Key::UndoCommit`] took back. The frontend deletes it (if the
     /// document still has it there) and shows the restored reading.
@@ -418,6 +440,14 @@ impl Session {
     /// Handles a key. Returns whether the key was consumed.
     pub fn handle(&mut self, conv: &Converter, key: Key) -> bool {
         // Only the key right after a commit can take it back.
+        if key == Key::ReportCommit {
+            let Some(last) = self.last_commit.as_ref().filter(|_| self.reportable_commit().is_some()) else {
+                return false;
+            };
+            // The commit can still be taken back after reporting it.
+            self.report = Some(crate::reports::Report { reading: last.kana.clone(), text: last.text.clone() });
+            return true;
+        }
         let last = self.last_commit.take();
         if key == Key::UndoCommit {
             let Some(last) = last.filter(|_| self.options.undo_commit && !self.is_active()) else { return false };

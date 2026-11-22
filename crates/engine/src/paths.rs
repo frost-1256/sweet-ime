@@ -45,6 +45,11 @@ pub fn history_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("history.tsv"))
 }
 
+/// Conversions the user reported (see [`crate::reports`]).
+pub fn reports_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("reports.tsv"))
+}
+
 /// Words the user registered by hand.
 pub fn user_dict_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("user_dict.tsv"))

@@ -289,6 +289,12 @@ app edits them on the アプリ page.
 
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
 
+Conversions you report are stored in `%APPDATA%\SweetIME\reports.tsv`.
+Press Ctrl+F12 right after committing a conversion you had to fix (on
+Android, tap 報告 in the candidate bar) to add its reading and text. The
+file stays on your PC; the settings app lists the reports on the 学習 page
+and opens a prefilled GitHub issue only when you press GitHub に送る.
+
 Your own words are stored in `%APPDATA%\SweetIME\user_dict.tsv`, one per
 line as `reading<TAB>word<TAB>part of speech<TAB>comment`. Mozc and Google
 Japanese Input export the same format, so their files (and Microsoft IME
@@ -312,6 +318,11 @@ to the file right away.
   Set `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
   `crates\cli\data\terms.tsv` checks technical terms, internet slang and
   numbers in context.
+- `sweet-cli data\system.dict audit [readings]` looks for Mozc costs that
+  put the wrong common noun first: it converts each reading in a few short
+  phrases and lists the ones where `SWEET_ZENZ` clearly prefers another
+  noun, with a suggested offset. Check each suggestion by hand before
+  adding it to `crates\dictc\src\cost_adjustments.tsv`.
 - `python scripts/make-icon.py` redraws the app icon in `assets/icon/`. It
   needs Pillow and the Zen Maru Gothic Black font (SIL OFL); set
   `SWEET_ICON_FONT` to the font file.

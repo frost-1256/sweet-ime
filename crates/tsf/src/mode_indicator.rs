@@ -1,4 +1,5 @@
-//! Small "あ" / "A" badge shown near the caret when the input mode changes.
+//! Small "あ" / "A" badge shown near the caret when the input mode changes,
+//! also used for short notices ("報告済み").
 //!
 //! A click-through layered popup: the bitmap is drawn once per show with
 //! GDI (text coverage) plus an anti-aliased rounded rectangle, then faded
@@ -90,8 +91,9 @@ impl ModeIndicator {
         Ok(Self { hwnd })
     }
 
-    /// Shows the badge below `caret` (screen coordinates) for a moment.
-    pub fn show(&self, open: bool, caret: RECT, owner: Option<HWND>) {
+    /// Shows `text` in the badge below `caret` (screen coordinates) for a
+    /// moment.
+    pub fn show(&self, text: &str, caret: RECT, owner: Option<HWND>) {
         let hwnd = self.hwnd;
         unsafe {
             if let Some(o) = owner {
@@ -102,6 +104,9 @@ impl ModeIndicator {
             let dpi = GetDpiForWindow(hwnd);
             let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
             let size = (SIZE_DIP * scale).round() as i32;
+            // One character fits the square; longer notices widen it.
+            let chars = text.chars().count() as f32;
+            let width = if chars <= 1.0 { size } else { (size as f32 * (0.56 * chars + 0.6)).round() as i32 };
             let gap = (GAP_DIP * scale).round() as i32;
             let pt = POINT { x: caret.left, y: caret.bottom };
             let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
@@ -110,12 +115,12 @@ impl ModeIndicator {
             } else {
                 RECT { left: i32::MIN / 2, top: i32::MIN / 2, right: i32::MAX / 2, bottom: i32::MAX / 2 }
             };
-            let x = caret.left.min(work.right - size).max(work.left);
+            let x = caret.left.min(work.right - width).max(work.left);
             let mut y = caret.bottom + gap;
             if y + size > work.bottom {
                 y = caret.top - gap - size;
             }
-            if draw(hwnd, POINT { x, y }, size, scale, if open { "あ" } else { "A" }).is_err() {
+            if draw(hwnd, POINT { x, y }, (width, size), scale, text).is_err() {
                 return;
             }
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -142,13 +147,12 @@ impl Drop for ModeIndicator {
     }
 }
 
-/// Coverage of a rounded rectangle (`size` square, radius `r`, inset by
+/// Coverage of a rounded rectangle (`w` by `h`, radius `r`, inset by
 /// `inset`) at pixel (x, y), anti-aliased over one pixel.
-fn rounded_coverage(x: i32, y: i32, size: f32, r: f32, inset: f32) -> f32 {
-    let h = size / 2.0 - inset;
+fn rounded_coverage(x: i32, y: i32, (w, h): (f32, f32), r: f32, inset: f32) -> f32 {
     let r = (r - inset).max(0.0);
-    let px = (x as f32 + 0.5 - size / 2.0).abs() - (h - r);
-    let py = (y as f32 + 0.5 - size / 2.0).abs() - (h - r);
+    let px = (x as f32 + 0.5 - w / 2.0).abs() - (w / 2.0 - inset - r);
+    let py = (y as f32 + 0.5 - h / 2.0).abs() - (h / 2.0 - inset - r);
     let outside = (px.max(0.0).powi(2) + py.max(0.0).powi(2)).sqrt();
     let d = outside + px.max(py).min(0.0) - r;
     (0.5 - d).clamp(0.0, 1.0)
@@ -156,7 +160,7 @@ fn rounded_coverage(x: i32, y: i32, size: f32, r: f32, inset: f32) -> f32 {
 
 /// Renders the badge into a premultiplied 32-bit bitmap and puts it on the
 /// layered window at `pos`.
-fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()> {
+fn draw(hwnd: HWND, pos: POINT, (width, size): (i32, i32), scale: f32, text: &str) -> Result<()> {
     let c = crate::theme_colors();
     let f = |v: sweet_engine::theme::Rgb| [v.0 as f32, v.1 as f32, v.2 as f32];
     let (bg, border, fg) = (f(c.bg), f(c.badge_border), f(c.text));
@@ -165,7 +169,7 @@ fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()>
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: size,
+                biWidth: width,
                 biHeight: -size, // top-down
                 biPlanes: 1,
                 biBitCount: 32,
@@ -191,25 +195,26 @@ fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()>
         let old_font = SelectObject(dc, HGDIOBJ(font.0));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, COLORREF(0xFF_FF_FF));
-        let mut rc = RECT { left: 0, top: 0, right: size, bottom: size };
+        let mut rc = RECT { left: 0, top: 0, right: width, bottom: size };
         let mut wtext: Vec<u16> = text.encode_utf16().collect();
         DrawTextW(dc, &mut wtext, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        let px = std::slice::from_raw_parts_mut(bits as *mut u32, (size * size) as usize);
+        let px = std::slice::from_raw_parts_mut(bits as *mut u32, (width * size) as usize);
+        let dims = (width as f32, size as f32);
         let border_w = scale.max(1.0);
         let radius = RADIUS_DIP * scale;
         for y in 0..size {
-            for x in 0..size {
-                let i = (y * size + x) as usize;
+            for x in 0..width {
+                let i = (y * width + x) as usize;
                 let p = px[i];
                 // GDI coverage is gamma-boosted, which makes light-on-dark text
                 // look bold; undo some of it.
                 let cov = ((((p >> 16) & 0xFF).max((p >> 8) & 0xFF).max(p & 0xFF)) as f32 / 255.0).powf(TEXT_GAMMA);
-                let shape = rounded_coverage(x, y, size as f32, radius, 0.0);
+                let shape = rounded_coverage(x, y, dims, radius, 0.0);
                 if shape <= 0.0 {
                     px[i] = 0;
                     continue;
                 }
-                let inner = rounded_coverage(x, y, size as f32, radius, border_w);
+                let inner = rounded_coverage(x, y, dims, radius, border_w);
                 let mut c = [0.0f32; 3];
                 for k in 0..3 {
                     let base = (bg[k] * inner + border[k] * (shape - inner)) / shape;
@@ -223,7 +228,7 @@ fn draw(hwnd: HWND, pos: POINT, size: i32, scale: f32, text: &str) -> Result<()>
             hwnd,
             None,
             Some(&pos),
-            Some(&SIZE { cx: size, cy: size }),
+            Some(&SIZE { cx: width, cy: size }),
             Some(dc),
             Some(&POINT { x: 0, y: 0 }),
             COLORREF(0),

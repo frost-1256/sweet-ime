@@ -146,5 +146,6 @@ impl App {
                 self.reload_history();
             }
         });
+        self.reports.ui(ui, &mut self.status);
     }
 }

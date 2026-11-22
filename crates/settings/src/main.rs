@@ -12,6 +12,7 @@ mod fcitx_theme;
 mod keys_page;
 mod learning_page;
 mod neural_page;
+mod reports_page;
 mod theme_page;
 mod update;
 mod update_ui;
@@ -95,6 +96,7 @@ struct App {
     keys: keys_page::KeysPage,
     apps: apps_page::AppsPage,
     dict: dict_page::DictPage,
+    reports: reports_page::ReportsSection,
     updater: update::Updater,
 }
 
@@ -130,6 +132,7 @@ impl App {
             keys: keys_page::KeysPage::new(),
             apps: apps_page::AppsPage::new(),
             dict: dict_page::DictPage::new(),
+            reports: reports_page::ReportsSection::new(),
             updater,
         };
         app.reload_history();

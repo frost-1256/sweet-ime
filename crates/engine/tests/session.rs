@@ -926,6 +926,33 @@ fn undo_commit_restores_the_reading() {
     assert!(!s.handle(&c, Key::UndoCommit));
 }
 
+#[test]
+fn report_commit_records_the_reading_and_the_text() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "kyou");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "今日");
+    assert_eq!(s.reportable_commit(), Some("今日"));
+    assert!(s.handle(&c, Key::ReportCommit));
+    let report = s.take_report().unwrap();
+    assert_eq!((report.reading.as_str(), report.text.as_str()), ("きょう", "今日"));
+    // It can still be taken back.
+    assert!(s.handle(&c, Key::UndoCommit));
+    assert_eq!(s.take_undo().as_deref(), Some("今日"));
+
+    // Only right after the commit, and not in private fields.
+    assert!(!s.handle(&c, Key::ReportCommit));
+    s.reset();
+    s.private = true;
+    type_str(&mut s, &c, "a");
+    assert!(s.handle(&c, Key::Enter));
+    assert!(s.reportable_commit().is_none());
+    assert!(!s.handle(&c, Key::ReportCommit));
+    assert!(s.take_report().is_none());
+}
+
 /// Live text after typing `typed`.
 fn live_text(c: &Converter, typed: &str) -> String {
     let mut s = Session::new();
