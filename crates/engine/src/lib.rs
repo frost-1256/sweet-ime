@@ -6,6 +6,7 @@ pub mod dict;
 pub mod english;
 pub mod keymap;
 pub mod learning;
+pub mod live;
 pub mod number;
 pub mod paths;
 pub mod romaji;

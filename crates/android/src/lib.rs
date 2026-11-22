@@ -8,10 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use jni::JNIEnv;
-use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jlong, jstring};
 use sweet_engine::{Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
+
+mod ffi;
+pub use ffi::*;
 
 /// Key codes the Java side sends for keys that are not characters.
 pub const KEY_BACKSPACE: i32 = -1;
@@ -45,19 +45,12 @@ fn wanted_zenz(neural: bool) -> Option<PathBuf> {
 }
 
 fn build(dict: &Path, zenz: Option<&Path>) -> Option<Converter> {
-    let mut conv = Dictionary::open(dict).ok().map(Converter::new)?;
-    if let Some(p) = paths::history_file() {
-        conv = conv.with_history(sweet_engine::UserHistory::with_file(p));
-    }
-    if let Some(p) = paths::user_dict_file() {
-        conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(p));
-    }
+    let mut conv = paths::with_user_data(Converter::new(Dictionary::open(dict).ok()?));
     if let Some(z) = zenz.and_then(|p| sweet_zenz::Zenz::load(p).ok()) {
         conv = conv.with_reranker(Box::new(sweet_zenz::ZenzReranker::new(z)));
     }
     let o = paths::load_options();
-    conv.configure(o.neural, o.learning);
-    conv.set_english_words(o.english_words, o.english_katakana);
+    conv.apply_options(&o);
     Some(conv)
 }
 
@@ -83,9 +76,7 @@ pub fn refresh_converter() {
     let mut slot = CONV.write().unwrap_or_else(|e| e.into_inner());
     if let Some(s) = slot.as_ref() {
         if s.zenz == zenz {
-            s.conv.configure(o.neural, o.learning);
-            s.conv
-                .set_english_words(o.english_words, o.english_katakana);
+            s.conv.apply_options(&o);
             return;
         }
     }
@@ -124,9 +115,7 @@ pub fn pack_zenz(hf_dir: &Path, out: &Path) -> Result<(), String> {
 /// a background thread for live conversion.
 pub fn refine(reading: &str, left_context: &str) -> Option<String> {
     let conv = converter()?;
-    conv.convert_best(reading, &[], left_context)
-        .first()
-        .map(|c| c.surface())
+    conv.refine_live(reading, left_context)
 }
 
 /// Points the per-user files at `files_dir` (the app's private storage)
@@ -360,256 +349,6 @@ impl Context {
         ]
         .join(&FIELD.to_string())
     }
-}
-
-// ---- JNI -----------------------------------------------------------------
-
-fn guard<T>(default: T, f: impl FnOnce() -> T) -> T {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(default)
-}
-
-fn to_string(env: &mut JNIEnv, s: &JString) -> String {
-    env.get_string(s).map(Into::into).unwrap_or_default()
-}
-
-fn to_java(env: &mut JNIEnv, s: Option<String>) -> jstring {
-    match s.and_then(|s| env.new_string(s).ok()) {
-        Some(s) => s.into_raw(),
-        None => std::ptr::null_mut(),
-    }
-}
-
-unsafe fn ctx<'a>(p: jlong) -> &'a mut Context {
-    unsafe { &mut *(p as *mut Context) }
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_init(
-    mut env: JNIEnv,
-    _: JClass,
-    dict: JString,
-    files_dir: JString,
-) -> jboolean {
-    let dict = to_string(&mut env, &dict);
-    let files = to_string(&mut env, &files_dir);
-    guard(false, || init(PathBuf::from(dict), &files)) as jboolean
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_create(_: JNIEnv, _: JClass) -> jlong {
-    guard(0, || Box::into_raw(Box::new(Context::new())) as jlong)
-}
-
-/// # Safety
-/// `p` comes from `create` and is not used afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_free(_: JNIEnv, _: JClass, p: jlong) {
-    if p != 0 {
-        drop(unsafe { Box::from_raw(p as *mut Context) });
-    }
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_key(
-    mut env: JNIEnv,
-    _: JClass,
-    p: jlong,
-    code: jint,
-) -> jstring {
-    let c = unsafe { ctx(p) };
-    let s = guard(None, || c.key(code));
-    to_java(&mut env, s)
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_select(
-    mut env: JNIEnv,
-    _: JClass,
-    p: jlong,
-    index: jint,
-) -> jstring {
-    let c = unsafe { ctx(p) };
-    let s = guard(None, || Some(c.select(index.max(0) as usize)));
-    to_java(&mut env, s)
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_commitAll(
-    mut env: JNIEnv,
-    _: JClass,
-    p: jlong,
-) -> jstring {
-    let c = unsafe { ctx(p) };
-    let s = guard(None, || Some(c.commit_all()));
-    to_java(&mut env, s)
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_reset(_: JNIEnv, _: JClass, p: jlong) {
-    let c = unsafe { ctx(p) };
-    guard((), || c.reset());
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_reloadOptions(
-    _: JNIEnv,
-    _: JClass,
-    p: jlong,
-) {
-    let c = unsafe { ctx(p) };
-    guard((), || c.reload_options());
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_converting(
-    _: JNIEnv,
-    _: JClass,
-    p: jlong,
-) -> jboolean {
-    let c = unsafe { ctx(p) };
-    guard(false, || c.converting()) as jboolean
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_setLeftContext(
-    mut env: JNIEnv,
-    _: JClass,
-    p: jlong,
-    text: JString,
-) {
-    let c = unsafe { ctx(p) };
-    let t = to_string(&mut env, &text);
-    guard((), || c.set_left_context(&t));
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_liveRequest(
-    mut env: JNIEnv,
-    _: JClass,
-    p: jlong,
-) -> jstring {
-    let c = unsafe { ctx(p) };
-    let s = guard(None, || {
-        c.live_request().map(|(r, l)| format!("{r}{FIELD}{l}"))
-    });
-    to_java(&mut env, s)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_refine(
-    mut env: JNIEnv,
-    _: JClass,
-    reading: JString,
-    left: JString,
-) -> jstring {
-    let reading = to_string(&mut env, &reading);
-    let left = to_string(&mut env, &left);
-    let s = guard(None, || refine(&reading, &left));
-    to_java(&mut env, s)
-}
-
-/// # Safety
-/// `p` is a live context.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_applyLive(
-    mut env: JNIEnv,
-    _: JClass,
-    p: jlong,
-    reading: JString,
-    surface: JString,
-) -> jstring {
-    let c = unsafe { ctx(p) };
-    let reading = to_string(&mut env, &reading);
-    let surface = to_string(&mut env, &surface);
-    let s = guard(None, || c.apply_live(&reading, &surface));
-    to_java(&mut env, s)
-}
-
-/// Returns null on success, else the error.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_packZenz(
-    mut env: JNIEnv,
-    _: JClass,
-    hf_dir: JString,
-    out: JString,
-) -> jstring {
-    let dir = to_string(&mut env, &hf_dir);
-    let out = to_string(&mut env, &out);
-    let r = guard(Err("panicked".to_string()), || {
-        pack_zenz(Path::new(&dir), Path::new(&out))
-    });
-    to_java(&mut env, r.err())
-}
-
-/// Whether the converter runs with the zenz model now.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_zenzActive(_: JNIEnv, _: JClass) -> jboolean {
-    guard(false, || {
-        refresh_converter();
-        converter().is_some_and(|c| c.has_reranker())
-    }) as jboolean
-}
-
-/// Marks the field as private (see [`Context::set_private`]).
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_io_github_sweetime_Native_setPrivate(
-    _: JNIEnv,
-    _: JClass,
-    p: jlong,
-    on: jboolean,
-) {
-    let c = unsafe { ctx(p) };
-    guard((), || c.set_private(on != 0));
-}
-
-/// How many words the user history at `path` holds.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_learnedCount(
-    mut env: JNIEnv,
-    _: JClass,
-    path: JString,
-) -> jint {
-    let path = to_string(&mut env, &path);
-    guard(0, || sweet_engine::UserHistory::with_file(path).len() as jint)
-}
-
-/// Forgets what the user history at `path` learned in the last `secs`
-/// seconds, or everything when `secs` is 0 or less. Returns how many words
-/// went, or -1 on failure. A running converter rereads the changed file.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_sweetime_Native_forgetLearned(
-    mut env: JNIEnv,
-    _: JClass,
-    path: JString,
-    secs: jlong,
-) -> jint {
-    let path = to_string(&mut env, &path);
-    guard(-1, || {
-        let mut h = sweet_engine::UserHistory::with_file(path);
-        let n = h.len();
-        let r = if secs > 0 {
-            h.forget_recent(std::time::Duration::from_secs(secs as u64))
-        } else {
-            h.clear().map(|()| n)
-        };
-        r.map_or(-1, |n| n as jint)
-    })
 }
 
 #[cfg(test)]

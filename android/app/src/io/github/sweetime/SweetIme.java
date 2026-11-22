@@ -1,8 +1,5 @@
 package io.github.sweetime;
 
-import android.content.ClipData;
-import android.content.ClipDescription;
-import android.content.ClipboardManager;
 import android.content.pm.PackageInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -24,7 +21,6 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputContentInfo;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -479,7 +475,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
-        if (pasteClipboardImage(ic) || ic.performContextMenuAction(android.R.id.paste)) {
+        if ((!privateField && ClipboardImages.pasteCurrent(this, ic, getCurrentInputEditorInfo()))
+                || ic.performContextMenuAction(android.R.id.paste)) {
             closeClipboard();
             updateKeys();
         } else {
@@ -496,52 +493,12 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         EditorInfo editor = getCurrentInputEditorInfo();
         if (ic == null || privateField) return;
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
-        ClipDescription description = new ClipDescription("image", new String[] {mime});
-        boolean accepts = false;
-        if (editor != null && editor.contentMimeTypes != null) {
-            for (String m : editor.contentMimeTypes) {
-                if (ClipDescription.compareMimeTypes(mime, m)) accepts = true;
-            }
-        }
-        if (accepts && ic.commitContent(new InputContentInfo(uri, description, null),
-                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null)) {
+        if (ClipboardImages.pasteSaved(this, ic, editor, uri, mime)) {
             closeClipboard();
             return;
         }
-        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
-        if (clipboard != null) {
-            clipboard.setPrimaryClip(new ClipData(description, new ClipData.Item(uri)));
-            if (ic.performContextMenuAction(android.R.id.paste)) {
-                closeClipboard();
-                return;
-            }
-        }
         android.widget.Toast.makeText(this, "この入力欄には画像を貼り付けられません",
                 android.widget.Toast.LENGTH_SHORT).show();
-    }
-
-    private boolean pasteClipboardImage(InputConnection ic) {
-        EditorInfo editor = getCurrentInputEditorInfo();
-        if (privateField || editor == null || editor.contentMimeTypes == null) return false;
-        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
-        if (clipboard == null) return false;
-        try {
-            ClipData clip = clipboard.getPrimaryClip();
-            if (clip == null || clip.getItemCount() == 0) return false;
-            ClipDescription description = clip.getDescription();
-            Uri uri = clip.getItemAt(0).getUri();
-            if (uri == null || !"content".equals(uri.getScheme())
-                    || !description.hasMimeType("image/*")) return false;
-            for (String mime : editor.contentMimeTypes) {
-                if (description.hasMimeType(mime)) {
-                    return ic.commitContent(new InputContentInfo(uri, description, null),
-                            InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null);
-                }
-            }
-        } catch (IllegalArgumentException | SecurityException ignored) {
-            // The editor can still try the system paste operation.
-        }
-        return false;
     }
 
     /** The action Enter performs in this field, or IME_ACTION_NONE for a new line. */

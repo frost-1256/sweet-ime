@@ -12,7 +12,6 @@ mod display_attr;
 mod edit;
 mod keys;
 mod langbar;
-mod live;
 mod mode_indicator;
 mod service;
 
@@ -71,13 +70,11 @@ pub(crate) fn converter() -> Option<&'static Converter> {
         if let Ok(p) = std::env::var("SWEET_IME_DICT") {
             candidates.insert(0, PathBuf::from(p));
         }
-        let mut conv = candidates.into_iter().find_map(|p| Dictionary::open(&p).ok()).map(Converter::new)?;
-        if let Some(p) = sweet_engine::paths::history_file() {
-            conv = conv.with_history(sweet_engine::UserHistory::with_file(p));
-        }
-        if let Some(p) = sweet_engine::paths::user_dict_file() {
-            conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(p));
-        }
+        let conv = candidates
+            .into_iter()
+            .find_map(|p| Dictionary::open(&p).ok())
+            .map(Converter::new)?;
+        let conv = sweet_engine::paths::with_user_data(conv);
         Some(match load_zenz() {
             Some(r) => conv.with_reranker(Box::new(r)),
             None => conv,
@@ -117,8 +114,7 @@ pub(crate) fn load_options() -> sweet_engine::Options {
     let o = sweet_engine::paths::load_options();
     set_theme(o.theme);
     if let Some(c) = converter() {
-        c.configure(o.neural, o.learning);
-        c.set_english_words(o.english_words, o.english_katakana);
+        c.apply_options(&o);
     }
     o
 }
@@ -144,11 +140,10 @@ pub(crate) fn theme_colors() -> sweet_engine::theme::Colors {
 /// Modification times of the settings files; a change means the settings
 /// app saved something and the service should reload.
 pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 3] {
-    let mtime = |p: Option<PathBuf>| p.and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
     [
-        mtime(sweet_engine::paths::config_file()),
-        mtime(sweet_engine::paths::keymap_file()),
-        mtime(sweet_engine::paths::apps_file()),
+        sweet_engine::paths::modified(sweet_engine::paths::config_file()),
+        sweet_engine::paths::modified(sweet_engine::paths::keymap_file()),
+        sweet_engine::paths::modified(sweet_engine::paths::apps_file()),
     ]
 }
 

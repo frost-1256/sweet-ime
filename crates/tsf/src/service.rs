@@ -2,30 +2,36 @@
 
 use std::cell::RefCell;
 
-use sweet_engine::{Keymap, Session, SpanAttr};
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+use sweet_engine::live::LiveConversionWorker;
+use sweet_engine::{Keymap, Session};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_CategoryMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_PROP_ATTRIBUTE,
-    IEnumTfDisplayAttributeInfo, ITfCategoryMgr, ITfCompartmentMgr, ITfComposition,
-    ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextComposition,
+    CLSID_TF_CategoryMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, IEnumTfDisplayAttributeInfo,
+    ITfCategoryMgr, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext, ITfContextView,
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
-    ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfInsertAtSelection, ITfKeyEventSink, ITfLangBarItem, ITfLangBarItemMgr, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
-    ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
-    ITfContextView, ITfTextLayoutSink, ITfTextLayoutSink_Impl, TfLayoutCode, TF_LC_CHANGE,
-    ITfTextInputProcessorEx_Impl, ITfThreadFocusSink, ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, TF_TMF_IMMERSIVEMODE,
-    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_MOD_ALT, TF_MOD_CONTROL, TF_MOD_SHIFT, TF_PRESERVEDKEY, TF_ANCHOR_START, TF_IAS_QUERYONLY, TF_SELECTION,
-    TF_SELECTIONSTYLE, GUID_PROP_INPUTSCOPE, ITfInputScope, InputScope, IS_PASSWORD, IS_PRIVATE,
+    ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction, ITfFunction_Impl, ITfKeyEventSink,
+    ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfLangBarItem, ITfLangBarItemMgr, ITfSource,
+    ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
+    ITfTextInputProcessorEx_Impl, ITfTextLayoutSink, ITfTextLayoutSink_Impl, ITfThreadFocusSink,
+    ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEx, TF_LC_CHANGE, TF_MOD_ALT,
+    TF_MOD_CONTROL, TF_MOD_SHIFT, TF_PRESERVEDKEY, TF_TMF_IMMERSIVEMODE, TfLayoutCode,
 };
-use windows_core::{BOOL, ComObject, GUID, IUnknown, IUnknownImpl, Interface, Ref, Result, implement};
+use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, implement};
 
 use crate::candidate_window::CandidateWindow;
 use crate::keys::{self, Input, Toggle};
-use crate::mode_indicator::ModeIndicator;
 use crate::langbar::ModeButton;
+use crate::mode_indicator::ModeIndicator;
 use crate::{GUID_ATTR_CONVERTED, GUID_ATTR_FOCUSED, GUID_ATTR_INPUT, display_attr, edit};
+
+mod document;
+
+use document::{document_caret, gui_caret, refresh_candidates, update_document};
+
+static LIVE: LiveConversionWorker = LiveConversionWorker::new();
 
 #[derive(Default)]
 struct State {
@@ -89,50 +95,6 @@ impl Drop for TextService {
     fn drop(&mut self) {
         crate::lock_module(false);
     }
-}
-
-fn utf16_len(s: &str) -> i32 {
-    s.encode_utf16().count() as i32
-}
-
-/// UTF-16 offset of byte offset `b` in `s`.
-fn u16_at(s: &str, b: usize) -> i32 {
-    utf16_len(&s[..b])
-}
-
-fn sub_range(range: &ITfRange, ec: u32, start: i32, end: i32) -> Result<ITfRange> {
-    unsafe {
-        let r = range.Clone()?;
-        r.Collapse(ec, TF_ANCHOR_START)?;
-        let mut moved = 0;
-        r.ShiftEnd(ec, end, &mut moved, std::ptr::null())?;
-        r.ShiftStart(ec, start, &mut moved, std::ptr::null())?;
-        Ok(r)
-    }
-}
-
-/// Up to 40 characters of document text immediately before `range`.
-fn read_left_context(ec: u32, range: &ITfRange) -> Option<String> {
-    unsafe {
-        let r = range.Clone().ok()?;
-        r.Collapse(ec, TF_ANCHOR_START).ok()?;
-        let mut moved = 0;
-        r.ShiftStart(ec, -(sweet_zenz::MAX_CONTEXT_CHARS as i32), &mut moved, std::ptr::null()).ok()?;
-        let mut buf = [0u16; 64];
-        let mut n = 0u32;
-        r.GetText(ec, 0, &mut buf, &mut n).ok()?;
-        Some(String::from_utf16_lossy(&buf[..n as usize]))
-    }
-}
-
-fn set_selection(ctx: &ITfContext, ec: u32, range: &ITfRange) -> Result<()> {
-    let sel = TF_SELECTION {
-        range: std::mem::ManuallyDrop::new(Some(range.clone())),
-        style: TF_SELECTIONSTYLE { ase: TF_AE_NONE, fInterimChar: BOOL(0) },
-    };
-    let r = unsafe { ctx.SetSelection(ec, &[sel.clone()]) };
-    drop(std::mem::ManuallyDrop::into_inner(sel.range));
-    r
 }
 
 impl TextService_Impl {
@@ -347,13 +309,13 @@ impl TextService_Impl {
             return;
         }
         let st = self.st.borrow();
-        let (Some((reading, left_context)), Some(w)) = (st.session.live_request(), &st.window) else { return };
+        let (Some((reading, left_context)), Some(w)) = (st.session.live_request(), &st.window)
+        else {
+            return;
+        };
         let hwnd = w.raw();
-        let r2 = reading.clone();
-        crate::live::submit(crate::live::Job {
-            reading,
-            left_context,
-            done: Box::new(move |surface| crate::candidate_window::post_live(hwnd, r2, surface)),
+        LIVE.submit(conv, reading, left_context, move |reading, surface| {
+            crate::candidate_window::post_live(hwnd, reading, surface);
         });
     }
 
@@ -439,26 +401,6 @@ impl TextService_Impl {
     }
 }
 
-fn ensure_composition(
-    this: &ComObject<TextService>,
-    st: &mut State,
-    ec: u32,
-    ctx: &ITfContext,
-) -> Result<ITfComposition> {
-    if let Some(c) = &st.composition {
-        return Ok(c.clone());
-    }
-    unsafe {
-        let ins: ITfInsertAtSelection = ctx.cast()?;
-        let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
-        let cc: ITfContextComposition = ctx.cast()?;
-        let sink: ITfCompositionSink = this.to_interface();
-        let comp = cc.StartComposition(ec, &range, &sink)?;
-        st.composition = Some(comp.clone());
-        Ok(comp)
-    }
-}
-
 /// Creates the candidate window with its handlers. The closures keep the
 /// service alive; Deactivate drops the window, which breaks the cycle.
 fn make_window(this: &ComObject<TextService>, owner: Option<HWND>) -> Option<CandidateWindow> {
@@ -473,168 +415,11 @@ fn make_window(this: &ComObject<TextService>, owner: Option<HWND>) -> Option<Can
 
 /// Whether the thread hosts an immersive (UWP / shell) application.
 fn immersive(tm: &ITfThreadMgr) -> bool {
-    unsafe { tm.cast::<ITfThreadMgrEx>().and_then(|t| t.GetActiveFlags()).is_ok_and(|f| f & TF_TMF_IMMERSIVEMODE != 0) }
-}
-
-fn update_document(this: &ComObject<TextService>, ec: u32, ctx: &ITfContext) -> Result<()> {
-    let Ok(mut st) = this.st.try_borrow_mut() else { return Ok(()) };
-    let st = &mut *st;
-    let r = update_document_inner(this, st, ec, ctx);
-    crate::set_busy(st.composition.is_some());
-    r
-}
-
-/// Removes `text` just before the caret, if it is there (the commit being
-/// taken back). Returns whether it was.
-fn delete_before_caret(ctx: &ITfContext, ec: u32, text: &str) -> Result<bool> {
-    let want: Vec<u16> = text.encode_utf16().collect();
     unsafe {
-        let ins: ITfInsertAtSelection = ctx.cast()?;
-        let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
-        range.Collapse(ec, TF_ANCHOR_START)?;
-        let mut moved = 0;
-        range.ShiftStart(ec, -(want.len() as i32), &mut moved, std::ptr::null())?;
-        let mut buf = vec![0u16; want.len() + 1];
-        let mut n = 0u32;
-        range.GetText(ec, 0, &mut buf, &mut n)?;
-        if buf[..n as usize] != want[..] {
-            return Ok(false);
-        }
-        range.SetText(ec, 0, &[])?;
-        range.Collapse(ec, TF_ANCHOR_END)?;
-        set_selection(ctx, ec, &range)?;
-        Ok(true)
+        tm.cast::<ITfThreadMgrEx>()
+            .and_then(|t| t.GetActiveFlags())
+            .is_ok_and(|f| f & TF_TMF_IMMERSIVEMODE != 0)
     }
-}
-
-/// Whether the field at the selection is a password or a private browser
-/// window (input scopes IS_PASSWORD, IS_PRIVATE).
-fn private_field(ctx: &ITfContext, ec: u32) -> bool {
-    let scopes = || -> Result<bool> {
-        unsafe {
-            let ins: ITfInsertAtSelection = ctx.cast()?;
-            let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
-            let value = ctx.GetProperty(&GUID_PROP_INPUTSCOPE)?.GetValue(ec, &range)?;
-            let scope: ITfInputScope = IUnknown::try_from(&value)?.cast()?;
-            let mut list: *mut InputScope = std::ptr::null_mut();
-            let mut n = 0u32;
-            scope.GetInputScopes(&mut list, &mut n)?;
-            if list.is_null() {
-                return Ok(false);
-            }
-            let private = std::slice::from_raw_parts(list, n as usize).iter().any(|s| *s == IS_PASSWORD || *s == IS_PRIVATE);
-            windows::Win32::System::Com::CoTaskMemFree(Some(list as *const std::ffi::c_void));
-            Ok(private)
-        }
-    };
-    scopes().unwrap_or(false)
-}
-
-fn update_document_inner(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
-    // A new composition: is this field private?
-    if st.composition.is_none() {
-        st.session.private = st.session.options.private_fields && private_field(ctx, ec);
-    }
-    if let Some(undo) = st.session.take_undo() {
-        // The caret moved or the text changed since: keep the document.
-        if st.composition.is_some() || !delete_before_caret(ctx, ec, &undo).unwrap_or(false) {
-            st.session.reset();
-        }
-    }
-    let commit = st.session.take_commit();
-    let pre = st.session.preedit();
-    unsafe {
-        let attr_prop = ctx.GetProperty(&GUID_PROP_ATTRIBUTE)?;
-        if !commit.is_empty() {
-            let comp = ensure_composition(this, st, ec, ctx)?;
-            let range = comp.GetRange()?;
-            let text: Vec<u16> = commit.encode_utf16().collect();
-            range.SetText(ec, 0, &text)?;
-            let _ = attr_prop.Clear(ec, &range);
-            range.Collapse(ec, TF_ANCHOR_END)?;
-            set_selection(ctx, ec, &range)?;
-            comp.EndComposition(ec)?;
-            st.composition = None;
-        }
-        if pre.text.is_empty() {
-            if let Some(comp) = st.composition.take() {
-                let range = comp.GetRange()?;
-                range.SetText(ec, 0, &[])?;
-                comp.EndComposition(ec)?;
-            }
-            if let Some(w) = &st.window {
-                w.hide();
-            }
-            return Ok(());
-        }
-        let comp = ensure_composition(this, st, ec, ctx)?;
-        let range = comp.GetRange()?;
-        if let Some(c) = read_left_context(ec, &range) {
-            st.session.set_left_context(&c);
-        }
-        let text: Vec<u16> = pre.text.encode_utf16().collect();
-        range.SetText(ec, 0, &text)?;
-        let _ = attr_prop.Clear(ec, &range);
-        for &(s, e, attr) in &pre.spans {
-            let r = sub_range(&range, ec, u16_at(&pre.text, s), u16_at(&pre.text, e))?;
-            let atom = match attr {
-                SpanAttr::Input => st.atoms[0],
-                SpanAttr::Converted => st.atoms[1],
-                SpanAttr::Focused => st.atoms[2],
-            };
-            let _ = attr_prop.SetValue(ec, &r, &VARIANT::from(atom));
-        }
-        let caret = u16_at(&pre.text, pre.caret);
-        let caret_range = sub_range(&range, ec, caret, caret)?;
-        set_selection(ctx, ec, &caret_range)?;
-
-        refresh_candidates(this, st, ec, ctx)?;
-    }
-    Ok(())
-}
-
-fn refresh_candidates(this: &ComObject<TextService>, st: &mut State, ec: u32, ctx: &ITfContext) -> Result<()> {
-    let (Some(list), Some(comp)) = (st.session.candidates(), &st.composition) else {
-        if let Some(w) = &st.window {
-            // While typing, predictions may come back on the next key.
-            if st.session.is_converting() { w.hide() } else { w.hide_soon() }
-        }
-        return Ok(());
-    };
-    let range = unsafe { comp.GetRange()? };
-    let pre = st.session.preedit();
-    let target = pre.spans.iter().find(|span| span.2 == SpanAttr::Focused)
-        .and_then(|&(start, end, _)| sub_range(&range, ec, u16_at(&pre.text, start), u16_at(&pre.text, end)).ok());
-    let caret = u16_at(&pre.text, pre.caret);
-    let anchor = unsafe {
-        ctx.GetActiveView().ok().and_then(|view| {
-            let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
-            let bounds = range_bounds(&view, ec, target.as_ref().unwrap_or(&range), owner)
-                .or_else(|| {
-                    let selection = sub_range(&range, ec, caret, caret).ok()?;
-                    range_bounds(&view, ec, &selection, owner)
-                });
-            bounds.map(|rc| (rc, owner))
-        }).or_else(gui_caret)
-    };
-    let Some((rc, owner)) = anchor else {
-        // The host may not have laid out the composition yet.
-        if let Some(w) = &st.window {
-            w.hide_soon();
-        }
-        return Ok(());
-    };
-    let owner = owner.or_else(|| Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
-    if st.window.is_none() {
-        st.window = make_window(this, owner);
-    }
-    if let Some(w) = &st.window {
-        if let Some(owner) = owner {
-            w.set_owner(owner);
-        }
-        w.show(&list, rc);
-    }
-    Ok(())
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
@@ -810,63 +595,6 @@ impl ITfCompartmentEventSink_Impl for TextService_Impl {
             Ok(())
         });
         Ok(())
-    }
-}
-
-/// Screen rectangle of the selection (caret) in `ctx`, and the window
-/// that shows it.
-unsafe fn document_caret(ec: u32, ctx: &ITfContext) -> Option<(RECT, Option<HWND>)> {
-    unsafe {
-        let mut sel = [TF_SELECTION::default()];
-        let mut fetched = 0u32;
-        ctx.GetSelection(ec, TF_DEFAULT_SELECTION, &mut sel, &mut fetched).ok()?;
-        if fetched == 0 {
-            return None;
-        }
-        let range = std::mem::ManuallyDrop::into_inner(std::mem::take(&mut sel[0].range))?;
-        let view = ctx.GetActiveView().ok()?;
-        let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
-        Some((range_bounds(&view, ec, &range, owner)?, owner))
-    }
-}
-
-fn range_bounds(view: &ITfContextView, ec: u32, range: &ITfRange, owner: Option<HWND>) -> Option<RECT> {
-    unsafe {
-        let mut rc = RECT::default();
-        let mut clipped = BOOL(0);
-        view.GetTextExt(ec, range, &mut rc, &mut clipped).ok()?;
-        if clipped.as_bool() || rc.bottom <= rc.top || rc.right < rc.left {
-            return None;
-        }
-        // Ignore bogus coordinates from hosts that have not laid out the text.
-        if let Some(w) = owner {
-            let mut wr = RECT::default();
-            if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(w, &mut wr).is_ok()
-                && (rc.left < wr.left - 8 || rc.left > wr.right + 8 || rc.bottom < wr.top - 8 || rc.top > wr.bottom + 8)
-            {
-                return None;
-            }
-        }
-        Some(rc)
-    }
-}
-
-/// The Win32 caret of this thread (apps without TSF text ranges).
-fn gui_caret() -> Option<(RECT, Option<HWND>)> {
-    use windows::Win32::Graphics::Gdi::ClientToScreen;
-    use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::WindowsAndMessaging::{GUITHREADINFO, GetGUIThreadInfo};
-    unsafe {
-        let mut gi = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
-        GetGUIThreadInfo(GetCurrentThreadId(), &mut gi).ok()?;
-        if gi.hwndCaret.is_invalid() {
-            return None;
-        }
-        let mut tl = POINT { x: gi.rcCaret.left, y: gi.rcCaret.top };
-        let mut br = POINT { x: gi.rcCaret.right, y: gi.rcCaret.bottom };
-        let _ = ClientToScreen(gi.hwndCaret, &mut tl);
-        let _ = ClientToScreen(gi.hwndCaret, &mut br);
-        Some((RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y }, Some(gi.hwndCaret)))
     }
 }
 

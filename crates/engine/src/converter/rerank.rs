@@ -1,0 +1,240 @@
+//! Candidate selection and memoization for neural reranking.
+
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Condvar, Mutex};
+
+use super::{Conversion, Converter};
+
+/// Picks the best whole-sentence candidate (e.g. with a neural LM).
+pub trait Reranker: Send + Sync {
+    /// How many lattice candidates to offer.
+    fn candidates(&self) -> usize {
+        5
+    }
+    /// Returns the index of the best candidate, or `None` to keep the
+    /// lattice order.
+    fn choose(&self, reading: &str, left_context: &str, candidates: &[Conversion])
+    -> Option<usize>;
+}
+
+/// How many lattice candidates per reranker slot `convert_best` draws its
+/// diverse candidates from.
+const RERANK_POOL: usize = 6;
+
+/// Words of `c` as (reading start, reading end, surface), offsets in bytes.
+fn word_spans(c: &Conversion) -> Vec<(usize, usize, &str)> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for w in c.segments.iter().flat_map(|s| &s.words) {
+        out.push((at, at + w.reading.len(), w.surface.as_str()));
+        at += w.reading.len();
+    }
+    out
+}
+
+/// Alternatives `convert_best` offers the reranker beyond its N-best.
+const RERANK_EXTRA: usize = 2;
+
+/// The reranker's candidates from the cost-ordered `pool`: the `n` best,
+/// then up to [`RERANK_EXTRA`] cheapest alternatives that differ from the
+/// best in a part of the reading none of those does. The plain N-best tends
+/// to spend every slot on one spot (機会が故障/こしょう/胡椒...) and never
+/// offer another word elsewhere (機械).
+fn diverse(pool: Vec<Conversion>, n: usize) -> Vec<Conversion> {
+    if pool.len() <= n {
+        return pool;
+    }
+    let best = word_spans(&pool[0]);
+    let region = |c: &Conversion| {
+        let diff: Vec<_> = word_spans(c)
+            .into_iter()
+            .filter(|w| !best.contains(w))
+            .collect();
+        diff.first().zip(diff.last()).map(|(a, b)| (a.0, b.1))
+    };
+    let mut regions: Vec<(usize, usize)> = pool[1..n].iter().filter_map(region).collect();
+    let mut picked: Vec<usize> = (0..n).collect();
+    for (i, c) in pool.iter().enumerate().skip(n) {
+        if picked.len() >= n + RERANK_EXTRA {
+            break;
+        }
+        let Some(r) = region(c) else { continue };
+        if !regions.iter().any(|&(a, b)| r.0 < b && a < r.1) {
+            regions.push(r);
+            picked.push(i);
+        }
+    }
+    let mut pool: Vec<Option<Conversion>> = pool.into_iter().map(Some).collect();
+    picked.into_iter().filter_map(|i| pool[i].take()).collect()
+}
+
+/// Reranker key: (reading, left context, candidate surfaces).
+type RerankKey = (String, String, Vec<String>);
+
+#[derive(Default)]
+pub(super) struct RerankState {
+    decisions: Mutex<Decisions>,
+    done: Condvar,
+}
+
+#[derive(Default)]
+struct Decisions {
+    /// Recent decisions, oldest first.
+    cache: Vec<(RerankKey, Option<usize>)>,
+    /// Runs in progress on some thread.
+    running: Vec<RerankKey>,
+}
+
+/// How long a conversion waits for another thread's identical reranker run
+/// before running it itself.
+const RERANK_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+const RERANK_CACHE: usize = 16;
+
+impl Converter {
+    pub fn with_reranker(mut self, r: Box<dyn Reranker>) -> Self {
+        self.reranker = Some(r);
+        self
+    }
+
+    /// Whether neural reranking is available and enabled.
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some() && self.rerank_on.load(Relaxed)
+    }
+
+    /// Whether a reranker is loaded at all (regardless of the switch).
+    pub fn reranker_loaded(&self) -> bool {
+        self.reranker.is_some()
+    }
+
+    /// Best conversion: lattice N-best refined by the reranker if present.
+    /// The chosen candidate is first; the rest follow in lattice order.
+    pub fn convert_best(
+        &self,
+        text: &str,
+        boundaries: &[usize],
+        left_context: &str,
+    ) -> Vec<Conversion> {
+        let n = self
+            .reranker
+            .as_ref()
+            .filter(|_| self.has_reranker())
+            .map_or(1, |r| r.candidates().max(1));
+        let mut res = if n > 1 {
+            diverse(self.convert(text, boundaries, n * RERANK_POOL), n)
+        } else {
+            self.convert(text, boundaries, 1)
+        };
+        if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
+            // Don't let the model override what the user taught us.
+            if res
+                .first()
+                .is_some_and(|c| c.learned_words() > 0 || c.user_words() > 0)
+            {
+                return res;
+            }
+            if res.len() > 1 {
+                let surfaces: Vec<String> = res.iter().map(|c| c.surface()).collect();
+                if let Some(mut i) =
+                    self.rerank
+                        .cached_choice(r.as_ref(), text, left_context, &res, surfaces)
+                {
+                    if i < res.len() {
+                        // The model reads the typed spelling, so it favors
+                        // "best" over ベスト. Keep the lattice's (and the
+                        // user's) choice between a word and its loanword.
+                        if self.katakana_on.load(Relaxed) {
+                            let key = english_key(&res[i]);
+                            i = res.iter().position(|c| english_key(c) == key).unwrap_or(i);
+                        }
+                        let c = res.remove(i);
+                        res.insert(0, c);
+                    }
+                }
+            }
+        }
+        res
+    }
+}
+
+impl RerankState {
+    /// `Reranker::choose`, memoized so that a result computed in the
+    /// background (live conversion) makes the following Space instant.
+    fn cached_choice(
+        &self,
+        r: &dyn Reranker,
+        text: &str,
+        left_context: &str,
+        res: &[Conversion],
+        surfaces: Vec<String>,
+    ) -> Option<usize> {
+        let key: RerankKey = (text.to_string(), left_context.to_string(), surfaces);
+        let mut st = self.decisions.lock().unwrap_or_else(|e| e.into_inner());
+        // The same run already in progress (the live conversion worker, when
+        // Space follows the last key): wait for it rather than run the model
+        // twice at once, which would slow both down.
+        let deadline = std::time::Instant::now() + RERANK_WAIT;
+        loop {
+            if let Some(hit) = st.cache.iter().find(|(k, _)| *k == key).map(|e| e.1) {
+                return hit;
+            }
+            let now = std::time::Instant::now();
+            if !st.running.contains(&key) || now >= deadline {
+                break;
+            }
+            st = self
+                .done
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        st.running.push(key.clone());
+        drop(st);
+        // Not holding the lock while the model runs. A panic still clears the
+        // running entry, so waiters don't stall.
+        struct Done<'a>(&'a RerankState, &'a RerankKey, Option<Option<usize>>);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                let mut st = self.0.decisions.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(pos) = st.running.iter().position(|k| k == self.1) {
+                    st.running.swap_remove(pos);
+                }
+                if let Some(choice) = self.2 {
+                    let (t, l, _) = self.1;
+                    st.cache.retain(|((ct, cl, _), _)| !(ct == t && cl == l));
+                    st.cache.push((self.1.clone(), choice));
+                    if st.cache.len() > RERANK_CACHE {
+                        st.cache.remove(0);
+                    }
+                }
+                drop(st);
+                self.0.done.notify_all();
+            }
+        }
+        let mut done = Done(self, &key, None);
+        let choice = r.choose(text, left_context, res);
+        done.2 = Some(choice);
+        choice
+    }
+}
+
+/// The surface with each listed English word spelled out, so that a word
+/// and its katakana loanword compare equal.
+fn english_key(c: &Conversion) -> String {
+    let index = crate::english::word_index();
+    let mut key = String::new();
+    for w in c.segments.iter().flat_map(|s| &s.words) {
+        match index.get(&w.reading) {
+            Some(word)
+                if w.surface.eq_ignore_ascii_case(word)
+                    || w.surface
+                        .chars()
+                        .all(|ch| ('\u{30A1}'..='\u{30FC}').contains(&ch)) =>
+            {
+                key.push_str(word)
+            }
+            _ => key.push_str(&w.surface),
+        }
+    }
+    key
+}

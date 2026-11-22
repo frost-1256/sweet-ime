@@ -50,6 +50,22 @@ pub fn user_dict_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("user_dict.tsv"))
 }
 
+/// Attaches the learning history and user dictionary in the settings directory.
+pub fn with_user_data(mut converter: crate::Converter) -> crate::Converter {
+    if let Some(path) = history_file() {
+        converter = converter.with_history(crate::UserHistory::with_file(path));
+    }
+    if let Some(path) = user_dict_file() {
+        converter = converter.with_user_dict(crate::UserDictionary::with_file(path));
+    }
+    converter
+}
+
+/// Last modification time of a user file, if available.
+pub fn modified(path: Option<PathBuf>) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path?).ok()?.modified().ok()
+}
+
 /// User-installed neural model (`zenz.swz` in [`data_dir`]).
 pub fn zenz_file() -> Option<PathBuf> {
     data_dir().map(|d| d.join("zenz.swz"))
