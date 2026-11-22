@@ -496,6 +496,18 @@ fn typo_correction_on_space_and_escape() {
 }
 
 #[test]
+fn typo_early_in_a_long_reading_is_fixed() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    // The stray "y" is far from the end, out of reach of the last keys.
+    type_str(&mut s, &c, "kakuyninnshiteokimasu");
+    assert_eq!(s.preedit().text, "かくyにんしておきます");
+    s.handle(&c, Key::Space);
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "確認しておきます");
+}
+
+#[test]
 fn live_typo_correction_uses_the_corrected_reading() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
