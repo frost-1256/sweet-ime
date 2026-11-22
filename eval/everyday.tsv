@@ -157,3 +157,4 @@ OK:	あめがやんだ		Conversion Match	雨がやんだ|雨が止んだ
 OK:	まどをあける		Conversion Expected	窓を開ける
 OK:	でんきをけす		Conversion Expected	電気を消す
 OK:	えあこんをつける		Conversion Expected	エアコンをつける
+OK:	ほかにあんある		Conversion Match	他に案ある|ほかに案ある

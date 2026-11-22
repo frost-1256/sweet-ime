@@ -159,6 +159,7 @@ fn main() -> Result<()> {
         eprintln!("{} words from SudachiDict", added.len());
         entries.extend(added);
     }
+    adjust_costs(&mut entries)?;
     let count = entries.len();
     let out = fs::File::create(&args[2])?;
     let mut w = BufWriter::new(out);
@@ -171,5 +172,27 @@ fn main() -> Result<()> {
         size as f64 / 1048576.0,
         t0.elapsed()
     );
+    Ok(())
+}
+
+/// Applies `cost_adjustments.tsv` to the entries.
+fn adjust_costs(entries: &mut [SourceEntry]) -> Result<()> {
+    for (i, line) in include_str!("cost_adjustments.tsv").lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let [reading, surface, offset] = line.split('\t').collect::<Vec<_>>()[..] else {
+            bail!("cost_adjustments.tsv:{}: expected reading, surface and offset", i + 1);
+        };
+        let offset: i32 = offset.parse().with_context(|| format!("cost_adjustments.tsv:{}: invalid offset", i + 1))?;
+        let mut found = false;
+        for e in entries.iter_mut().filter(|e| e.reading == reading && e.surface == surface) {
+            e.cost = (e.cost as i32 + offset).clamp(0, i16::MAX as i32) as i16;
+            found = true;
+        }
+        if !found {
+            bail!("cost_adjustments.tsv:{}: no entry for {reading} {surface}", i + 1);
+        }
+    }
     Ok(())
 }
