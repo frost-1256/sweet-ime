@@ -18,6 +18,8 @@ A Japanese input method written from scratch in Rust.
   `input-method-v2` (such as niri, Sway and Hyprland) and with fcitx5's
   other frontends. fcitx5 draws the candidate window, with a Sweet IME
   theme chosen in the settings app.
+- **Android** (early): an input method with a QWERTY romaji keyboard and
+  a candidate bar.
 - **Features**: live conversion, predictive suggestions (including
   mid-sentence), romaji typo correction, per-user learning, a user
   dictionary, numbers read out in kana (さんぜんえん → 三千円 / 3000円),
@@ -156,6 +158,26 @@ The key bindings file is shared with Windows. Japanese keyboard keys
 (半角/全角, 変換, 無変換, ひらがな, 英数) work the same way. fcitx5's own
 trigger key (Ctrl+Space by default) switches between Sweet IME and the
 keyboard layout.
+
+## Android
+
+`android/` holds an input method with a QWERTY romaji keyboard, built
+without Gradle by `android/build.ps1` (cargo-ndk, aapt2, javac, d8 and
+apksigner). It needs the Android SDK with `platforms;android-36`,
+`build-tools;36.0.0` and an NDK, a JDK 17 or newer, `cargo install
+cargo-ndk`, `rustup target add aarch64-linux-android`, and the dictionary
+in `dist/` or `data/`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
+```
+
+The APK (`out/SweetIME-<version>.apk`) bundles the dictionary and copies
+it to the app's storage on first use. Open **Sweet IME** to turn the
+keyboard on, then pick it with the keyboard switcher. Shift starts an
+English word as on the desktop, and the **あ** key switches to direct
+English input. Password, URL, email and number fields start in English.
+Neural reranking is not used on Android yet.
 
 ## Keys
 

@@ -664,6 +664,18 @@ impl Session {
         true
     }
 
+    /// Opens the candidate list of the focused segment while converting,
+    /// keeping the selection (touch keyboards show it at once). Returns
+    /// whether it opened.
+    pub fn open_candidates(&mut self, conv: &Converter) -> bool {
+        if self.conv.as_ref().is_none_or(|cv| cv.window) {
+            return false;
+        }
+        self.expand(conv);
+        self.conv.as_mut().unwrap().window = true;
+        true
+    }
+
     /// Whether [`Key::UndoCommit`] would restore the last commit now.
     pub fn can_undo(&self) -> bool {
         self.options.undo_commit && self.last_commit.is_some() && !self.is_active()

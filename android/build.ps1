@@ -1,0 +1,99 @@
+# Builds the Android input method APK without Gradle: the Rust library
+# with cargo-ndk, then aapt2, javac, d8, zipalign and apksigner from the
+# Android SDK. Output: out/SweetIME-<version>.apk
+#
+#   powershell -ExecutionPolicy Bypass -File android/build.ps1 [-Install]
+#
+# Needs: ANDROID_HOME (default %LOCALAPPDATA%\Android\Sdk) with
+# platforms;android-36, build-tools;36.0.0 and an NDK; a JDK 17+;
+# cargo-ndk and the aarch64-linux-android Rust target; the dictionary
+# at dist/system.dict or data/system.dict.
+
+param([switch]$Install)
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$app = Join-Path $PSScriptRoot 'app'
+$build = Join-Path $root 'target\android'
+
+$sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
+$platform = Join-Path $sdk 'platforms\android-36\android.jar'
+$tools = Join-Path $sdk 'build-tools\36.0.0'
+if (-not $env:ANDROID_NDK_HOME) {
+    $ndk = Get-ChildItem (Join-Path $sdk 'ndk') -Directory | Sort-Object Name | Select-Object -Last 1
+    if (-not $ndk) { throw "no NDK under $sdk\ndk" }
+    $env:ANDROID_NDK_HOME = $ndk.FullName
+}
+foreach ($p in @($platform, $tools)) { if (-not (Test-Path $p)) { throw "missing $p" } }
+
+$version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+$parts = $version.Split('.') | ForEach-Object { [int]$_ }
+$versionCode = $parts[0] * 10000 + $parts[1] * 100 + $parts[2]
+
+$dict = @('dist\system.dict', 'data\system.dict') | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $dict) { throw 'no system.dict in dist/ or data/' }
+
+function Invoke-Tool {
+    & $args[0] @($args | Select-Object -Skip 1)
+    if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed ($LASTEXITCODE)" }
+}
+
+if (Test-Path $build) { Remove-Item -Recurse -Force $build }
+New-Item -ItemType Directory -Force "$build\lib", "$build\assets", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
+
+Write-Host '== Rust library'
+$env:CARGO_PROFILE_RELEASE_DEBUG = '0'
+$env:CARGO_PROFILE_RELEASE_STRIP = 'symbols'
+Push-Location $root
+try { Invoke-Tool cargo ndk -t arm64-v8a -P 26 -o "$build\lib" build --locked --release -p sweet-android }
+finally { Pop-Location }
+
+Write-Host '== Resources'
+Copy-Item $dict "$build\assets\system.dict"
+Copy-Item (Join-Path $root 'assets\icon\sweet-ime-256.png') "$build\res\mipmap-xxxhdpi\ic_launcher.png"
+$aapt2 = Join-Path $tools 'aapt2.exe'
+Invoke-Tool $aapt2 compile --dir (Join-Path $app 'res') -o "$build\res-app.zip"
+Invoke-Tool $aapt2 compile --dir "$build\res" -o "$build\res-icon.zip"
+Invoke-Tool $aapt2 link -o "$build\base.apk" -I $platform `
+    --manifest (Join-Path $app 'AndroidManifest.xml') `
+    --min-sdk-version 26 --target-sdk-version 36 `
+    --version-code $versionCode --version-name $version `
+    -A "$build\assets" -0 dict `
+    --java "$build\gen" "$build\res-app.zip" "$build\res-icon.zip"
+
+Write-Host '== Java'
+$sources = @(Get-ChildItem -Recurse (Join-Path $app 'src') -Filter *.java) + @(Get-ChildItem -Recurse "$build\gen" -Filter *.java) | ForEach-Object { $_.FullName }
+Invoke-Tool javac --release 17 -encoding UTF-8 -classpath $platform -d "$build\classes" @sources
+$classes = Get-ChildItem -Recurse "$build\classes" -Filter *.class | ForEach-Object { $_.FullName }
+Invoke-Tool (Join-Path $tools 'd8.bat') --release --min-api 26 --lib $platform --output "$build\dex" @classes
+
+Write-Host '== Package'
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::Open("$build\base.apk", 'Update')
+try {
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, "$build\dex\classes.dex", 'classes.dex') | Out-Null
+    foreach ($so in Get-ChildItem -Recurse "$build\lib" -Filter *.so) {
+        $abi = $so.Directory.Name
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $so.FullName, "lib/$abi/$($so.Name)") | Out-Null
+    }
+} finally { $zip.Dispose() }
+
+Invoke-Tool (Join-Path $tools 'zipalign.exe') -f -p 4 "$build\base.apk" "$build\aligned.apk"
+
+$keystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
+if (-not (Test-Path $keystore)) {
+    New-Item -ItemType Directory -Force (Split-Path $keystore) | Out-Null
+    # The standard Android debug key (well-known password).
+    $keytool = @("$env:JAVA_HOME\bin\keytool.exe") + @(Get-ChildItem "$env:ProgramFiles\Java\*\bin\keytool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object FullName) + @('keytool') | Where-Object { $_ -eq 'keytool' -or (Test-Path $_) } | Select-Object -First 1
+    Invoke-Tool $keytool -genkeypair -keystore $keystore -storepass android -keypass android `
+        -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
+}
+$out = Join-Path $root 'out'
+New-Item -ItemType Directory -Force $out | Out-Null
+$apk = Join-Path $out "SweetIME-$version.apk"
+Invoke-Tool (Join-Path $tools 'apksigner.bat') sign --ks $keystore --ks-pass pass:android --out $apk "$build\aligned.apk"
+Write-Host "APK: $apk ($([math]::Round((Get-Item $apk).Length / 1MB, 1)) MB)"
+
+if ($Install) {
+    Invoke-Tool adb install -r $apk
+}

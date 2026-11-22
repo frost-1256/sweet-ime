@@ -1,0 +1,50 @@
+package io.github.sweetime;
+
+import android.content.Context;
+import android.content.res.Configuration;
+import android.graphics.Color;
+
+/** Keyboard colors; light or dark with the system. */
+final class Theme {
+    final int background;
+    final int key;
+    final int specialKey;
+    final int pressed;
+    final int shadow;
+    final int text;
+    final int subText;
+    final int accent;
+    final int onAccent;
+    final int focus;
+
+    private Theme(boolean dark) {
+        if (dark) {
+            background = Color.rgb(0x1e, 0x1b, 0x22);
+            key = Color.rgb(0x3a, 0x35, 0x40);
+            specialKey = Color.rgb(0x2b, 0x27, 0x30);
+            pressed = Color.rgb(0x5a, 0x4a, 0x60);
+            shadow = Color.rgb(0x10, 0x0e, 0x12);
+            text = Color.rgb(0xf2, 0xee, 0xf4);
+            subText = Color.rgb(0xb0, 0xa8, 0xb8);
+            accent = Color.rgb(0xf0, 0x86, 0xa8);
+            onAccent = Color.rgb(0x2a, 0x10, 0x1a);
+            focus = Color.argb(0x66, 0xf0, 0x86, 0xa8);
+        } else {
+            background = Color.rgb(0xf6, 0xee, 0xf1);
+            key = Color.WHITE;
+            specialKey = Color.rgb(0xe8, 0xdc, 0xe1);
+            pressed = Color.rgb(0xf8, 0xc8, 0xd8);
+            shadow = Color.rgb(0xd2, 0xc2, 0xc9);
+            text = Color.rgb(0x2a, 0x22, 0x26);
+            subText = Color.rgb(0x80, 0x70, 0x78);
+            accent = Color.rgb(0xe0, 0x5a, 0x86);
+            onAccent = Color.WHITE;
+            focus = Color.argb(0x55, 0xe0, 0x5a, 0x86);
+        }
+    }
+
+    static Theme of(Context c) {
+        int night = c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return new Theme(night == Configuration.UI_MODE_NIGHT_YES);
+    }
+}

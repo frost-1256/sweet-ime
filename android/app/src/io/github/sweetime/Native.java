@@ -1,0 +1,71 @@
+package io.github.sweetime;
+
+/** JNI bindings over the Rust engine (crates/android). */
+final class Native {
+    static {
+        System.loadLibrary("sweet_android");
+    }
+
+    static final int KEY_BACKSPACE = -1;
+    static final int KEY_ENTER = -2;
+    static final int KEY_SPACE = -3;
+    static final int KEY_LEFT = -4;
+    static final int KEY_RIGHT = -5;
+    static final int KEY_ESCAPE = -6;
+    /** Added to a letter typed with Shift. */
+    static final int SHIFTED = 0x40000000;
+
+    private Native() {}
+
+    /** Loads the dictionary; per-user files go under filesDir. */
+    static native boolean init(String dictPath, String filesDir);
+
+    static native long create();
+
+    static native void free(long ctx);
+
+    /** Handles a key; null when the app should get it. Returns a snapshot. */
+    static native String key(long ctx, int code);
+
+    static native String select(long ctx, int index);
+
+    static native String commitAll(long ctx);
+
+    static native void reset(long ctx);
+
+    static native void setLeftContext(long ctx, String text);
+
+    /** A parsed snapshot (see Context::snapshot in crates/android). */
+    static final class State {
+        String commit = "";
+        String preedit = "";
+        int caret;
+        int[][] spans = new int[0][];
+        boolean suggestions;
+        int selected = -1;
+        String[] candidates = new String[0];
+
+        static State parse(String s) {
+            State st = new State();
+            String[] f = s.split("\u001f", -1);
+            if (f.length < 7) return st;
+            st.commit = f[0];
+            st.preedit = f[1];
+            st.caret = Integer.parseInt(f[2]);
+            if (!f[3].isEmpty()) {
+                String[] parts = f[3].split(";");
+                st.spans = new int[parts.length][];
+                for (int i = 0; i < parts.length; i++) {
+                    String[] n = parts[i].split(",");
+                    st.spans[i] = new int[] {
+                        Integer.parseInt(n[0]), Integer.parseInt(n[1]), Integer.parseInt(n[2])
+                    };
+                }
+            }
+            st.suggestions = f[4].equals("1");
+            st.selected = Integer.parseInt(f[5]);
+            st.candidates = f[6].isEmpty() ? new String[0] : f[6].split("\u001e", -1);
+            return st;
+        }
+    }
+}
