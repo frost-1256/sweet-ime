@@ -34,6 +34,7 @@ final class Icons {
     static final int KEYBOARD = 21;
     static final int PALETTE = 22;
     static final int INFO = 23;
+    static final int EMOJI = 24;
 
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -204,6 +205,12 @@ final class Icons {
                 c.drawCircle(10, 7, 1.3f, fill);
                 c.drawCircle(14.5f, 7, 1.3f, fill);
                 c.drawCircle(17, 10.5f, 1.3f, fill);
+                break;
+            case EMOJI:
+                c.drawCircle(12, 12, 9, stroke);
+                c.drawCircle(9, 10, 1.2f, fill);
+                c.drawCircle(15, 10, 1.2f, fill);
+                c.drawArc(7.5f, 9.5f, 16.5f, 17, 20, 140, false, stroke);
                 break;
             case INFO:
                 c.drawCircle(12, 12, 9, stroke);

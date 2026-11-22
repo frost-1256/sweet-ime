@@ -62,6 +62,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private String[] candidateItems = new String[0];
     private boolean candidatesExpanded;
     private boolean clipboardOpen;
+    private EmojiPanel emojiPanel;
+    private boolean emojiOpen;
     private boolean privateField;
     /** Direct English input (the あ/A key) or a field that wants no conversion. */
     private boolean english;
@@ -191,6 +193,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         candidatesExpanded = false;
         clipboardOpen = false;
+        emojiOpen = false;
         LinearLayout root = new LinearLayout(this);
         inputRoot = root;
         root.setOrientation(LinearLayout.VERTICAL);
@@ -220,8 +223,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                     updatePanelVisibility();
                 });
         toolbar.addView(expandButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        clipboardButton = iconButton(() -> clipboardOpen ? Icons.BACK : Icons.CLIPBOARD,
+        clipboardButton = iconButton(() -> clipboardOpen || emojiOpen ? Icons.BACK : Icons.CLIPBOARD,
                 "クリップボード", () -> {
+                    if (emojiOpen) {
+                        emojiOpen = false;
+                        updatePanelVisibility();
+                        return;
+                    }
                     clipboardOpen = !clipboardOpen;
                     candidatesExpanded = false;
                     updatePanelVisibility();
@@ -258,6 +266,18 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             @Override public void pasteCurrent() { pasteSystemClipboard(); }
         });
         board.addView(clipboardPanel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        emojiPanel = new EmojiPanel(this, new EmojiPanel.Listener() {
+            @Override public void onEmoji(String emoji) { onText(emoji); }
+            @Override public void onSpace() { SweetIme.this.onKey(Native.KEY_SPACE); }
+            @Override public void onBackspace() { SweetIme.this.onKey(Native.KEY_BACKSPACE); }
+            @Override public void onClose() {
+                emojiOpen = false;
+                updatePanelVisibility();
+            }
+        });
+        emojiPanel.setVisibility(View.GONE);
+        board.addView(emojiPanel, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(board, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -329,6 +349,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (ctx != 0) Native.setPrivate(ctx, privateField);
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
+        emojiOpen = false;
         boolean url = variation == EditorInfo.TYPE_TEXT_VARIATION_URI
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS;
@@ -365,6 +386,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     public void onFinishInputView(boolean finishingInput) {
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
+        emojiOpen = false;
         candidatesExpanded = false;
         updatePanelVisibility();
         // Hiding the keyboard keeps the text being typed, as it is shown.
@@ -435,8 +457,20 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         updateKeys();
     }
 
+    @Override
+    public void onEmoji() {
+        // What is being typed goes in first, as when tapping an emoji.
+        if (composing && ctx != 0) apply(Native.commitAll(ctx));
+        clipboardOpen = false;
+        candidatesExpanded = false;
+        emojiOpen = true;
+        updatePanelVisibility();
+        emojiPanel.open(theme, english);
+    }
+
     private void closeClipboard() {
         clipboardOpen = false;
+        emojiOpen = false;
         updatePanelVisibility();
     }
 
@@ -687,21 +721,24 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     private void updatePanelVisibility() {
         if (keyboard == null) return;
-        boolean panel = clipboardOpen || candidatesExpanded;
+        boolean panel = clipboardOpen || candidatesExpanded || emojiOpen;
         keyboard.setVisibility(panel ? View.INVISIBLE : View.VISIBLE);
         candidateScroll.setVisibility(panel ? View.GONE : View.VISIBLE);
         expandedScroll.setVisibility(candidatesExpanded ? View.VISIBLE : View.GONE);
         if (!clipboardOpen && clipboardPanel.getVisibility() == View.VISIBLE) clipboardPanel.close();
         clipboardPanel.setVisibility(clipboardOpen ? View.VISIBLE : View.GONE);
+        if (!emojiOpen && emojiPanel.getVisibility() == View.VISIBLE) emojiPanel.close();
+        emojiPanel.setVisibility(emojiOpen ? View.VISIBLE : View.GONE);
         panelTitle.setVisibility(panel ? View.VISIBLE : View.GONE);
-        panelTitle.setText(clipboardOpen ? "クリップボード" : "候補一覧");
+        panelTitle.setText(emojiOpen ? "絵文字" : clipboardOpen ? "クリップボード" : "候補一覧");
         panelTitle.setTextColor(theme.text);
-        expandButton.setVisibility(!clipboardOpen && candidateItems.length > 1 ? View.VISIBLE : View.GONE);
+        expandButton.setVisibility(!clipboardOpen && !emojiOpen && candidateItems.length > 1
+                ? View.VISIBLE : View.GONE);
         String expandLabel = candidatesExpanded ? "候補を閉じる" : "候補を展開";
         expandButton.setContentDescription(expandLabel);
         expandButton.setTooltipText(expandLabel);
         expandButton.invalidate();
-        String clipboardLabel = clipboardOpen ? "キーボードに戻る" : "クリップボード";
+        String clipboardLabel = clipboardOpen || emojiOpen ? "キーボードに戻る" : "クリップボード";
         clipboardButton.setContentDescription(clipboardLabel);
         clipboardButton.setTooltipText(clipboardLabel);
         clipboardButton.invalidate();
