@@ -21,6 +21,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Images from the clipboard history, readable only by the editor
+             they are pasted into. -->
+        <provider
+            android:name=".ClipProvider"
+            android:authorities="io.github.sweetime.clips"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <service
             android:name=".SweetIme"
             android:label="@string/app_name"

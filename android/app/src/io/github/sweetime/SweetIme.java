@@ -264,6 +264,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 closeClipboard();
             }
             @Override public void pasteCurrent() { pasteSystemClipboard(); }
+            @Override public void pasteImage(Uri uri, String mime) { pasteSavedImage(uri, mime); }
         });
         board.addView(clipboardPanel, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -484,6 +485,39 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         } else {
             android.widget.Toast.makeText(this, "貼り付けられませんでした", android.widget.Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * Pastes an image from the clipboard history: straight into editors
+     * that take images, otherwise through the system clipboard.
+     */
+    private void pasteSavedImage(Uri uri, String mime) {
+        InputConnection ic = getCurrentInputConnection();
+        EditorInfo editor = getCurrentInputEditorInfo();
+        if (ic == null || privateField) return;
+        if (composing && ctx != 0) apply(Native.commitAll(ctx));
+        ClipDescription description = new ClipDescription("image", new String[] {mime});
+        boolean accepts = false;
+        if (editor != null && editor.contentMimeTypes != null) {
+            for (String m : editor.contentMimeTypes) {
+                if (ClipDescription.compareMimeTypes(mime, m)) accepts = true;
+            }
+        }
+        if (accepts && ic.commitContent(new InputContentInfo(uri, description, null),
+                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null)) {
+            closeClipboard();
+            return;
+        }
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(new ClipData(description, new ClipData.Item(uri)));
+            if (ic.performContextMenuAction(android.R.id.paste)) {
+                closeClipboard();
+                return;
+            }
+        }
+        android.widget.Toast.makeText(this, "この入力欄には画像を貼り付けられません",
+                android.widget.Toast.LENGTH_SHORT).show();
     }
 
     private boolean pasteClipboardImage(InputConnection ic) {
