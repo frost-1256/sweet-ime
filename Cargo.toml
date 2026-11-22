@@ -15,5 +15,4 @@ anyhow = "1"
 
 [profile.release]
 lto = "thin"
-codegen-units = 1
 debug = 1

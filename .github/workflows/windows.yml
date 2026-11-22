@@ -10,13 +10,17 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTUP_TOOLCHAIN: stable
+  MOZC_REF: 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
+
+# The installer, the tests and the APK build in parallel, each with its
+# own Rust build cache.
 jobs:
   windows:
-    name: Build and test
+    name: Build the installer
     runs-on: windows-2025
     timeout-minutes: 30
-    env:
-      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v7
         with:
@@ -26,7 +30,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: google/mozc
-          ref: 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
+          ref: ${{ env.MOZC_REF }}
           path: third_party/mozc-data
           sparse-checkout: src/data/dictionary_oss
           persist-credentials: false
@@ -34,14 +38,10 @@ jobs:
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal --target i686-pc-windows-msvc
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build and verify the installer
         run: ./scripts/build.ps1
-
-      - name: Test the workspace with the system dictionary
-        run: |
-          New-Item -ItemType Directory -Force data | Out-Null
-          Copy-Item -LiteralPath dist/system.dict -Destination data/system.dict
-          cargo test --locked --workspace --all-targets
 
       - name: Store the installer
         uses: actions/upload-artifact@v7
@@ -50,12 +50,73 @@ jobs:
           path: out/SweetIME-Setup.exe
           if-no-files-found: error
 
+  test:
+    name: Test
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the Mozc dictionary
+        uses: actions/checkout@v7
+        with:
+          repository: google/mozc
+          ref: ${{ env.MOZC_REF }}
+          path: third_party/mozc-data
+          sparse-checkout: src/data/dictionary_oss
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the system dictionary
+        run: |
+          New-Item -ItemType Directory -Force data | Out-Null
+          cargo run --locked -p sweet-dictc -- third_party/mozc-data/src/data/dictionary_oss data/system.dict
+          if ($LASTEXITCODE) { throw 'dictionary build failed' }
+
+      - name: Test the workspace with the system dictionary
+        run: cargo test --locked --workspace --all-targets
+
+  android:
+    name: Build the APK
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the Mozc dictionary
+        uses: actions/checkout@v7
+        with:
+          repository: google/mozc
+          ref: ${{ env.MOZC_REF }}
+          path: third_party/mozc-data
+          sparse-checkout: src/data/dictionary_oss
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal --target aarch64-linux-android --target x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the system dictionary
+        run: |
+          New-Item -ItemType Directory -Force data | Out-Null
+          cargo run --locked --release -p sweet-dictc -- third_party/mozc-data/src/data/dictionary_oss data/system.dict
+          if ($LASTEXITCODE) { throw 'dictionary build failed' }
+
       - name: Build the Android APK
         env:
           KEYSTORE_B64: ${{ secrets.SWEET_ANDROID_KEYSTORE_B64 }}
           SWEET_ANDROID_KEYSTORE_PASS: ${{ secrets.SWEET_ANDROID_KEYSTORE_PASS }}
         run: |
-          rustup target add aarch64-linux-android x86_64-linux-android
+          # Kept in the Rust cache (~/.cargo/bin): installed once.
           cargo install cargo-ndk --locked --version 4.1.2
           $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
           & $sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' | Out-Null
@@ -78,7 +139,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: windows
+    needs: [windows, test, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
