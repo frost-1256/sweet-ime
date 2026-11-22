@@ -1,6 +1,7 @@
-//! Compiles the Mozc OSS dictionary sources into a sweet-ime dictionary.
+//! Compiles the Mozc OSS dictionary sources, and optionally the SudachiDict
+//! lexicon sources, into a sweet-ime dictionary.
 //!
-//! Usage: sweet-dictc <dictionary_oss dir> <output.dict>
+//! Usage: sweet-dictc <dictionary_oss dir> <output.dict> [<sudachidict dir>]
 
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -9,10 +10,12 @@ use std::path::Path;
 use sweet_engine::dict::{NET_SLANG, SourceEntry, TECH_TERMS, VRCHAT_TERMS, build};
 use sweet_engine::romaji;
 
+mod sudachi;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        bail!("usage: sweet-dictc <dictionary_oss dir> <output.dict>");
+    if !(3..=4).contains(&args.len()) {
+        bail!("usage: sweet-dictc <dictionary_oss dir> <output.dict> [<sudachidict dir>]");
     }
     let src = Path::new(&args[1]);
     let t0 = std::time::Instant::now();
@@ -150,6 +153,11 @@ fn main() -> Result<()> {
                 entries.push(entry);
             }
         }
+    }
+    if let Some(dir) = args.get(3) {
+        let added = sudachi::words(Path::new(dir), &features, &entries)?;
+        eprintln!("{} words from SudachiDict", added.len());
+        entries.extend(added);
     }
     let count = entries.len();
     let out = fs::File::create(&args[2])?;

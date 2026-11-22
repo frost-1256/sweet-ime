@@ -346,7 +346,7 @@ impl Setup {
         ui.add_space(4.0);
         ui.label(RichText::new(format!("インストール先: {}", self.target.display())).small().weak());
         ui.label(
-            RichText::new("Sweet IME は MIT ライセンスです。同梱の辞書は Mozc OSS 辞書(IPAdic などを含む)のライセンスに従います。")
+            RichText::new("Sweet IME は MIT ライセンスです。同梱の辞書は Mozc OSS 辞書(IPAdic などを含む)と SudachiDict (Apache License 2.0) のライセンスに従います。")
                 .small()
                 .weak(),
         );

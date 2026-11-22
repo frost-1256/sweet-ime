@@ -1,5 +1,6 @@
 /target
 /third_party/mozc-data
+/third_party/sudachidict
 /data/*.dict
 /third_party/zenz
 /dist

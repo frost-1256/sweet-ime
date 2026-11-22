@@ -34,10 +34,12 @@ import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -452,7 +454,7 @@ public final class SettingsActivity extends Activity {
         LinearLayout lic = card("ライセンス");
         for (String[] l : new String[][] {
             {"プログラム", "MIT License"},
-            {"変換辞書", "Mozc のオープンソース辞書から作成。含まれる IPAdic と沖縄辞書は、それぞれのライセンスに従います。"},
+            {"変換辞書", "Mozc OSS 辞書(IPAdic・沖縄辞書を含む)と SudachiDict (Works Applications Co., Ltd.、Apache License 2.0) から作成。"},
             {"英単語リスト", "SCOWL / ESDB(Kevin Atkinson)から作成。"},
             {"AI モデル(別途ダウンロード)", "zenz(作者: Miwa Keita)、CC BY-SA 4.0。アプリには含まれていません。"},
         }) {
@@ -460,6 +462,27 @@ public final class SettingsActivity extends Activity {
             h.setPadding(0, dp(8), 0, 0);
             lic.addView(h);
             lic.addView(text(l[1], 13, theme.subText));
+        }
+        Button notice = tonalButton("SudachiDict のライセンス文書");
+        notice.setOnClickListener(v -> showSudachiLicense());
+        lic.addView(notice);
+    }
+
+    private void showSudachiLicense() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                getAssets().open("licenses/sudachidict.txt"), StandardCharsets.UTF_8))) {
+            StringBuilder notice = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                notice.append(line).append('\n');
+            }
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("SudachiDict")
+                    .setMessage(notice.toString())
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+        } catch (IOException e) {
+            Toast.makeText(this, "ライセンス文書を開けませんでした", Toast.LENGTH_SHORT).show();
         }
     }
 

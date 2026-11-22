@@ -15,7 +15,7 @@ OK:	へんしんがおそくなってすみません		Conversion Expected	返信
 OK:	しゅうまつはなにしてた		Conversion Expected	週末は何してた
 OK:	ひさしぶりにえいがをみた		Conversion Match	久しぶりに映画を見た|久しぶりに映画を観た
 OK:	このほんはとてもおもしろい		Conversion Expected	この本はとても面白い
-OK:	ばんごはんなににする		Conversion Match	晩ご飯何にする|晩ごはん何にする
+OK:	ばんごはんなににする		Conversion Match	晩ご飯何にする|晩ごはん何にする|晩御飯何にする
 OK:	かいものにいってくる		Conversion Expected	買い物に行ってくる
 OK:	でんしゃがとまっている		Conversion Expected	電車が止まっている
 OK:	びょういんによやくをいれた		Conversion Expected	病院に予約を入れた

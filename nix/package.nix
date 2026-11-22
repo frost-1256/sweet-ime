@@ -10,6 +10,8 @@
   makeWrapper,
   fcitx5,
   fetchFromGitHub,
+  fetchurl,
+  unzip,
   fontconfig,
   curl,
   dbus,
@@ -24,6 +26,16 @@ let
     rev = "1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a";
     sparseCheckout = [ "src/data/dictionary_oss" ];
     hash = "sha256-mVCR2y4YQSpYNOk1NQxl/HVGD5vMqNx1fDG2lIOJpqg=";
+  };
+  # Keep the version and hashes in step with scripts/fetch-sudachidict.ps1.
+  sudachiVersion = "20261015";
+  sudachiLexicons = lib.mapAttrsToList (name: hash: fetchurl {
+    inherit hash;
+    url = "https://sudachi.s3.ap-northeast-1.amazonaws.com/sudachidict-raw/v1/${sudachiVersion}/${name}.zip";
+  }) {
+    small_lex = "sha256-mBt4zcUyzgWLNMds2azTyabHccwM5SjX3pJCSyEXISU=";
+    core_lex = "sha256-6awGIi8M5AGg/vmxKeYek9WeP/OVobA39JiWLuW4rYs=";
+    notcore_lex = "sha256-FgctdavmoEiUeqy87P4atlogCWWp8d23zqs2Y0j6IfI=";
   };
   guiLibs = import ./gui-libs.nix pkgs;
 in
@@ -53,6 +65,7 @@ stdenv.mkDerivation (finalAttrs: {
     rustc
     rustPlatform.cargoSetupHook
     makeWrapper
+    unzip
   ];
   buildInputs = [ fcitx5 ];
 
@@ -70,7 +83,12 @@ stdenv.mkDerivation (finalAttrs: {
   postBuild = ''
     (cd .. && cargo build --release --locked --offline \
       --bin sweet-dictc --bin sweet-settings --bin sweet-zenz-pack)
-    "$CARGO_TARGET_DIR/release/sweet-dictc" ${mozc}/src/data/dictionary_oss system.dict
+    sudachi_dir="$NIX_BUILD_TOP/sudachidict"
+    mkdir -p "$sudachi_dir"
+    for zip in ${lib.escapeShellArgs (map builtins.toString sudachiLexicons)}; do
+      unzip -q "$zip" -d "$sudachi_dir"
+    done
+    "$CARGO_TARGET_DIR/release/sweet-dictc" ${mozc}/src/data/dictionary_oss system.dict "$sudachi_dir"
   '';
 
   postInstall = ''
@@ -84,6 +102,7 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm755 ../scripts/get-zenz.sh "$out/share/sweet-ime/get-zenz.sh"
     install -Dm644 ../LICENSE "$out/share/sweet-ime/licenses/sweet-ime.txt"
     install -Dm644 ../assets/licenses/english-words.txt "$out/share/sweet-ime/licenses/english-words.txt"
+    install -Dm644 ../assets/licenses/sudachidict.txt "$out/share/sweet-ime/licenses/sudachidict.txt"
     install -Dm644 ${mozc}/src/data/dictionary_oss/README.txt "$out/share/sweet-ime/licenses/dictionary-oss.txt"
     wrapProgram "$out/bin/sweet-settings" \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiLibs} \

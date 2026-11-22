@@ -8,8 +8,8 @@
 #
 # Needs: ANDROID_HOME (default %LOCALAPPDATA%\Android\Sdk) with
 # platforms;android-36, build-tools;36.0.0 and an NDK; a JDK 17+;
-# cargo-ndk and the aarch64-linux-android Rust target; the dictionary
-# at dist/system.dict or data/system.dict.
+# cargo-ndk, the Android Rust targets and the Mozc sources under
+# third_party/mozc-data. The pinned SudachiDict sources are fetched as needed.
 
 param([switch]$Install)
 
@@ -32,16 +32,23 @@ $version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^versio
 $parts = $version.Split('.') | ForEach-Object { [int]$_ }
 $versionCode = $parts[0] * 10000 + $parts[1] * 100 + $parts[2]
 
-$dict = @('dist\system.dict', 'data\system.dict') | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $dict) { throw 'no system.dict in dist/ or data/' }
-
 function Invoke-Tool {
     & $args[0] @($args | Select-Object -Skip 1)
     if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed ($LASTEXITCODE)" }
 }
 
-if (Test-Path $build) { Remove-Item -Recurse -Force $build }
-New-Item -ItemType Directory -Force "$build\lib", "$build\assets", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
+if (Test-Path -LiteralPath $build) {
+    $staging = Get-Item -LiteralPath $build -Force
+    if ($staging.FullName -ne $build -or !$staging.PSIsContainer -or
+        ($staging.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Invalid staging directory: $build"
+    }
+    Remove-Item -LiteralPath $build -Recurse -Force
+}
+New-Item -ItemType Directory -Force "$build\lib", "$build\assets\licenses", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
+
+Write-Host '== System dictionary'
+& "$root\scripts\build-dictionary.ps1" -Output "$build\assets\system.dict"
 
 Write-Host '== Rust library'
 $env:CARGO_PROFILE_RELEASE_DEBUG = '0'
@@ -51,7 +58,7 @@ try { Invoke-Tool cargo ndk -t arm64-v8a -t x86_64 -P 29 -o "$build\lib" build -
 finally { Pop-Location }
 
 Write-Host '== Resources'
-Copy-Item $dict "$build\assets\system.dict"
+Copy-Item "$root\assets\licenses\sudachidict.txt" "$build\assets\licenses\"
 Copy-Item (Join-Path $root 'assets\icon\sweet-ime-256.png') "$build\res\mipmap-xxxhdpi\ic_launcher.png"
 $aapt2 = Join-Path $tools 'aapt2.exe'
 Invoke-Tool $aapt2 compile --dir (Join-Path $app 'res') -o "$build\res-app.zip"

@@ -52,11 +52,11 @@ try {
     Copy-Item target\release\sweet-settings.exe "$dist\"
     Copy-Item scripts\get-zenz.ps1 "$dist\"
 
-    & target\release\sweet-dictc.exe $MozcData "$dist\system.dict"
-    if ($LASTEXITCODE) { throw 'dictionary build failed' }
+    & "$PSScriptRoot\build-dictionary.ps1" -MozcData $MozcData -Output "$dist\system.dict"
     Copy-Item LICENSE "$dist\licenses\sweet-ime.txt"
     Copy-Item (Join-Path $MozcData 'README.txt') "$dist\licenses\dictionary-oss.txt"
     Copy-Item assets\licenses\english-words.txt "$dist\licenses\english-words.txt"
+    Copy-Item assets\licenses\sudachidict.txt "$dist\licenses\sudachidict.txt"
 
     Get-ChildItem -Recurse $dist | Where-Object { -not $_.PSIsContainer } |
         Format-Table FullName, Length -AutoSize

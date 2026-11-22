@@ -74,10 +74,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the system dictionary
-        run: |
-          New-Item -ItemType Directory -Force data | Out-Null
-          cargo run --locked -p sweet-dictc -- third_party/mozc-data/src/data/dictionary_oss data/system.dict
-          if ($LASTEXITCODE) { throw 'dictionary build failed' }
+        run: ./scripts/build-dictionary.ps1 -Output data/system.dict
 
       - name: Test the workspace with the system dictionary
         run: cargo test --locked --workspace --all-targets
@@ -104,12 +101,6 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target aarch64-linux-android --target x86_64-linux-android
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Build the system dictionary
-        run: |
-          New-Item -ItemType Directory -Force data | Out-Null
-          cargo run --locked --release -p sweet-dictc -- third_party/mozc-data/src/data/dictionary_oss data/system.dict
-          if ($LASTEXITCODE) { throw 'dictionary build failed' }
 
       - name: Build the Android APK
         env:

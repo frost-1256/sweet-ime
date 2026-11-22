@@ -3,7 +3,8 @@
 A Japanese input method written from scratch in Rust.
 
 - **Engine**: a dictionary lattice with Viterbi and N-best search, using
-  the Mozc OSS dictionary and connection costs. Conversion takes about
+  the Mozc OSS dictionary and connection costs, with additional vocabulary
+  from SudachiDict. Conversion takes about
   0.1 ms.
 - **Neural reranking**: an optional zenz (GPT-2) model reranks the top
   lattice candidates using the text before the cursor. It runs natively
@@ -51,7 +52,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 This stages the files in `dist\` and creates the single-file installer
-`out\SweetIME-Setup.exe` (about 28 MB).
+`out\SweetIME-Setup.exe`. The build downloads and verifies the pinned
+SudachiDict lexicons on first use. To build just the dictionary, run
+`./scripts/build-dictionary.ps1 -Output data/system.dict`.
 
 ### CI and releases
 
@@ -140,6 +143,12 @@ target/release/sweet-dictc third_party/mozc-data/src/data/dictionary_oss system.
 sudo install -Dm644 system.dict /usr/share/sweet-ime/system.dict
 ```
 
+To include the same vocabulary as the packaged builds, extract the three
+pinned SudachiDict CSV files listed in `nix/package.nix` and pass their
+directory as the third argument to `sweet-dictc`. Install
+`assets/licenses/sudachidict.txt` alongside the other dictionary notices
+when distributing the resulting dictionary.
+
 On Linux the files live in XDG directories:
 
 - Settings, key bindings and learned words: `~/.config/sweet-ime/`
@@ -165,8 +174,9 @@ keyboard layout.
 without Gradle by `android/build.ps1` (cargo-ndk, aapt2, javac, d8 and
 apksigner). It needs the Android SDK with `platforms;android-36`,
 `build-tools;36.0.0` and an NDK, a JDK 17 or newer, `cargo install
-cargo-ndk`, `rustup target add aarch64-linux-android x86_64-linux-android`, and the dictionary
-in `dist/` or `data/`:
+cargo-ndk`, `rustup target add aarch64-linux-android x86_64-linux-android`, and
+the Mozc sources in `third_party/mozc-data`. The script builds the bundled
+dictionary from Mozc and the pinned SudachiDict lexicons:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
@@ -311,7 +321,10 @@ to the file right away.
 - **Code**: MIT; see `LICENSE`.
 - **Dictionary** (`system.dict`, bundled): derived from the Mozc OSS
   dictionary. It includes IPAdic and the Okinawa dictionary, which keep
-  their own licenses; see `dist\licenses\dictionary-oss.txt`.
+  their own licenses. See `dist\licenses\dictionary-oss.txt`. Additional
+  vocabulary comes from [SudachiDict](https://github.com/WorksApplications/SudachiDict)
+  by Works Applications Co., Ltd., under the Apache License, Version 2.0.
+  See `assets/licenses/sudachidict.txt` for notices and changes.
 - **English word list** (`crates/engine/src/english_words.txt`, bundled):
   generated from SCOWL / ESDB by Kevin Atkinson; see
   `dist\licenses\english-words.txt`.

@@ -285,6 +285,7 @@ fn about_page(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("ライセンス").size(15.5));
         ui.label("Sweet IME 本体: MIT License");
         ui.label("システム辞書: Mozc OSS 辞書(IPAdic・沖縄辞書を含む)。それぞれのライセンスに従います。");
+        ui.label("追加語彙: SudachiDict (Works Applications Co., Ltd.、Apache License 2.0)");
         ui.label("AI 変換モデル(任意・別途ダウンロード): zenz by Miwa Keita, CC BY-SA 4.0");
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
         let licenses = exe_dir.and_then(|d| {
