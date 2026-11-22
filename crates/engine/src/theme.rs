@@ -19,6 +19,8 @@ pub enum Theme {
     Matcha,
     Midnight,
     Lavender,
+    /// The Dracula color scheme (draculatheme.com).
+    Dracula,
     /// GNOME's Adwaita (GTK) colors; follows light/dark like the default.
     Adwaita,
 }
@@ -70,7 +72,7 @@ const DARK: Colors = Colors {
 };
 
 impl Theme {
-    pub const ALL: [Theme; 8] = [
+    pub const ALL: [Theme; 9] = [
         Theme::Default,
         Theme::Light,
         Theme::Dark,
@@ -78,6 +80,7 @@ impl Theme {
         Theme::Matcha,
         Theme::Midnight,
         Theme::Lavender,
+        Theme::Dracula,
         Theme::Adwaita,
     ];
 
@@ -91,6 +94,7 @@ impl Theme {
             Theme::Matcha => "matcha",
             Theme::Midnight => "midnight",
             Theme::Lavender => "lavender",
+            Theme::Dracula => "dracula",
             Theme::Adwaita => "adwaita",
         }
     }
@@ -105,6 +109,7 @@ impl Theme {
             Theme::Matcha => "抹茶",
             Theme::Midnight => "ミッドナイト",
             Theme::Lavender => "ラベンダー",
+            Theme::Dracula => "Dracula",
             Theme::Adwaita => "GTK (Adwaita)",
         }
     }
@@ -159,6 +164,17 @@ impl Theme {
                 accent: Some(Rgb(0x7a, 0xa2, 0xff)),
                 border: Rgb(0x34, 0x3b, 0x55),
                 badge_border: Rgb(0x4a, 0x53, 0x72),
+                dark: true,
+            },
+            Theme::Dracula => Colors {
+                bg: Rgb(0x28, 0x2a, 0x36),
+                text: Rgb(0xf8, 0xf8, 0xf2),
+                sub: Rgb(0x8b, 0x96, 0xc4),
+                hover: Rgb(0xbd, 0x93, 0xf9),
+                hover_alpha: 0.18,
+                accent: Some(Rgb(0xff, 0x79, 0xc6)),
+                border: Rgb(0x44, 0x47, 0x5a),
+                badge_border: Rgb(0x62, 0x72, 0xa4),
                 dark: true,
             },
             // libadwaita's popover colors and blue accent.
