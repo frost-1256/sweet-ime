@@ -210,13 +210,15 @@ final class KeyboardView extends View {
             r3.add(new KeyDef("⌫", Native.KEY_BACKSPACE, 1.5f));
             rows.add(r3);
             bottom.add(new KeyDef("?123", SYMBOLS, 1.5f));
-            bottom.add(new KeyDef("、", ',', punctuationWidth).hint(EMOJI_HINT));
+            // As on Gboard: the comma key carries the emoji key and its
+            // color, and the row adds up to ten keys like the ones above.
+            bottom.add(new KeyDef("、", ',', punctuationWidth).hint(EMOJI_HINT).fn());
             bottom.add(new KeyDef("", MODE, 1));
             if (english) {
                 bottom.add(new KeyDef("", Native.KEY_SPACE, 6 - 2 * punctuationWidth));
                 bottom.add(new KeyDef("。", '.', punctuationWidth).fn());
             } else {
-                bottom.add(new KeyDef("", Native.KEY_SPACE, 4.5f - 2 * punctuationWidth));
+                bottom.add(new KeyDef("", Native.KEY_SPACE, 4 - 2 * punctuationWidth));
                 bottom.add(new KeyDef("。", '.', punctuationWidth));
                 bottom.add(new KeyDef("◀", Native.KEY_LEFT, 1).fn());
                 bottom.add(new KeyDef("▶", Native.KEY_RIGHT, 1).fn());
@@ -430,8 +432,11 @@ final class KeyboardView extends View {
                     float hx = k.rect.right - 7 * density - in;
                     float hy = k.rect.top + 12 * density + in;
                     if (k.hint.equals(EMOJI_HINT)) {
-                        hintRect.set(hx - 6 * density, hy - 10 * density, hx + 6 * density, hy + 2 * density);
-                        icons.draw(canvas, Icons.EMOJI, hintRect, 11 * density, theme.subText);
+                        // Above the label, as on Gboard.
+                        float ex = k.rect.centerX();
+                        float ey = k.rect.top + 14 * density;
+                        hintRect.set(ex - 7 * density, ey - 7 * density, ex + 7 * density, ey + 7 * density);
+                        icons.draw(canvas, Icons.EMOJI, hintRect, 12 * density, theme.subText);
                     } else {
                         canvas.drawText(hintOf(k), hx, hy, textPaint);
                     }
@@ -454,8 +459,10 @@ final class KeyboardView extends View {
                 if (label.length() > 1 && k.code == TEXT) size = 18;
                 textPaint.setTextSize(size * density);
                 textPaint.setColor(on ? theme.onAccent : theme.text);
-                textPaint.setFakeBoldText(theme.boldFunctions && k.isFunction());
-                drawCentered(canvas, label, k.rect.centerX(), k.rect.centerY());
+                // Punctuation stays regular: bold 、 and 。 read as blots.
+                textPaint.setFakeBoldText(theme.boldFunctions && k.isFunction() && k.code != ',' && k.code != '.');
+                float dy = EMOJI_HINT.equals(k.hint) ? 8 * density : 0;
+                drawCentered(canvas, label, k.rect.centerX(), k.rect.centerY() + dy);
                 textPaint.setFakeBoldText(false);
             }
         }

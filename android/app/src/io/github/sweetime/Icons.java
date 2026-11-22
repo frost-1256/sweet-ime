@@ -142,18 +142,19 @@ final class Icons {
                 c.drawPath(path, stroke);
                 break;
             case LEFT:
-                path.moveTo(14.5f, 6);
-                path.lineTo(8.5f, 12);
-                path.lineTo(14.5f, 18);
-                stroke.setStrokeWidth(2.2f);
-                c.drawPath(path, stroke);
+                // Small solid triangles, as on Gboard; centered on their ink.
+                path.moveTo(15.5f, 6.5f);
+                path.lineTo(7.5f, 12);
+                path.lineTo(15.5f, 17.5f);
+                path.close();
+                c.drawPath(path, fill);
                 break;
             case RIGHT:
-                path.moveTo(9.5f, 6);
-                path.lineTo(15.5f, 12);
-                path.lineTo(9.5f, 18);
-                stroke.setStrokeWidth(2.2f);
-                c.drawPath(path, stroke);
+                path.moveTo(8.5f, 6.5f);
+                path.lineTo(16.5f, 12);
+                path.lineTo(8.5f, 17.5f);
+                path.close();
+                c.drawPath(path, fill);
                 break;
             case GLOBE:
                 c.drawCircle(12, 12, 9, stroke);
