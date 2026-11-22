@@ -172,7 +172,7 @@ in `dist/` or `data/`:
 powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
 ```
 
-The APK (`out/SweetIME-<version>.apk`) bundles the dictionary and copies
+The APK (`out/SweetIME-Android.apk`) bundles the dictionary and copies
 it to the app's storage on first use. Open **Sweet IME** to turn the
 keyboard on, then pick it with the keyboard switcher. Shift starts an
 English word as on the desktop, and the **あ** key switches to direct

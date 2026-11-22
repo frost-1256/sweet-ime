@@ -1,6 +1,8 @@
 # Builds the Android input method APK without Gradle: the Rust library
 # with cargo-ndk, then aapt2, javac, d8, zipalign and apksigner from the
-# Android SDK. Output: out/SweetIME-<version>.apk
+# Android SDK. Output: out/SweetIME-Android.apk, signed with the key in
+# SWEET_ANDROID_KEYSTORE (password in SWEET_ANDROID_KEYSTORE_PASS) or else
+# the debug key.
 #
 #   powershell -ExecutionPolicy Bypass -File android/build.ps1 [-Install]
 #
@@ -63,7 +65,8 @@ Invoke-Tool $aapt2 link -o "$build\base.apk" -I $platform `
 
 Write-Host '== Java'
 $sources = @(Get-ChildItem -Recurse (Join-Path $app 'src') -Filter *.java) + @(Get-ChildItem -Recurse "$build\gen" -Filter *.java) | ForEach-Object { $_.FullName }
-Invoke-Tool javac --release 17 -encoding UTF-8 -classpath $platform -d "$build\classes" @sources
+$javac = if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\javac.exe")) { "$env:JAVA_HOME\bin\javac.exe" } else { 'javac' }
+Invoke-Tool $javac --release 17 -encoding UTF-8 -classpath $platform -d "$build\classes" @sources
 $classes = Get-ChildItem -Recurse "$build\classes" -Filter *.class | ForEach-Object { $_.FullName }
 Invoke-Tool (Join-Path $tools 'd8.bat') --release --min-api 26 --lib $platform --output "$build\dex" @classes
 
@@ -80,18 +83,31 @@ try {
 
 Invoke-Tool (Join-Path $tools 'zipalign.exe') -f -p 4 "$build\base.apk" "$build\aligned.apk"
 
-$keystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
-if (-not (Test-Path $keystore)) {
-    New-Item -ItemType Directory -Force (Split-Path $keystore) | Out-Null
-    # The standard Android debug key (well-known password).
-    $keytool = @("$env:JAVA_HOME\bin\keytool.exe") + @(Get-ChildItem "$env:ProgramFiles\Java\*\bin\keytool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object FullName) + @('keytool') | Where-Object { $_ -eq 'keytool' -or (Test-Path $_) } | Select-Object -First 1
-    Invoke-Tool $keytool -genkeypair -keystore $keystore -storepass android -keypass android `
-        -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
-}
 $out = Join-Path $root 'out'
 New-Item -ItemType Directory -Force $out | Out-Null
-$apk = Join-Path $out "SweetIME-$version.apk"
-Invoke-Tool (Join-Path $tools 'apksigner.bat') sign --ks $keystore --ks-pass pass:android --out $apk "$build\aligned.apk"
+$apk = Join-Path $out 'SweetIME-Android.apk'
+$signer = Join-Path $tools 'apksigner.bat'
+# A local copy of the release key, if there is one.
+$localKey = Join-Path $env:USERPROFILE '.android\sweet-ime-release.jks'
+$localPass = Join-Path $env:USERPROFILE '.android\sweet-ime-release.pass'
+if (-not $env:SWEET_ANDROID_KEYSTORE -and (Test-Path $localKey) -and (Test-Path $localPass)) {
+    $env:SWEET_ANDROID_KEYSTORE = $localKey
+    $env:SWEET_ANDROID_KEYSTORE_PASS = (Get-Content -Raw $localPass).Trim()
+}
+if ($env:SWEET_ANDROID_KEYSTORE -and $env:SWEET_ANDROID_KEYSTORE_PASS) {
+    # The release key (CI secrets): updates keep the same signature.
+    Invoke-Tool $signer sign --ks $env:SWEET_ANDROID_KEYSTORE --ks-pass env:SWEET_ANDROID_KEYSTORE_PASS --out $apk "$build\aligned.apk"
+} else {
+    $keystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
+    if (-not (Test-Path $keystore)) {
+        New-Item -ItemType Directory -Force (Split-Path $keystore) | Out-Null
+        # The standard Android debug key (well-known password).
+        $keytool = @("$env:JAVA_HOME\bin\keytool.exe") + @(Get-ChildItem "$env:ProgramFiles\Java\*\bin\keytool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object FullName) + @('keytool') | Where-Object { $_ -eq 'keytool' -or (Test-Path $_) } | Select-Object -First 1
+        Invoke-Tool $keytool -genkeypair -keystore $keystore -storepass android -keypass android `
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
+    }
+    Invoke-Tool $signer sign --ks $keystore --ks-pass pass:android --out $apk "$build\aligned.apk"
+}
 Write-Host "APK: $apk ($([math]::Round((Get-Item $apk).Length / 1MB, 1)) MB)"
 
 if ($Install) {
