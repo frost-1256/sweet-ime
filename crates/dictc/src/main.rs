@@ -59,6 +59,35 @@ fn main() -> Result<()> {
             });
         }
     }
+    // Mozc's aux dictionary: words that take the POS and cost of a base
+    // entry, plus an offset (身に覚え from 見に覚え, -1), so that they win.
+    if let Ok(aux) = fs::read_to_string(src.join("aux_dictionary.tsv")) {
+        let mut added = Vec::new();
+        for (i, line) in aux.lines().enumerate() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('\t').collect();
+            let [key, value, base_key, base_value, offset] = f[..] else {
+                bail!("aux_dictionary.tsv:{}: expected 5 fields", i + 1);
+            };
+            let offset: i32 = offset
+                .parse()
+                .with_context(|| format!("aux_dictionary.tsv:{}: invalid cost offset", i + 1))?;
+            for e in entries
+                .iter()
+                .filter(|e| e.reading == base_key && e.surface == base_value)
+            {
+                added.push(SourceEntry {
+                    reading: key.into(),
+                    surface: value.into(),
+                    cost: (e.cost as i32 + offset).clamp(0, i16::MAX as i32) as i16,
+                    ..e.clone()
+                });
+            }
+        }
+        entries.extend(added);
+    }
     // Keep the compound's connections to preceding and following words.
     let conversion = entries.iter().find(|e| e.reading == "へんかん" && e.surface == "変換");
     let accuracy = entries.iter().find(|e| e.reading == "せいど" && e.surface == "精度");
