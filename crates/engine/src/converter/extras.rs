@@ -11,6 +11,8 @@ pub(super) enum Origin {
     Number,
     /// An English word typed by its spelling (see [`crate::english`]).
     Spelling,
+    /// A colloquial long vowel kept in hiragana (ちょーだい).
+    LongVowel,
 }
 
 /// A word placed into the lattice in addition to the system dictionary.
@@ -45,6 +47,55 @@ const WORD_LIST_COST: i32 = 3000;
 const LOANWORD_MARGIN: i32 = 400;
 /// Dictionary cost above which a guessed loanword is not trusted.
 const LOANWORD_MAX_COST: i32 = 5600;
+/// How much cheaper a long vowel kept in hiragana (ちょーだい) is than the
+/// katakana word for the same reading (チョーダイ).
+const LONG_VOWEL_BONUS: i32 = 200;
+/// How much more common the hiragana word (ちょうだい) must be than the
+/// katakana one (チョーダイ). Loanwords are close to or below their hiragana
+/// lookalikes (ソース 3911, そうす 3464).
+const LONG_VOWEL_MARGIN: i32 = 1500;
+
+/// The vowel a hiragana character ends in, for spelling out ー after it.
+fn vowel(c: char) -> Option<char> {
+    const ROWS: [(&str, char); 5] = [
+        ("あかさたなはまやらわがざだばぱぁゃゎ", 'あ'),
+        ("いきしちにひみりぎじぢびぴぃ", 'い'),
+        ("うくすつぬふむゆるぐずづぶぷぅゅ", 'う'),
+        ("えけせてねへめれげぜでべぺぇ", 'え'),
+        ("おこそとのほもよろをごぞどぼぽぉょ", 'お'),
+    ];
+    ROWS.iter().find(|(row, _)| row.contains(c)).map(|&(_, v)| v)
+}
+
+/// The readings of `reading` with each ー spelled out the way it is in
+/// ordinary words (ちょー -> ちょう, ちょお; ねー -> ねい, ねえ).
+fn spelled_out(reading: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut prev = None;
+    for c in reading.chars() {
+        if c != 'ー' {
+            out.iter_mut().for_each(|r| r.push(c));
+            prev = Some(c);
+            continue;
+        }
+        let Some(v) = prev.and_then(vowel) else {
+            return Vec::new();
+        };
+        let spellings: &[char] = match v {
+            'え' => &['い', 'え'],
+            'お' => &['う', 'お'],
+            _ => &[v],
+        };
+        out = out
+            .iter()
+            .flat_map(|r| spellings.iter().map(move |&s| format!("{r}{s}")))
+            .collect();
+        if out.len() > 8 {
+            return Vec::new();
+        }
+    }
+    out
+}
 
 impl Converter {
     /// User dictionary words that occur in `text`, as lattice extras.
@@ -129,7 +180,55 @@ impl Converter {
         self.user_extras(text, &mut out);
         self.number_extras(text, &mut out);
         self.spelling_extras(text, &mut out);
+        self.long_vowel_extras(text, &mut out);
         out
+    }
+
+    /// Colloquial long vowels kept in hiragana. A katakana dictionary word
+    /// with ー (チョーダイ) whose reading, with ー spelled out, is a much
+    /// more common hiragana word (ちょうだい) is offered in hiragana too
+    /// (ちょーだい), a little ahead of the katakana. Loanwords keep their
+    /// katakana: ホール is more common than ほうる.
+    pub(super) fn long_vowel_extras(&self, text: &str, out: &mut Vec<Extra>) {
+        if !text.contains('ー') {
+            return;
+        }
+        for (pos, _) in text.char_indices() {
+            // Katakana words with ー starting here, by length.
+            let mut katakana: Vec<(usize, u16, u16, i32)> = Vec::new();
+            self.dict.common_prefix(&text[pos..], |l, e| {
+                let reading = &text[pos..pos + l];
+                if reading.contains('ー') && e.surface == crate::romaji::to_katakana(reading) {
+                    katakana.push((l, e.lid, e.rid, i32::from(e.cost)));
+                }
+            });
+            let mut lengths: Vec<usize> = katakana.iter().map(|k| k.0).collect();
+            lengths.dedup();
+            for l in lengths {
+                let reading = &text[pos..pos + l];
+                let words = katakana.iter().filter(|k| k.0 == l);
+                // Against the most common katakana word (シーン, not a rare
+                // シーン with another part of speech).
+                let Some(least) = words.clone().map(|k| k.3).min() else { continue };
+                let hiragana = spelled_out(reading).iter().any(|r| {
+                    self.dict.lookup(r).iter().any(|h| h.surface == r && i32::from(h.cost) + LONG_VOWEL_MARGIN < least)
+                });
+                if !hiragana {
+                    continue;
+                }
+                for &(_, lid, rid, cost) in words {
+                    out.push(Extra {
+                        start: pos,
+                        end: pos + l,
+                        lid,
+                        rid,
+                        cost: cost - LONG_VOWEL_BONUS,
+                        surface: reading.to_string(),
+                        origin: Origin::LongVowel,
+                    });
+                }
+            }
+        }
     }
 
     /// English words typed by their spelling in `text` (ぎてゅb), as

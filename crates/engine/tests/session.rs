@@ -1046,3 +1046,21 @@ fn full_names_do_not_lead_predictions() {
     let predictions = c.predict("ほしいな", 5);
     assert_ne!(predictions.first().map(String::as_str), Some("星井七瀬"), "{predictions:?}");
 }
+
+#[test]
+fn colloquial_long_vowels_stay_hiragana() {
+    let Some(c) = converter() else { return };
+    for (reading, expected) in [
+        ("ちょーだい", "ちょーだい"),
+        ("これちょーだい", "これちょーだい"),
+        ("そーなんだ", "そーなんだ"),
+        ("こーひー", "コーヒー"),
+        ("ほーる", "ホール"),
+        ("そーす", "ソース"),
+        ("まなー", "マナー"),
+    ] {
+        assert_eq!(c.convert(reading, &[], 1)[0].surface(), expected, "{reading}");
+    }
+    let candidates = c.segment_candidates("ちょーだい", 5);
+    assert_eq!(candidates[..2], ["ちょーだい", "チョーダイ"]);
+}

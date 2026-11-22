@@ -503,6 +503,7 @@ impl Converter {
         }
         self.number_extras(reading, &mut extras);
         self.spelling_extras(reading, &mut extras);
+        self.long_vowel_extras(reading, &mut extras);
         let mut lat = self.build_lattice(reading, &[], &extras);
         self.viterbi(&mut lat);
         for (_, path) in self.nbest_paths(&lat, n * 2) {
