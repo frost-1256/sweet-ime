@@ -55,7 +55,7 @@ jobs:
           KEYSTORE_B64: ${{ secrets.SWEET_ANDROID_KEYSTORE_B64 }}
           SWEET_ANDROID_KEYSTORE_PASS: ${{ secrets.SWEET_ANDROID_KEYSTORE_PASS }}
         run: |
-          rustup target add aarch64-linux-android
+          rustup target add aarch64-linux-android x86_64-linux-android
           cargo install cargo-ndk --locked --version 4.1.2
           $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
           & $sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' | Out-Null

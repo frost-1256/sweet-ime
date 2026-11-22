@@ -47,7 +47,7 @@ Write-Host '== Rust library'
 $env:CARGO_PROFILE_RELEASE_DEBUG = '0'
 $env:CARGO_PROFILE_RELEASE_STRIP = 'symbols'
 Push-Location $root
-try { Invoke-Tool cargo ndk -t arm64-v8a -P 26 -o "$build\lib" build --locked --release -p sweet-android }
+try { Invoke-Tool cargo ndk -t arm64-v8a -t x86_64 -P 29 -o "$build\lib" build --locked --release -p sweet-android }
 finally { Pop-Location }
 
 Write-Host '== Resources'
@@ -58,7 +58,7 @@ Invoke-Tool $aapt2 compile --dir (Join-Path $app 'res') -o "$build\res-app.zip"
 Invoke-Tool $aapt2 compile --dir "$build\res" -o "$build\res-icon.zip"
 Invoke-Tool $aapt2 link -o "$build\base.apk" -I $platform `
     --manifest (Join-Path $app 'AndroidManifest.xml') `
-    --min-sdk-version 26 --target-sdk-version 36 `
+    --min-sdk-version 29 --target-sdk-version 36 `
     --version-code $versionCode --version-name $version `
     -A "$build\assets" -0 dict `
     --java "$build\gen" "$build\res-app.zip" "$build\res-icon.zip"
@@ -68,7 +68,7 @@ $sources = @(Get-ChildItem -Recurse (Join-Path $app 'src') -Filter *.java) + @(G
 $javac = if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\javac.exe")) { "$env:JAVA_HOME\bin\javac.exe" } else { 'javac' }
 Invoke-Tool $javac --release 17 -encoding UTF-8 -classpath $platform -d "$build\classes" @sources
 $classes = Get-ChildItem -Recurse "$build\classes" -Filter *.class | ForEach-Object { $_.FullName }
-Invoke-Tool (Join-Path $tools 'd8.bat') --release --min-api 26 --lib $platform --output "$build\dex" @classes
+Invoke-Tool (Join-Path $tools 'd8.bat') --release --min-api 29 --lib $platform --output "$build\dex" @classes
 
 Write-Host '== Package'
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem

@@ -44,6 +44,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     /** Direct English input (the あ/A key) or a field that wants no conversion. */
     private boolean english;
     private boolean composing;
+    private String themeKey = "";
     private int composingLength;
 
     @Override
@@ -108,9 +109,12 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public View onCreateInputView() {
         theme = Theme.of(this);
+        themeKey = themeKey();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(theme.background);
+        // The key preview draws over the candidate bar.
+        root.setClipChildren(false);
 
         candidateScroll = new HorizontalScrollView(this);
         candidateScroll.setHorizontalScrollBarEnabled(false);
@@ -123,17 +127,36 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         keyboard = new KeyboardView(this, theme);
         keyboard.setListener(this);
         keyboard.setEnglish(english);
+        configureKeyboard();
         root.addView(keyboard, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         // Keep the keys above the navigation bar (edge to edge since Android 15).
         root.setOnApplyWindowInsetsListener((v, insets) -> {
+            // The IME's own navigation bar (back, switch keyboard) is taller
+            // than navigationBars() reports; systemBars() covers it.
             int bottom = android.os.Build.VERSION.SDK_INT >= 30
-                    ? insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+                    ? insets.getInsets(android.view.WindowInsets.Type.systemBars()
+                            | android.view.WindowInsets.Type.tappableElement()).bottom
                     : insets.getSystemWindowInsetBottom();
             v.setPadding(0, 0, 0, bottom);
             return insets;
         });
+        showCandidates(new String[0], -1, false);
         return root;
+    }
+
+    /** What the keyboard looks like depends on: the theme and the system's night mode. */
+    private String themeKey() {
+        return Prefs.number(this, Prefs.THEME, 0) + "/" + Theme.of(this).dark;
+    }
+
+    private void configureKeyboard() {
+        keyboard.configure(theme,
+                Prefs.flag(this, Prefs.HAPTIC, true),
+                Prefs.flag(this, Prefs.SOUND, false),
+                Prefs.flag(this, Prefs.NUMBER_ROW, false),
+                Prefs.flag(this, Prefs.KEY_PREVIEW, true),
+                Prefs.number(this, Prefs.KEY_HEIGHT, 1));
     }
 
     private int dp(int v) {
@@ -166,7 +189,18 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onStartInputView(EditorInfo attr, boolean restarting) {
         super.onStartInputView(attr, restarting);
-        if (keyboard != null) keyboard.setEnglish(english);
+        // Settings may have changed since the keyboard was last shown.
+        if (keyboard != null && !themeKey().equals(themeKey)) {
+            setInputView(onCreateInputView());
+        } else if (keyboard != null) {
+            configureKeyboard();
+        }
+        if (ctx != 0) Native.reloadOptions(ctx);
+        if (keyboard != null) {
+            keyboard.setEnglish(english);
+            keyboard.showLetters();
+        }
+        updateKeys();
     }
 
     @Override
@@ -190,6 +224,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             if (ic != null) ic.finishComposingText();
             showCandidates(new String[0], -1, false);
         }
+        updateKeys();
     }
 
     private String textBeforeCursor() {
@@ -204,6 +239,65 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         english = !english;
         keyboard.setEnglish(english);
+        updateKeys();
+    }
+
+    @Override
+    public void onText(String text) {
+        if (composing && ctx != 0) apply(Native.commitAll(ctx));
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) ic.commitText(text, 1);
+        updateKeys();
+    }
+
+    /** The action Enter performs in this field, or IME_ACTION_NONE for a new line. */
+    private int enterAction() {
+        EditorInfo ei = getCurrentInputEditorInfo();
+        if (ei == null) return EditorInfo.IME_ACTION_NONE;
+        int action = ei.imeOptions & EditorInfo.IME_MASK_ACTION;
+        boolean multiLine = (ei.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+        boolean noEnterAction = (ei.imeOptions & EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0;
+        if (multiLine || noEnterAction || action == EditorInfo.IME_ACTION_UNSPECIFIED) {
+            return EditorInfo.IME_ACTION_NONE;
+        }
+        return action;
+    }
+
+    private String enterLabel() {
+        switch (enterAction()) {
+            case EditorInfo.IME_ACTION_SEARCH:
+                return english ? "Search" : "検索";
+            case EditorInfo.IME_ACTION_SEND:
+                return english ? "Send" : "送信";
+            case EditorInfo.IME_ACTION_GO:
+                return english ? "Go" : "移動";
+            case EditorInfo.IME_ACTION_NEXT:
+                return english ? "Next" : "次へ";
+            case EditorInfo.IME_ACTION_DONE:
+                return english ? "Done" : "完了";
+            case EditorInfo.IME_ACTION_PREVIOUS:
+                return english ? "Prev" : "前へ";
+            default:
+                return "⏎";
+        }
+    }
+
+    /** Space and Enter labels, and Shift at the start of an English sentence. */
+    private void updateKeys() {
+        if (keyboard == null) return;
+        boolean converting = composing && ctx != 0 && Native.converting(ctx);
+        keyboard.setState(composing, converting, enterLabel());
+        boolean caps = false;
+        EditorInfo ei = getCurrentInputEditorInfo();
+        InputConnection ic = getCurrentInputConnection();
+        if (english && !composing && ei != null && ic != null
+                && (ei.inputType & EditorInfo.TYPE_MASK_CLASS) == EditorInfo.TYPE_CLASS_TEXT
+                && (ei.inputType & (EditorInfo.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        | EditorInfo.TYPE_TEXT_FLAG_CAP_WORDS
+                        | EditorInfo.TYPE_TEXT_FLAG_CAP_CHARACTERS)) != 0) {
+            caps = ic.getCursorCapsMode(ei.inputType) != 0;
+        }
+        keyboard.setAutoShift(caps);
     }
 
     @Override
@@ -216,6 +310,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             }
         }
         direct(code);
+        updateKeys();
     }
 
     /** What the key does without the IME. */
@@ -232,15 +327,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 }
                 break;
             case Native.KEY_ENTER:
-                EditorInfo ei = getCurrentInputEditorInfo();
-                int action = ei == null ? EditorInfo.IME_ACTION_NONE
-                        : ei.imeOptions & EditorInfo.IME_MASK_ACTION;
-                boolean multiLine = ei != null
-                        && (ei.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
-                boolean noEnterAction = ei != null
-                        && (ei.imeOptions & EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0;
-                if (!multiLine && !noEnterAction && action != EditorInfo.IME_ACTION_NONE
-                        && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+                int action = enterAction();
+                if (action != EditorInfo.IME_ACTION_NONE) {
                     ic.performEditorAction(action);
                 } else {
                     sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
@@ -294,11 +382,30 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         composingLength = st.preedit.length();
         ic.endBatchEdit();
         showCandidates(st.candidates, st.selected, st.suggestions);
+        updateKeys();
     }
 
     private void showCandidates(String[] items, int selected, boolean suggestions) {
         if (candidateRow == null) return;
         candidateRow.removeAllViews();
+        if (items.length == 0) {
+            // Nothing to pick: the settings button.
+            TextView gear = new TextView(this);
+            gear.setText("⚙");
+            gear.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+            gear.setTextColor(theme.subText);
+            gear.setGravity(Gravity.CENTER);
+            gear.setPadding(dp(14), 0, dp(14), 0);
+            gear.setOnClickListener(v -> {
+                android.content.Intent i = new android.content.Intent(this, SettingsActivity.class);
+                i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            });
+            candidateRow.addView(gear, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            candidateScroll.scrollTo(0, 0);
+            return;
+        }
         for (int i = 0; i < items.length; i++) {
             final int index = i;
             TextView tv = new TextView(this);

@@ -35,6 +35,12 @@ final class Native {
 
     static native void setLeftContext(long ctx, String text);
 
+    /** Reads the settings file again. */
+    static native void reloadOptions(long ctx);
+
+    /** Whether conversion candidates are shown. */
+    static native boolean converting(long ctx);
+
     /** A parsed snapshot (see Context::snapshot in crates/android). */
     static final class State {
         String commit = "";

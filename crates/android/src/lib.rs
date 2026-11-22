@@ -143,6 +143,23 @@ impl Context {
         self.session.take_commit();
     }
 
+    /// Reads the settings file again (the settings screen wrote it).
+    pub fn reload_options(&mut self) {
+        let o = paths::load_options();
+        if let Some(c) = converter() {
+            c.configure(false, o.learning);
+            c.set_english_words(o.english_words, o.english_katakana);
+        }
+        self.session.options = o;
+    }
+
+    /// Whether a conversion is shown (Space picks the next candidate).
+    pub fn converting(&self) -> bool {
+        self.session
+            .candidates()
+            .is_some_and(|l| l.kind == ListKind::Conversion)
+    }
+
     pub fn set_left_context(&mut self, text: &str) {
         self.session.set_left_context(text);
     }
@@ -285,6 +302,30 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_commitAll(
 pub unsafe extern "system" fn Java_io_github_sweetime_Native_reset(_: JNIEnv, _: JClass, p: jlong) {
     let c = unsafe { ctx(p) };
     guard((), || c.reset());
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_reloadOptions(
+    _: JNIEnv,
+    _: JClass,
+    p: jlong,
+) {
+    let c = unsafe { ctx(p) };
+    guard((), || c.reload_options());
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_converting(
+    _: JNIEnv,
+    _: JClass,
+    p: jlong,
+) -> jboolean {
+    let c = unsafe { ctx(p) };
+    guard(false, || c.converting()) as jboolean
 }
 
 /// # Safety

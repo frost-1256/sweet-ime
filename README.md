@@ -165,7 +165,7 @@ keyboard layout.
 without Gradle by `android/build.ps1` (cargo-ndk, aapt2, javac, d8 and
 apksigner). It needs the Android SDK with `platforms;android-36`,
 `build-tools;36.0.0` and an NDK, a JDK 17 or newer, `cargo install
-cargo-ndk`, `rustup target add aarch64-linux-android`, and the dictionary
+cargo-ndk`, `rustup target add aarch64-linux-android x86_64-linux-android`, and the dictionary
 in `dist/` or `data/`:
 
 ```powershell
@@ -175,8 +175,12 @@ powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
 The APK (`out/SweetIME-Android.apk`) bundles the dictionary and copies
 it to the app's storage on first use. Open **Sweet IME** to turn the
 keyboard on, then pick it with the keyboard switcher. Shift starts an
-English word as on the desktop, and the **あ** key switches to direct
+English word as on the desktop, and the globe key switches to direct
 English input. Password, URL, email and number fields start in English.
+The layout follows common Android keyboards: long-press q–p for digits,
+**?123** for symbols and a number pad, and swipe along the space bar to
+move the caret. The app holds the conversion and keyboard settings (key
+height, number row, vibration, sound, theme).
 Neural reranking is not used on Android yet.
 
 ## Keys
