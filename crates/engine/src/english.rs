@@ -3,11 +3,10 @@
 //! those readings back their word, also inside a sentence ("githubni" ->
 //! GitHubに).
 
-use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use crate::dict::{TECH_TERMS, VRCHAT_TERMS};
-use crate::romaji;
+use crate::{romaji, word_keys};
 
 /// English words matched by their typed spelling only (not dictionary
 /// entries with a Japanese reading).
@@ -21,23 +20,7 @@ pub const WORD_LIST: &str = include_str!("english_words.txt");
 /// Bundled spellings with their optional kana candidate: technical and
 /// VRChat terms first (in file order), then the English word list.
 pub fn spellings() -> impl Iterator<Item = (&'static str, Option<&'static str>)> {
-    let terms = TECH_TERMS
-        .lines()
-        .chain(VRCHAT_TERMS.lines())
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| {
-            let mut fields = line.split('\t').skip(1);
-            let spelling = fields.next()?;
-            Some((spelling, fields.nth(1).filter(|s| !s.is_empty())))
-        });
-    let words = ENGLISH_WORDS
-        .lines()
-        .filter(|line| !line.starts_with('#') && !line.is_empty())
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            Some((fields.next()?, fields.next().filter(|s| !s.is_empty())))
-        });
-    terms.chain(words)
+    word_keys::bundled_spellings(TECH_TERMS, VRCHAT_TERMS, ENGLISH_WORDS)
 }
 
 /// Whether the keys `raw` type `spelling`: the same letters and digits in
@@ -60,17 +43,7 @@ pub fn spells(spelling: &str, raw: &str) -> bool {
 /// いめ) are left out so they don't take over Japanese input.
 pub fn romaji_readings() -> &'static [(String, &'static str)] {
     static READINGS: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
-    READINGS.get_or_init(|| {
-        let mut out: Vec<(String, &'static str)> = Vec::new();
-        for (spelling, _) in spellings() {
-            for r in readings_of(spelling, 3) {
-                if !out.iter().any(|(x, _)| *x == r) {
-                    out.push((r, spelling));
-                }
-            }
-        }
-        out
-    })
+    READINGS.get_or_init(|| word_keys::bundled_readings(spellings()))
 }
 
 /// (reading, spelling) for each bundled spelling whose keys are all romaji
@@ -158,68 +131,52 @@ fn keys_for(raw: &str, before: &str, upto: &str) -> Option<String> {
     (a < b).then(|| raw[a..b].to_string())
 }
 
-/// The readings typing `spelling` gives when its keys are not romaji: the
-/// reading itself, and the one with a final consonant doubled by the next
-/// word's first key ("discordde" reads ぢscおrっで).
-fn readings_of(spelling: &str, min_len: usize) -> Vec<String> {
-    let keys: String = spelling
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '.' | '-'))
-        .collect();
-    if keys.len() < min_len || !keys.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return Vec::new();
-    }
-    let reading = romaji::to_hiragana(&keys.to_ascii_lowercase());
-    if !reading.bytes().any(|b| b.is_ascii_alphabetic()) {
-        return Vec::new();
-    }
-    let doubled = reading
-        .strip_suffix(|c: char| c.is_ascii_alphabetic() && c != 'n')
-        // Still not romaji without that letter (Apex: あぺっ is).
-        .filter(|stem| stem.bytes().any(|b| b.is_ascii_alphabetic()))
-        .map(|stem| format!("{stem}っ"));
-    std::iter::once(reading).chain(doubled).collect()
-}
 
 /// Readings of the word list's words whose keys are not romaji, mapped to
-/// the word (てst -> test). Bundled spellings are not included. Every
-/// process using the IME holds one, so the readings share one string and
-/// entries are sorted for binary search (about 2 MB in all).
+/// the word (てst -> test). Bundled spellings are not included. The build
+/// script builds it (see `word_keys::build_index`), so it is read-only data
+/// shared by every process using the IME.
 pub struct WordIndex {
-    readings: String,
-    /// Sorted by reading.
-    entries: Vec<WordEntry>,
+    readings: &'static str,
+    /// `word_keys::ENTRY_BYTES` per entry, sorted by reading.
+    entries: &'static [u8],
     /// Longest reading, in bytes.
     pub max_len: usize,
 }
 
-#[derive(Clone, Copy)]
-struct WordEntry {
-    /// Byte range in `WordIndex::readings`.
-    reading: (u32, u16),
-    /// Byte range in `WORD_LIST`.
-    word: (u32, u16),
-}
+static INDEX: WordIndex = WordIndex {
+    readings: include_str!(concat!(env!("OUT_DIR"), "/word_readings.txt")),
+    entries: include_bytes!(concat!(env!("OUT_DIR"), "/word_entries.bin")),
+    max_len: include!(concat!(env!("OUT_DIR"), "/word_max_len.rs")),
+};
 
 impl WordIndex {
-    fn reading(&self, e: &WordEntry) -> &str {
-        &self.readings[e.reading.0 as usize..e.reading.0 as usize + e.reading.1 as usize]
+    fn reading(&self, i: usize) -> &'static str {
+        let (start, len, ..) = word_keys::decode(self.entries, i);
+        &self.readings[start as usize..start as usize + len as usize]
     }
 
     pub fn get(&self, reading: &str) -> Option<&'static str> {
         if reading.len() > self.max_len {
             return None;
         }
-        let i = self
-            .entries
-            .binary_search_by(|e| self.reading(e).cmp(reading))
-            .ok()?;
-        let (start, len) = self.entries[i].word;
-        Some(&WORD_LIST[start as usize..start as usize + len as usize])
+        let (mut lo, mut hi) = (0, self.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match self.reading(mid).cmp(reading) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+                std::cmp::Ordering::Equal => {
+                    let (.., start, len) = word_keys::decode(self.entries, mid);
+                    return Some(&WORD_LIST[start as usize..start as usize + len as usize]);
+                }
+            }
+        }
+        None
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() / word_keys::ENTRY_BYTES
     }
 
     pub fn is_empty(&self) -> bool {
@@ -228,45 +185,7 @@ impl WordIndex {
 }
 
 pub fn word_index() -> &'static WordIndex {
-    static INDEX: OnceLock<WordIndex> = OnceLock::new();
-    INDEX.get_or_init(|| {
-        let bundled: HashSet<&str> = romaji_readings().iter().map(|(r, _)| r.as_str()).collect();
-        let mut readings = String::new();
-        let mut entries = Vec::new();
-        for word in WORD_LIST
-            .lines()
-            .filter(|l| !l.starts_with('#') && !l.is_empty())
-        {
-            let at = word.as_ptr() as usize - WORD_LIST.as_ptr() as usize;
-            for r in readings_of(word, 4) {
-                if bundled.contains(r.as_str()) || r.len() > u16::MAX as usize {
-                    continue;
-                }
-                entries.push(WordEntry {
-                    reading: (readings.len() as u32, r.len() as u16),
-                    word: (at as u32, word.len() as u16),
-                });
-                readings.push_str(&r);
-            }
-        }
-        let mut index = WordIndex {
-            readings,
-            entries: Vec::new(),
-            max_len: 0,
-        };
-        // Stable: of two words with one reading, the first in the file wins.
-        entries.sort_by(|a, b| index.reading(a).cmp(index.reading(b)));
-        entries.dedup_by(|b, a| index.reading(a) == index.reading(b));
-        index.max_len = entries
-            .iter()
-            .map(|e| e.reading.1 as usize)
-            .max()
-            .unwrap_or(0);
-        index.entries = entries;
-        index.entries.shrink_to_fit();
-        index.readings.shrink_to_fit();
-        index
-    })
+    &INDEX
 }
 
 /// Guesses at the kana reading of an English word as a katakana loanword,
@@ -494,6 +413,18 @@ mod tests {
 #[cfg(test)]
 mod split_tests {
     use super::*;
+
+    #[test]
+    fn prebuilt_index_matches_the_word_list() {
+        let bundled: std::collections::HashSet<&str> = romaji_readings().iter().map(|(r, _)| r.as_str()).collect();
+        let (readings, entries) = word_keys::build_index(WORD_LIST, &bundled);
+        assert_eq!(readings, INDEX.readings);
+        assert_eq!(word_keys::encode(&entries), INDEX.entries);
+        assert!(INDEX.len() > 50_000, "{}", INDEX.len());
+        assert_eq!(INDEX.get("てst"), Some("test"));
+        assert_eq!(INDEX.get("ぶsy"), Some("busy"));
+        assert_eq!(INDEX.get("これ"), None);
+    }
 
     #[test]
     fn letter_runs_join_across_little_kana() {

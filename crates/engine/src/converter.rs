@@ -202,11 +202,6 @@ fn is_kana(c: char) -> bool {
 impl Converter {
     pub fn new(dict: Dictionary) -> Self {
         let number_pos = dict.pos_id("名詞,数,*,*,*,*,*").zip(dict.pos_id("名詞,数,アラビア数字,*,*,*,*"));
-        // Building the English word index takes tens of milliseconds; do it
-        // now so the first English word typed doesn't wait for it.
-        let _ = std::thread::Builder::new().name("sweet-english".into()).spawn(|| {
-            crate::english::word_index();
-        });
         Self { dict, reranker: None, history: Mutex::new(UserHistory::new()),
             user_dict: Mutex::new(UserDictionary::new()),
             number_pos,
