@@ -19,6 +19,8 @@ pub enum Theme {
     Matcha,
     Midnight,
     Lavender,
+    /// GNOME's Adwaita (GTK) colors; follows light/dark like the default.
+    Adwaita,
 }
 
 /// Colors used to draw one theme.
@@ -68,7 +70,7 @@ const DARK: Colors = Colors {
 };
 
 impl Theme {
-    pub const ALL: [Theme; 7] = [
+    pub const ALL: [Theme; 8] = [
         Theme::Default,
         Theme::Light,
         Theme::Dark,
@@ -76,6 +78,7 @@ impl Theme {
         Theme::Matcha,
         Theme::Midnight,
         Theme::Lavender,
+        Theme::Adwaita,
     ];
 
     /// Name used in `config.txt`.
@@ -88,6 +91,7 @@ impl Theme {
             Theme::Matcha => "matcha",
             Theme::Midnight => "midnight",
             Theme::Lavender => "lavender",
+            Theme::Adwaita => "adwaita",
         }
     }
 
@@ -101,6 +105,7 @@ impl Theme {
             Theme::Matcha => "抹茶",
             Theme::Midnight => "ミッドナイト",
             Theme::Lavender => "ラベンダー",
+            Theme::Adwaita => "GTK (Adwaita)",
         }
     }
 
@@ -110,8 +115,13 @@ impl Theme {
             .find(|t| t.id().eq_ignore_ascii_case(id.trim()))
     }
 
-    /// Colors for this theme; `system_light` is the Windows app theme and
-    /// only matters for [`Theme::Default`].
+    /// Whether the colors follow the system's light/dark setting.
+    pub fn follows_system(self) -> bool {
+        matches!(self, Theme::Default | Theme::Adwaita)
+    }
+
+    /// Colors for this theme; `system_light` is the system app theme and
+    /// only matters when [`Theme::follows_system`].
     pub fn colors(self, system_light: bool) -> Colors {
         match self {
             Theme::Default if system_light => LIGHT,
@@ -149,6 +159,29 @@ impl Theme {
                 accent: Some(Rgb(0x7a, 0xa2, 0xff)),
                 border: Rgb(0x34, 0x3b, 0x55),
                 badge_border: Rgb(0x4a, 0x53, 0x72),
+                dark: true,
+            },
+            // libadwaita's popover colors and blue accent.
+            Theme::Adwaita if system_light => Colors {
+                bg: Rgb(0xff, 0xff, 0xff),
+                text: Rgb(0x32, 0x32, 0x36),
+                sub: Rgb(0x7f, 0x7f, 0x83),
+                hover: Rgb(0x00, 0x00, 0x06),
+                hover_alpha: 0.08,
+                accent: Some(Rgb(0x35, 0x84, 0xe4)),
+                border: Rgb(0xdb, 0xdb, 0xdc),
+                badge_border: Rgb(0xc0, 0xc0, 0xc2),
+                dark: false,
+            },
+            Theme::Adwaita => Colors {
+                bg: Rgb(0x36, 0x36, 0x3a),
+                text: Rgb(0xff, 0xff, 0xff),
+                sub: Rgb(0xa8, 0xa8, 0xab),
+                hover: Rgb(0xff, 0xff, 0xff),
+                hover_alpha: 0.10,
+                accent: Some(Rgb(0x78, 0xae, 0xed)),
+                border: Rgb(0x4a, 0x4a, 0x4e),
+                badge_border: Rgb(0x5a, 0x5a, 0x5e),
                 dark: true,
             },
             Theme::Lavender => Colors {

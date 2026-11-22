@@ -27,6 +27,14 @@ fn main() -> eframe::Result<()> {
     if std::env::args().any(|a| a == "--check-update") {
         return update_ui::check_at_sign_in();
     }
+    // Packaging: `--write-fcitx-themes <dir>` writes every fcitx5 theme.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--write-fcitx-themes") {
+        let dir = args.get(i + 1).expect("--write-fcitx-themes <dir>");
+        fcitx_theme::write_themes(std::path::Path::new(dir), &fcitx_theme::all_themes())
+            .expect("cannot write the fcitx5 themes");
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sweet IME の設定")

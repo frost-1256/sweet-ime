@@ -76,6 +76,7 @@ stdenv.mkDerivation (finalAttrs: {
   postInstall = ''
     install -Dm644 system.dict "$out/share/sweet-ime/system.dict"
     install -Dm755 "$CARGO_TARGET_DIR/release/sweet-settings" "$out/bin/sweet-settings"
+    "$out/bin/sweet-settings" --write-fcitx-themes "$out/share/fcitx5/themes"
     install -Dm755 "$CARGO_TARGET_DIR/release/sweet-zenz-pack" "$out/bin/sweet-zenz-pack"
     install -Dm644 ../crates/settings/sweet-settings.desktop "$out/share/applications/sweet-settings.desktop"
     substituteInPlace "$out/share/applications/sweet-settings.desktop" \
