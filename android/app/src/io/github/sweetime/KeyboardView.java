@@ -122,7 +122,7 @@ final class KeyboardView extends View {
         }
     };
     private boolean keyPreview = true;
-    private float rowHeightDp = 54;
+    private float rowHeightDp = 58;
     private float punctuationWidth = 1;
 
     // Swiping on the space bar moves the caret.
@@ -164,7 +164,8 @@ final class KeyboardView extends View {
         this.haptic = haptic;
         this.sound = sound;
         this.keyPreview = keyPreview;
-        rowHeightDp = keyHeight == 0 ? 48 : keyHeight == 2 ? 62 : 54;
+        // Gboard-sized by default; low and high step about 8% each way.
+        rowHeightDp = keyHeight == 0 ? 53 : keyHeight == 2 ? 64 : 58;
         float width = symbolWidth == 0 ? 0.85f : symbolWidth == 2 ? 1.35f : 1f;
         if (numberRow != this.numberRow || punctuationWidth != width) {
             this.numberRow = numberRow;
@@ -324,7 +325,9 @@ final class KeyboardView extends View {
     }
 
     private void layoutKeys(int w, int h) {
-        float pad = 3 * density;
+        // Narrower gaps between keys than between rows, so keys look wider.
+        float padX = 2.5f * density;
+        float padY = 3 * density;
         float rowH = (h - 8 * density) / rows.size();
         float top = 4 * density;
         for (List<KeyDef> row : rows) {
@@ -333,7 +336,7 @@ final class KeyboardView extends View {
             float unit = Math.min(w / 10f, w / units);
             float x = (w - unit * units) / 2;
             for (KeyDef k : row) {
-                k.rect.set(x + pad, top + pad, x + k.width * unit - pad, top + rowH - pad);
+                k.rect.set(x + padX, top + padY, x + k.width * unit - padX, top + rowH - padY);
                 x += k.width * unit;
             }
             top += rowH;
@@ -420,7 +423,7 @@ final class KeyboardView extends View {
                 }
                 String label = labelOf(k);
                 float size = label.length() > 2 ? 14 : label.length() == 2 && !label.equals("1/2")
-                        && !label.equals("2/2") ? 15 : 20;
+                        && !label.equals("2/2") ? 15 : 22;
                 if (label.length() > 1 && k.code == TEXT) size = 18;
                 textPaint.setTextSize(size * density);
                 textPaint.setColor(on ? theme.onAccent : theme.text);
