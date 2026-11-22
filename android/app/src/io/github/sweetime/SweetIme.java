@@ -40,6 +40,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private final Handler main = new Handler(Looper.getMainLooper());
     private long ctx;
     private Theme theme;
+    private LinearLayout inputRoot;
     private KeyboardView keyboard;
     private LinearLayout candidateRow;
     private HorizontalScrollView candidateScroll;
@@ -50,7 +51,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     /** This field wants no conversion (passwords, URLs, numbers). */
     private boolean fieldEnglish;
     private boolean composing;
-    private String themeKey = "";
+    private int selectedCandidate = -1;
     private int composingLength;
     /** When Space last typed a space (for the double-space period). */
     private long lastSpace;
@@ -124,8 +125,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public View onCreateInputView() {
         theme = Theme.of(this);
-        themeKey = themeKey();
         LinearLayout root = new LinearLayout(this);
+        inputRoot = root;
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(theme.background);
         // The key preview draws over the candidate bar.
@@ -160,13 +161,22 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         return root;
     }
 
-    /**
-     * What the keyboard looks like depends on: the theme, the system's night
-     * mode and, for Material You, the wallpaper colors.
-     */
-    private String themeKey() {
-        Theme t = Theme.of(this);
-        return Prefs.number(this, Prefs.THEME, 0) + "/" + t.dark + "/" + t.key + "/" + t.accent;
+    private void refreshTheme() {
+        theme = Theme.of(this);
+        inputRoot.setBackgroundColor(theme.background);
+        for (int i = 0; i < candidateRow.getChildCount(); i++) {
+            View child = candidateRow.getChildAt(i);
+            if (child instanceof TextView) {
+                ((TextView) child).setTextColor(theme.text);
+                if (selectedCandidate >= 0 && i == selectedCandidate * 2) {
+                    child.setBackgroundColor(theme.focus);
+                }
+            } else if (i % 2 == 1) {
+                child.setBackgroundColor(theme.specialKey);
+            } else {
+                child.invalidate(); // Settings icon
+            }
+        }
     }
 
     private void configureKeyboard() {
@@ -209,10 +219,9 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onStartInputView(EditorInfo attr, boolean restarting) {
         super.onStartInputView(attr, restarting);
-        // Settings may have changed since the keyboard was last shown.
-        if (keyboard != null && !themeKey().equals(themeKey)) {
-            setInputView(onCreateInputView());
-        } else if (keyboard != null) {
+        // Keep the attached view and its navigation-bar insets when changing themes.
+        if (keyboard != null) {
+            refreshTheme();
             configureKeyboard();
         }
         if (ctx != 0) Native.reloadOptions(ctx);
@@ -473,6 +482,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     private void showCandidates(String[] items, int selected, boolean suggestions) {
         if (candidateRow == null) return;
+        selectedCandidate = selected;
         candidateRow.removeAllViews();
         if (items.length == 0) {
             // Nothing to pick: the settings button.
