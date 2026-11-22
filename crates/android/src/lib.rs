@@ -265,22 +265,6 @@ impl Context {
         Some(self.snapshot())
     }
 
-    /// Reports the last commit as the conversion wanted for its reading,
-    /// after the editor verified the commit. Returns whether it was stored.
-    pub fn report_commit(&mut self, text: &str) -> bool {
-        if self.private_field || self.session.reportable_commit() != Some(text) {
-            return false;
-        }
-        let Some(conv) = converter() else { return false };
-        if !self.session.handle(&conv, Key::ReportCommit) {
-            return false;
-        }
-        let (Some(report), Some(path)) = (self.session.take_report(), paths::reports_file()) else {
-            return false;
-        };
-        sweet_engine::reports::add(&path, report).is_ok()
-    }
-
     pub fn reset(&mut self) {
         self.session.reset();
         self.session.take_commit();
@@ -323,8 +307,7 @@ impl Context {
 
     /// The state for the Java side, fields joined by U+001F: commit text,
     /// preedit, caret, spans, candidate kind, selected candidate, then the
-    /// candidates joined by U+001E, and flags for an undoable and a
-    /// reportable commit.
+    /// candidates joined by U+001E and a flag for an undoable commit.
     /// While typing, the candidates start with
     /// the text as shown and its reading. Offsets are UTF-16 units; spans are
     /// `start,end,attr` joined by `;` (attr 0 input, 1 converted, 2
@@ -334,8 +317,6 @@ impl Context {
         let commit = self.session.take_commit();
         let undoable =
             !self.private_field && self.session.undoable_commit() == Some(commit.as_str());
-        let reportable =
-            !self.private_field && self.session.reportable_commit() == Some(commit.as_str());
         self.typed = self.typed_items();
         let p = self.session.preedit();
         let u16_at = |byte: usize| p.text[..byte.min(p.text.len())].encode_utf16().count();
@@ -377,7 +358,6 @@ impl Context {
             selected.to_string(),
             items.join(&ITEM.to_string()),
             u8::from(undoable).to_string(),
-            u8::from(reportable).to_string(),
         ]
         .join(&FIELD.to_string())
     }
@@ -422,7 +402,6 @@ mod tests {
         let done = c.key(KEY_ENTER).unwrap();
         assert!(done.starts_with("かな\u{1f}\u{1f}0"));
         assert_eq!(done.split(FIELD).nth(7), Some("1"));
-        assert_eq!(done.split(FIELD).nth(8), Some("1"));
         assert!(c.undo_commit("別の文字").is_none());
         let restored = c.undo_commit("かな").unwrap();
         assert_eq!(

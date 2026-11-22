@@ -21,7 +21,6 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
-import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -55,8 +54,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private final java.util.ArrayList<String> recentClips = new java.util.ArrayList<>();
     private View expandButton;
     private View clipboardButton;
-    private Button undoButton;
-    private Button reportButton;
+    private View undoButton;
     private UndoTarget undoTarget;
     private TextView panelTitle;
     private String[] candidateItems = new String[0];
@@ -213,18 +211,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         panelTitle.setGravity(Gravity.CENTER_VERTICAL);
         panelTitle.setPadding(dp(14), 0, 0, 0);
         toolbar.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
-        undoButton = new Button(this);
-        undoButton.setText("戻す");
-        undoButton.setContentDescription("確定を取り消して読みに戻す");
-        styleToolbarButton(undoButton);
-        undoButton.setOnClickListener(v -> undoCommit());
-        toolbar.addView(undoButton, toolbarButtonParams());
-        reportButton = new Button(this);
-        reportButton.setText("報告");
-        reportButton.setContentDescription("この変換を報告に追加する");
-        styleToolbarButton(reportButton);
-        reportButton.setOnClickListener(v -> reportCommit());
-        toolbar.addView(reportButton, toolbarButtonParams());
+        undoButton = iconButton(() -> Icons.UNDO, "確定を取り消して読みに戻す", this::undoCommit);
+        toolbar.addView(undoButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         expandButton = iconButton(() -> candidatesExpanded ? Icons.COLLAPSE : Icons.EXPAND,
                 "候補を展開", () -> {
                     candidatesExpanded = !candidatesExpanded;
@@ -309,30 +297,11 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         return root;
     }
 
-    /** A toolbar text button in the key colors, readable in both themes. */
-    private void styleToolbarButton(Button button) {
-        GradientDrawable background = new GradientDrawable();
-        background.setCornerRadius(dp(8));
-        background.setColor(theme.key);
-        button.setBackground(background);
-        button.setTextColor(theme.text);
-        button.setAllCaps(false);
-        button.setStateListAnimator(null);
-    }
-
-    private LinearLayout.LayoutParams toolbarButtonParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(64), dp(40));
-        params.setMargins(dp(3), 0, dp(3), 0);
-        params.gravity = Gravity.CENTER_VERTICAL;
-        return params;
-    }
-
     private void refreshTheme() {
         theme = Theme.of(this);
         inputRoot.setBackgroundColor(theme.background);
         panelTitle.setTextColor(theme.text);
-        styleToolbarButton(undoButton);
-        styleToolbarButton(reportButton);
+        undoButton.invalidate();
         clipboardButton.invalidate();
         expandButton.invalidate();
         for (int i = 0; i < candidateRow.getChildCount(); i++) {
@@ -601,42 +570,19 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         updateKeys();
     }
 
-    /** The last commit, while it can be taken back or reported. */
     private static final class UndoTarget {
         final String text;
         final int end;
-        final boolean undoable;
-        boolean reportable;
 
-        UndoTarget(String text, int end, boolean undoable, boolean reportable) {
+        UndoTarget(String text, int end) {
             this.text = text;
             this.end = end;
-            this.undoable = undoable;
-            this.reportable = reportable;
         }
     }
 
     private void clearUndo() {
         undoTarget = null;
         if (undoButton != null) undoButton.setVisibility(View.GONE);
-        if (reportButton != null) reportButton.setVisibility(View.GONE);
-    }
-
-    /** Adds the last commit to the reports; it can still be taken back. */
-    private void reportCommit() {
-        UndoTarget target = undoTarget;
-        InputConnection ic = getCurrentInputConnection();
-        if (target == null || !target.reportable || ctx == 0 || privateField || composing
-                || commitEnd(ic, target.text) != target.end) {
-            clearUndo();
-            return;
-        }
-        boolean saved = Native.reportCommit(ctx, target.text);
-        target.reportable = false;
-        updatePanelVisibility();
-        android.widget.Toast.makeText(this, saved
-                ? "変換を報告に追加しました。設定の「変換の報告」から送れます。"
-                : "報告を保存できませんでした", android.widget.Toast.LENGTH_SHORT).show();
     }
 
     /** Returns the absolute UTF-16 caret offset if this exact text precedes it. */
@@ -658,7 +604,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         UndoTarget target = undoTarget;
         clearUndo();
         InputConnection ic = getCurrentInputConnection();
-        if (target == null || !target.undoable || ctx == 0 || privateField || composing
+        if (target == null || ctx == 0 || privateField || composing
                 || commitEnd(ic, target.text) != target.end) return;
         String snapshot = Native.undoCommit(ctx, target.text);
         if (snapshot != null) apply(Native.State.parse(snapshot), ic, target);
@@ -805,9 +751,9 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             while (shown.size() > 32) shown.removeFirst();
         }
         ic.endBatchEdit();
-        if (committed && (st.undoable || st.reportable) && !privateField) {
+        if (committed && st.undoable && !privateField) {
             int end = commitEnd(ic, st.commit);
-            if (end >= 0) undoTarget = new UndoTarget(st.commit, end, st.undoable, st.reportable);
+            if (end >= 0) undoTarget = new UndoTarget(st.commit, end);
         }
         showCandidates(st.candidates, st.selected, st.suggestions);
         updateKeys();
@@ -851,10 +797,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         panelTitle.setVisibility(panel ? View.VISIBLE : View.GONE);
         panelTitle.setText(emojiOpen ? "絵文字" : clipboardOpen ? "クリップボード" : "候補一覧");
         panelTitle.setTextColor(theme.text);
-        undoButton.setVisibility(!panel && undoTarget != null && undoTarget.undoable
-                ? View.VISIBLE : View.GONE);
-        reportButton.setVisibility(!panel && undoTarget != null && undoTarget.reportable
-                ? View.VISIBLE : View.GONE);
+        undoButton.setVisibility(!panel && undoTarget != null ? View.VISIBLE : View.GONE);
         expandButton.setVisibility(!clipboardOpen && !emojiOpen && candidateItems.length > 1
                 ? View.VISIBLE : View.GONE);
         String expandLabel = candidatesExpanded ? "候補を閉じる" : "候補を展開";

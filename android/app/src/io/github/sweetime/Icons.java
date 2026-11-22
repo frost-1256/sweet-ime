@@ -35,6 +35,7 @@ final class Icons {
     static final int PALETTE = 22;
     static final int INFO = 23;
     static final int EMOJI = 24;
+    static final int UNDO = 25;
 
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -212,6 +213,15 @@ final class Icons {
                 c.drawCircle(9, 10, 1.2f, fill);
                 c.drawCircle(15, 10, 1.2f, fill);
                 c.drawArc(7.5f, 9.5f, 16.5f, 17, 20, 140, false, stroke);
+                break;
+            case UNDO:
+                path.moveTo(5, 9);
+                path.lineTo(14.5f, 9);
+                path.cubicTo(17.8f, 9, 20.5f, 11.7f, 20.5f, 15);
+                path.cubicTo(20.5f, 18.3f, 17.8f, 21, 14.5f, 21);
+                path.lineTo(9, 21);
+                c.drawPath(path, stroke);
+                arrowHead(c, 5, 9, -1);
                 break;
             case INFO:
                 c.drawCircle(12, 12, 9, stroke);

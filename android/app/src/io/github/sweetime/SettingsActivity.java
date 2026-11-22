@@ -93,11 +93,18 @@ public final class SettingsActivity extends Activity {
         scroll.setFocusableInTouchMode(true);
         // Below the status bar and above the navigation bar and the keyboard.
         scroll.setOnApplyWindowInsetsListener((v, insets) -> {
-            android.graphics.Insets bars = insets.getInsets(
-                    android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
+            android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars());
+            int ime = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom;
             // The status bar area stays clear while scrolling.
             v.setPadding(0, bars.top, 0, 0);
-            bottomInset = bars.bottom;
+            // The page ends above the keyboard, so the focused field scrolls into view;
+            // without it the content runs on under the navigation bar.
+            ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) v.getLayoutParams();
+            if (lp != null && lp.bottomMargin != ime) {
+                lp.bottomMargin = ime;
+                v.setLayoutParams(lp);
+            }
+            bottomInset = ime > 0 ? 0 : bars.bottom;
             if (box != null) padBox();
             return android.view.WindowInsets.CONSUMED;
         });
@@ -751,7 +758,7 @@ public final class SettingsActivity extends Activity {
     private Button reportSend;
     private Button reportClear;
 
-    /** Written by the keyboard (crates/engine/src/reports.rs), one evaluation row per report. */
+    /** Same format as crates/engine/src/reports.rs: one evaluation row per report. */
     private File reportsFile() {
         return new File(new File(getFilesDir(), "sweet-ime"), "reports.tsv");
     }
@@ -780,6 +787,8 @@ public final class SettingsActivity extends Activity {
     private boolean saveReports(java.util.List<String[]> reports) {
         File f = reportsFile();
         if (reports.isEmpty()) return !f.exists() || f.delete();
+        File dir = f.getParentFile();
+        if (dir != null && !dir.exists() && !dir.mkdirs()) return false;
         StringBuilder text = new StringBuilder(REPORTS_HEADER);
         for (String[] r : reports) text.append(reportLine(r)).append('\n');
         try {
@@ -790,15 +799,40 @@ public final class SettingsActivity extends Activity {
         }
     }
 
-    /** Conversions reported from the keyboard, and sending them as a GitHub issue. */
+    /** Conversions the user wrote down, and sending them as a GitHub issue. */
     private void reportsSection() {
         LinearLayout c = card("変換の報告");
-        TextView about = text("変換を直して確定したあと、候補バーの「報告」を押すと、読みと確定した文字が"
-                + "ここに追加されます。報告は端末の中だけに保存され、「GitHub に送る」で開く画面で"
-                + "内容を確かめて送信するまで、どこにも送られません。項目をタップすると消せます。",
+        TextView about = text("うまく変換できなかった言葉の読みと、期待する変換を書いて追加してください。"
+                + "報告は端末の中だけに保存され、「GitHub に送る」で開く画面で内容を確かめて送信するまで、"
+                + "どこにも送られません。項目をタップすると消せます。",
                 13, theme.subText);
         about.setPadding(0, 0, 0, dp(8));
         c.addView(about);
+        EditText reading = reportField("読み(例: ほかにあんある)");
+        EditText wanted = reportField("期待する変換(例: 他に案ある)");
+        c.addView(reading);
+        c.addView(wanted);
+        Button add = tonalButton("追加");
+        add.setOnClickListener(v -> {
+            String r = reading.getText().toString().trim();
+            String w = wanted.getText().toString().trim();
+            if (!validReport(r) || !validReport(w)) {
+                Toast.makeText(this, "読みと期待する変換を入力してください", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            java.util.List<String[]> now = loadReports();
+            // The same reading again: the latest wish counts.
+            now.removeIf(x -> x[0].equals(r));
+            now.add(new String[] {r, w});
+            if (!saveReports(now)) {
+                Toast.makeText(this, "報告を保存できませんでした", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            reading.setText("");
+            wanted.setText("");
+            refreshReports();
+        });
+        c.addView(add);
         reportList = new LinearLayout(this);
         reportList.setOrientation(LinearLayout.VERTICAL);
         c.addView(reportList);
@@ -816,6 +850,23 @@ public final class SettingsActivity extends Activity {
                 .show());
         c.addView(reportClear);
         refreshReports();
+    }
+
+    private EditText reportField(String hint) {
+        EditText field = new EditText(this);
+        field.setHint(hint);
+        field.setSingleLine(true);
+        field.setTextColor(theme.text);
+        field.setHintTextColor(theme.subText);
+        field.setBackgroundTintList(android.content.res.ColorStateList.valueOf(theme.subText));
+        field.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(100)});
+        return field;
+    }
+
+    /** One line of up to 100 characters, as crates/engine/src/reports.rs accepts. */
+    private static boolean validReport(String s) {
+        if (s.isEmpty() || s.codePointCount(0, s.length()) > 100) return false;
+        return s.codePoints().noneMatch(Character::isISOControl);
     }
 
     private void refreshReports() {

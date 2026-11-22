@@ -1,4 +1,4 @@
-//! Conversions reported with Ctrl+F12, and sending them as a GitHub issue.
+//! Conversions the user reported, and sending them as a GitHub issue.
 
 use std::path::PathBuf;
 
@@ -11,13 +11,15 @@ pub struct ReportsSection {
     path: Option<PathBuf>,
     reports: Vec<Report>,
     confirm_clear: bool,
+    reading: String,
+    wanted: String,
 }
 
 impl ReportsSection {
     pub fn new() -> Self {
         let path = paths::reports_file();
         let reports = path.as_deref().and_then(|p| reports::load(p).ok()).unwrap_or_default();
-        Self { path, reports, confirm_clear: false }
+        Self { path, reports, confirm_clear: false, reading: String::new(), wanted: String::new() }
     }
 
     fn reload(&mut self) {
@@ -28,6 +30,23 @@ impl ReportsSection {
         let Some(path) = &self.path else { return };
         *status = Some(match reports::save(path, &self.reports) {
             Ok(()) => (done.to_string(), true),
+            Err(e) => (format!("保存できませんでした: {e}"), false),
+        });
+        self.reload();
+    }
+
+    fn add(&mut self, status: &mut Option<(String, bool)>) {
+        let Some(path) = &self.path else { return };
+        let report = Report { reading: self.reading.trim().to_string(), text: self.wanted.trim().to_string() };
+        *status = Some(match reports::add(path, report) {
+            Ok(_) => {
+                self.reading.clear();
+                self.wanted.clear();
+                ("報告に追加しました。".to_string(), true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                ("読みと期待する変換を入力してください。".to_string(), false)
+            }
             Err(e) => (format!("保存できませんでした: {e}"), false),
         });
         self.reload();
@@ -63,12 +82,22 @@ impl ReportsSection {
             });
             ui.label(
                 RichText::new(
-                    "変換を直して確定した直後に Ctrl+F12 を押すと、読みと確定した文字をここに追加します\
-                     (キーは「キー」で変えられます)。報告はこの PC の中だけに保存され、\
-                     「GitHub に送る」で開く画面で内容を確かめて送信するまで、どこにも送られません。",
+                    "うまく変換できなかった言葉の読みと期待する変換を書いて追加してください。変換を直して確定した\
+                     直後に Ctrl+F12 を押しても追加できます(キーは「キー」で変えられます)。報告はこの PC の中だけに\
+                     保存され、「GitHub に送る」で開く画面で内容を確かめて送信するまで、どこにも送られません。",
                 )
                 .weak(),
             );
+            ui.horizontal(|ui| {
+                let reading = egui::TextEdit::singleline(&mut self.reading).hint_text("読み(例: ほかにあんある)");
+                ui.add(reading.desired_width(180.0));
+                let wanted = egui::TextEdit::singleline(&mut self.wanted).hint_text("期待する変換(例: 他に案ある)");
+                ui.add(wanted.desired_width(180.0));
+                let ready = !self.reading.trim().is_empty() && !self.wanted.trim().is_empty();
+                if ui.add_enabled(ready, egui::Button::new("追加")).clicked() {
+                    self.add(status);
+                }
+            });
             if self.reports.is_empty() {
                 ui.label(RichText::new("まだありません。").weak());
             }

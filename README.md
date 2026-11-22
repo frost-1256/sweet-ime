@@ -290,10 +290,11 @@ app edits them on the アプリ page.
 Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
 
 Conversions you report are stored in `%APPDATA%\SweetIME\reports.tsv`.
-Press Ctrl+F12 right after committing a conversion you had to fix (on
-Android, tap 報告 in the candidate bar) to add its reading and text. The
-file stays on your PC; the settings app lists the reports on the 学習 page
-and opens a prefilled GitHub issue only when you press GitHub に送る.
+Add a reading and the text you wanted on the settings app's 学習 page (on
+Android, 学習とプライバシー), or press Ctrl+F12 right after committing a
+conversion you had to fix. The file stays on your device; the settings
+app lists the reports and opens a prefilled GitHub issue only when you
+press GitHub に送る.
 
 Your own words are stored in `%APPDATA%\SweetIME\user_dict.tsv`, one per
 line as `reading<TAB>word<TAB>part of speech<TAB>comment`. Mozc and Google

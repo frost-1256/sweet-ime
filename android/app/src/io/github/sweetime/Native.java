@@ -31,8 +31,6 @@ final class Native {
 
     static native String undoCommit(long ctx, String committedText);
 
-    static native boolean reportCommit(long ctx, String committedText);
-
     static native String commitAll(long ctx);
 
     static native void reset(long ctx);
@@ -76,7 +74,6 @@ final class Native {
         int selected = -1;
         String[] candidates = new String[0];
         boolean undoable;
-        boolean reportable;
 
         static State parse(String s) {
             State st = new State();
@@ -99,7 +96,6 @@ final class Native {
             st.selected = Integer.parseInt(f[5]);
             st.candidates = f[6].isEmpty() ? new String[0] : f[6].split("\u001e", -1);
             st.undoable = f.length >= 8 && f[7].equals("1");
-            st.reportable = f.length >= 9 && f[8].equals("1");
             return st;
         }
     }
