@@ -61,6 +61,8 @@ struct State {
     openclose_sink: Option<(ITfSource, u32)>,
     /// Registered preserved keys for IME mode changes.
     preserved: Vec<(GUID, TF_PRESERVEDKEY, Toggle)>,
+    /// Looks taken for the composition's position since it was last found.
+    relayout_tries: u32,
 }
 
 /// GUID of the `i`-th preserved key.
@@ -82,12 +84,15 @@ pub(crate) fn preserved_guid(i: usize) -> GUID {
 )]
 pub struct TextService {
     st: RefCell<State>,
+    /// The candidate window, reachable while `st` is borrowed (layout
+    /// changes can arrive during our own edit sessions).
+    window_hwnd: std::cell::Cell<isize>,
 }
 
 impl TextService {
     pub fn new() -> Self {
         crate::lock_module(true);
-        Self { st: RefCell::new(State::default()) }
+        Self { st: RefCell::new(State::default()), window_hwnd: std::cell::Cell::new(0) }
     }
 }
 
@@ -337,6 +342,32 @@ impl TextService_Impl {
         });
     }
 
+    /// Positions the candidate list again; `retry` when no layout change
+    /// prompted it (the composition had no position yet).
+    fn relayout(&self, retry: bool) {
+        let _ = crate::guard(|| {
+            let Ok(st) = self.st.try_borrow() else { return Ok(()) };
+            if !st.thread_focused || st.session.candidates().is_none() {
+                return Ok(());
+            }
+            let (Some(target), tid) = (st.ctx.clone(), st.tid) else { return Ok(()) };
+            drop(st);
+            let this: ComObject<TextService> = self.to_object();
+            let ctx = target.clone();
+            edit::request_layout(&ctx, tid, move |ec| {
+                if let Ok(mut st) = this.st.try_borrow_mut() {
+                    let current = st.thread_mgr.as_ref().and_then(|tm| unsafe {
+                        tm.GetFocus().and_then(|doc| doc.GetTop()).ok()
+                    });
+                    if st.thread_focused && current.as_ref() == Some(&target) && st.ctx.as_ref() == Some(&target) {
+                        refresh_candidates(&this, &mut st, ec, &target, retry)?;
+                    }
+                }
+                Ok(())
+            })
+        });
+    }
+
     /// A candidate row was clicked.
     fn on_candidate_click(&self, index: usize) {
         let _ = crate::guard(|| {
@@ -410,6 +441,9 @@ fn make_window(this: &ComObject<TextService>, owner: Option<HWND>) -> Option<Can
     w.set_on_click(move |i| t.on_candidate_click(i));
     let t = this.clone();
     w.set_on_live(move |r, s| t.on_live_result(r, s));
+    let t = this.clone();
+    w.set_on_relayout(move || t.relayout(true));
+    this.window_hwnd.set(w.raw());
     Some(w)
 }
 
@@ -689,26 +723,23 @@ impl ITfCompositionSink_Impl for TextService_Impl {
 impl ITfTextLayoutSink_Impl for TextService_Impl {
     fn OnLayoutChange(&self, pic: Ref<ITfContext>, code: TfLayoutCode, _view: Ref<ITfContextView>) -> Result<()> {
         crate::guard(|| {
-            let Some(ctx) = pic.as_ref().filter(|_| code == TF_LC_CHANGE) else { return Ok(()) };
-            let Ok(st) = self.st.try_borrow() else { return Ok(()) };
-            if !st.thread_focused || st.ctx.as_ref() != Some(ctx) || st.session.candidates().is_none() {
+            if pic.as_ref().is_none() || code != TF_LC_CHANGE {
                 return Ok(());
             }
-            let tid = st.tid;
-            drop(st);
-            let this: ComObject<TextService> = self.to_object();
-            let target = ctx.clone();
-            let _ = edit::request_layout(ctx, tid, move |ec| {
-                if let Ok(mut st) = this.st.try_borrow_mut() {
-                    let current = st.thread_mgr.as_ref().and_then(|tm| unsafe {
-                        tm.GetFocus().and_then(|doc| doc.GetTop()).ok()
-                    });
-                    if st.thread_focused && current.as_ref() == Some(&target) && st.ctx.as_ref() == Some(&target) {
-                        refresh_candidates(&this, &mut st, ec, &target)?;
-                    }
+            let Ok(st) = self.st.try_borrow() else {
+                // Laid out during our own edit session: look once it is over,
+                // or the list may wait for the next key.
+                let hwnd = self.window_hwnd.get();
+                if hwnd != 0 {
+                    crate::candidate_window::relayout_after(hwnd, 10);
                 }
-                Ok(())
-            });
+                return Ok(());
+            };
+            if st.ctx.as_ref() != pic.as_ref() {
+                return Ok(());
+            }
+            drop(st);
+            self.relayout(false);
             Ok(())
         })
     }

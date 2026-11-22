@@ -626,6 +626,23 @@ fn main() -> Result<()> {
         check("candidate follows delayed layout", placed.to_string(), "true", &mut fails);
         h.key(0x0D);
 
+        // Others lay out later without telling: the list looks again.
+        h.clear();
+        h.store.layout_missing.set(true);
+        h.type_str("kisha");
+        h.key(0x20);
+        h.key(0x20);
+        pump();
+        h.store.layout_missing.set(false);
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            pump();
+        }
+        GetWindowRect(hwnd, &mut rect)?;
+        let placed = IsWindowVisible(hwnd).as_bool() && (150..=205).contains(&rect.left) && rect.top == 228;
+        check("candidate shows after a silent layout", placed.to_string(), "true", &mut fails);
+        h.key(0x0D);
+
         // 2c. suggestions while typing; Tab enters the list
         h.clear();
         h.type_str("arigat");

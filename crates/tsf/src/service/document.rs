@@ -214,17 +214,24 @@ fn update_document_inner(
         let caret_range = sub_range(&range, ec, caret, caret)?;
         set_selection(ctx, ec, &caret_range)?;
 
-        refresh_candidates(this, st, ec, ctx)?;
+        refresh_candidates(this, st, ec, ctx, false)?;
     }
     Ok(())
 }
+
+/// Looks taken for an unplaced composition, about a second in all.
+const RELAYOUT_TRIES: u32 = 8;
 
 pub(super) fn refresh_candidates(
     this: &ComObject<TextService>,
     st: &mut State,
     ec: u32,
     ctx: &ITfContext,
+    retry: bool,
 ) -> Result<()> {
+    if !retry {
+        st.relayout_tries = 0;
+    }
     let (Some(list), Some(comp)) = (st.session.candidates(), &st.composition) else {
         if let Some(w) = &st.window {
             // While typing, predictions may come back on the next key.
@@ -261,12 +268,28 @@ pub(super) fn refresh_candidates(
             .or_else(gui_caret)
     };
     let Some((rc, owner)) = anchor else {
-        // The host may not have laid out the composition yet.
+        // The host has not laid out the composition yet, and may not say
+        // when it has: keep a showing list where it is and look again
+        // shortly, then fall back to where the list was last shown.
+        if st.window.is_none() {
+            st.window = make_window(this, Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
+        }
         if let Some(w) = &st.window {
-            w.hide_soon();
+            st.relayout_tries += 1;
+            if let Some(rc) = w.visible_anchor() {
+                w.show(&list, rc);
+            } else if st.relayout_tries > RELAYOUT_TRIES {
+                if let Some(rc) = w.last_anchor() {
+                    w.show(&list, rc);
+                }
+            }
+            if st.relayout_tries <= RELAYOUT_TRIES {
+                crate::candidate_window::relayout_after(w.raw(), 25 * st.relayout_tries);
+            }
         }
         return Ok(());
     };
+    st.relayout_tries = 0;
     let owner = owner.or_else(|| Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
     if st.window.is_none() {
         st.window = make_window(this, owner);
@@ -308,7 +331,8 @@ fn range_bounds(
         let mut rc = RECT::default();
         let mut clipped = BOOL(0);
         view.GetTextExt(ec, range, &mut rc, &mut clipped).ok()?;
-        if clipped.as_bool() || rc.bottom <= rc.top || rc.right < rc.left {
+        // A clipped range (partly scrolled out of view) still places the list.
+        if rc.bottom <= rc.top || rc.right < rc.left {
             return None;
         }
         // Ignore bogus coordinates from hosts that have not laid out the text.

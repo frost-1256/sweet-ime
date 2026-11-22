@@ -49,6 +49,8 @@ const TIMER_ID: usize = 1;
 /// while typing doesn't blink.
 const HIDE_TIMER_ID: usize = 2;
 const HIDE_DELAY_MS: u32 = 160;
+/// Another look for the composition's position (see [`relayout_after`]).
+const RELAYOUT_TIMER_ID: usize = 3;
 /// Showing again this soon after hiding skips the fade-in.
 const REFADE_AFTER_MS: u128 = 600;
 
@@ -165,6 +167,18 @@ struct State {
     /// Called with (reading, surface) when a background live conversion
     /// result arrives.
     on_live: Option<std::rc::Rc<dyn Fn(String, String)>>,
+    /// Called when a [`relayout_after`] timer fires.
+    on_relayout: Option<std::rc::Rc<dyn Fn()>>,
+    /// Where the list was last shown (screen rectangle of the text).
+    last_anchor: Option<RECT>,
+}
+
+/// Calls the window's relayout handler after `ms` (from the window's
+/// thread), to look for the composition's position again.
+pub fn relayout_after(hwnd: isize, ms: u32) {
+    unsafe {
+        SetTimer(Some(HWND(hwnd as *mut _)), RELAYOUT_TIMER_ID, ms, None);
+    }
 }
 
 /// Results from the live-conversion worker, keyed by window handle.
@@ -296,6 +310,8 @@ impl CandidateWindow {
                 visible: false,
                 on_click: None,
                 on_live: None,
+                on_relayout: None,
+                last_anchor: None,
             };
             STATES.with(|s| s.borrow_mut().push((hwnd.0 as isize, Box::new(state))));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
@@ -317,7 +333,11 @@ impl CandidateWindow {
     /// Shows `list` next to `anchor` (screen coordinates of the focused text).
     pub fn show(&self, list: &CandidateList, anchor: RECT) {
         let hwnd = self.hwnd;
+        unsafe {
+            let _ = KillTimer(Some(hwnd), RELAYOUT_TIMER_ID);
+        }
         let geom = with_state(hwnd, |st| unsafe {
+            st.last_anchor = Some(anchor);
             let dpi = GetDpiForWindow(hwnd);
             st.scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
             let page_start = list.page_start();
@@ -420,6 +440,21 @@ impl CandidateWindow {
     /// Sets the handler for background live conversion results.
     pub fn set_on_live(&self, f: impl Fn(String, String) + 'static) {
         with_state(self.hwnd, |st| st.on_live = Some(std::rc::Rc::new(f)));
+    }
+
+    /// Sets the handler for [`relayout_after`].
+    pub fn set_on_relayout(&self, f: impl Fn() + 'static) {
+        with_state(self.hwnd, |st| st.on_relayout = Some(std::rc::Rc::new(f)));
+    }
+
+    /// Where the list was last shown, if it is still showing.
+    pub fn visible_anchor(&self) -> Option<RECT> {
+        with_state(self.hwnd, |st| st.last_anchor.filter(|_| st.visible)).flatten()
+    }
+
+    /// Where the list was last shown.
+    pub fn last_anchor(&self) -> Option<RECT> {
+        with_state(self.hwnd, |st| st.last_anchor).flatten()
     }
 
     /// Raw window handle, for [`post_live`] from other threads.
@@ -634,6 +669,14 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                         }
                     });
                 }));
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == RELAYOUT_TIMER_ID => {
+                let _ = KillTimer(Some(hwnd), RELAYOUT_TIMER_ID);
+                let handler = with_state(hwnd, |st| st.on_relayout.clone()).flatten();
+                if let Some(f) = handler {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()));
+                }
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
