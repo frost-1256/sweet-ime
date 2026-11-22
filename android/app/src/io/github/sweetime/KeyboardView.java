@@ -360,6 +360,14 @@ final class KeyboardView extends View {
         return shift || capsLock;
     }
 
+    /**
+     * While a Japanese reading is being typed, the language key types ？
+     * into it instead (as on Gboard); switching languages mid-word is rare.
+     */
+    private boolean questionKey() {
+        return composing && !english && page == 0;
+    }
+
     private String hintOf(KeyDef key) {
         return key.hint;
     }
@@ -367,7 +375,7 @@ final class KeyboardView extends View {
     private String labelOf(KeyDef k) {
         switch (k.code) {
             case MODE:
-                return "";
+                return questionKey() ? "？" : "";
             case Native.KEY_SPACE:
                 if (english || (page != 0 && !composing)) return english ? "English" : "日本語";
                 return converting ? "次候補" : composing ? "変換" : "日本語";
@@ -479,7 +487,7 @@ final class KeyboardView extends View {
     private int iconOf(KeyDef k) {
         switch (k.code) {
             case MODE:
-                return Icons.GLOBE;
+                return questionKey() ? 0 : Icons.GLOBE;
             case SHIFT:
                 return capsLock ? Icons.CAPS_LOCK : shift ? Icons.SHIFT_ON : Icons.SHIFT;
             case Native.KEY_BACKSPACE:
@@ -653,6 +661,10 @@ final class KeyboardView extends View {
                 return;
             }
             case MODE:
+                if (questionKey()) {
+                    listener.onKey('?');
+                    return;
+                }
                 page = 0;
                 build();
                 listener.onToggleMode();
