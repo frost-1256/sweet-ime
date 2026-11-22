@@ -997,6 +997,34 @@ fn a_shift_word_ends_when_japanese_follows() {
     shift_type(&c, &mut s, "Googleha");
     assert!(s.handle(&c, Key::Enter));
     assert_eq!(s.take_commit(), "Googleは");
+    // The word with a particle after it: Chrome + で, not Chromed + え.
+    let mut s = Session::new();
+    assert_eq!(shift_type(&c, &mut s, "Chromedehiraku").0, "Chrome");
+    // Capitals end a word before a particle.
+    for (text, word) in [("Xdekaku", "X"), ("AIwotukau", "AI")] {
+        let mut s = Session::new();
+        assert_eq!(shift_type(&c, &mut s, text).0, word);
+    }
+    // Short endings end it at Enter too.
+    for (text, out) in [("Applesan", "Appleさん"), ("Macdayo", "Macだよ"), ("GitHubdesu", "GitHubです")] {
+        let mut s = Session::new();
+        let mut committed = String::new();
+        for (i, ch) in text.chars().enumerate() {
+            let key = if i == 0 || ch.is_ascii_uppercase() { Key::ShiftedLetter(ch) } else { Key::Char(ch) };
+            assert!(s.handle(&c, key));
+            committed.push_str(&s.take_commit());
+        }
+        assert!(s.handle(&c, Key::Enter));
+        committed.push_str(&s.take_commit());
+        assert_eq!(committed, out);
+    }
+    // Names stay whole.
+    for name in ["Tomoko", "Takeshi", "Superman", "Sweetime"] {
+        let mut s = Session::new();
+        shift_type(&c, &mut s, name);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.take_commit(), format!("{name} "));
+    }
     // A whole word, or no Japanese after it, stays English.
     let mut s = Session::new();
     shift_type(&c, &mut s, "Hello");

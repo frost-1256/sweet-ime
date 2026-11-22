@@ -190,6 +190,13 @@ const PARTICLES: &[&str] = &[
     "より",
 ];
 
+/// Other short endings that end a word typed after Shift at Space or Enter
+/// ("Macdayo" -> Mac + だよ, "Applesan" -> Apple + さん).
+const ENDINGS: &[&str] = &[
+    "です", "でした", "だ", "だよ", "だね", "だった", "じゃ", "さん", "くん", "ちゃん", "など", "とか",
+    "なら", "だけ", "しか", "でも", "には", "では", "とは", "にも", "ね", "よ",
+];
+
 pub struct Session {
     comp: Composing,
     conv: Option<Converting>,
@@ -459,8 +466,12 @@ impl Session {
         if english::is_known_word(&text) {
             return false;
         }
-        // The longest known word with only romaji after it ("Hellowosa" is
-        // Hello + をさ, not Hell + おをさ), once enough Japanese follows.
+        // A known word with only romaji after it, once enough Japanese
+        // follows: the longest one with a particle after it ("Chromedehiraku"
+        // is Chrome + でひらく, "Hellowosa" Hello + をさ, not Hell + おをさ),
+        // or else the longest. Capitals before the romaji end a word too
+        // ("AIwotukau", "Xdekaku").
+        let particle = |kana: &str| PARTICLES.iter().chain(ENDINGS).any(|p| kana.starts_with(p));
         let romaji_after = |end: usize| {
             let rest = &text[end..];
             if !rest.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') {
@@ -471,18 +482,30 @@ impl Session {
                 composer.push(ch);
             }
             let kana = composer.kana();
-            (!kana.bytes().any(|b| b.is_ascii_alphabetic()))
-                .then(|| (kana.to_string(), composer.pending().is_empty()))
+            if kana.bytes().any(|b| b.is_ascii_alphabetic()) {
+                return None;
+            }
+            // A last n is ん at Space or Enter ("Applesan").
+            Some(match composer.pending() {
+                "n" => (format!("{kana}ん"), true),
+                pending => (kana.to_string(), pending.is_empty()),
+            })
         };
-        let Some((end, (kana, whole))) = (2..text.len())
+        let splits: Vec<(usize, (String, bool))> = (1..text.len())
             .rev()
             .filter_map(|end| romaji_after(end).map(|r| (end, r)))
-            .find(|(end, _)| english::is_known_word(&text[..*end]))
+            .filter(|(end, (kana, _))| {
+                let w = &text[..*end];
+                english::is_known_word(w) || (w.ends_with(|c: char| c.is_ascii_uppercase()) && particle(kana))
+            })
+            .collect();
+        let Some((end, (kana, whole))) =
+            splits.iter().find(|(_, (kana, _))| particle(kana)).or(splits.first()).cloned()
         else {
             return false;
         };
         let japanese = if ending {
-            whole && PARTICLES.contains(&kana.as_str())
+            whole && (PARTICLES.contains(&kana.as_str()) || ENDINGS.contains(&kana.as_str()))
         } else {
             kana.chars().count() >= 3
         };
