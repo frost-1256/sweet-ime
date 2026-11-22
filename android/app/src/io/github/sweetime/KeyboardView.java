@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.inputmethod.EditorInfo;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -92,7 +93,9 @@ final class KeyboardView extends View {
     private int page;
     private boolean composing;
     private boolean converting;
-    private String enterLabel = "⏎";
+    /** The editor's Enter action (EditorInfo.IME_ACTION_*), shown as an icon. */
+    private int enterAction = EditorInfo.IME_ACTION_NONE;
+    private final Icons icons = new Icons();
 
     // Settings.
     private boolean haptic = true;
@@ -291,10 +294,10 @@ final class KeyboardView extends View {
     }
 
     /** What Space and Enter do now, for their labels. */
-    void setState(boolean composing, boolean converting, String enterLabel) {
+    void setState(boolean composing, boolean converting, int enterAction) {
         this.composing = composing;
         this.converting = converting;
-        this.enterLabel = enterLabel;
+        this.enterAction = enterAction;
         invalidate();
     }
 
@@ -348,7 +351,7 @@ final class KeyboardView extends View {
                 if (english || (page != 0 && !composing)) return english ? "English" : "日本語";
                 return converting ? "次候補" : composing ? "変換" : "日本語";
             case Native.KEY_ENTER:
-                return composing ? "確定" : enterLabel;
+                return composing ? "確定" : "";
             case ',':
                 return english ? "," : "、";
             case '.':
@@ -394,8 +397,9 @@ final class KeyboardView extends View {
                     textPaint.setColor(theme.subText);
                     canvas.drawText(h, k.rect.right - 7 * density, k.rect.top + 12 * density, textPaint);
                 }
-                if (k.code == MODE) {
-                    drawGlobe(canvas, k.rect, theme.text);
+                int icon = iconOf(k);
+                if (icon != 0) {
+                    icons.draw(canvas, icon, k.rect, 22 * density, on ? theme.onAccent : theme.text);
                     continue;
                 }
                 if (k.code == NUMPAD) {
@@ -439,20 +443,39 @@ final class KeyboardView extends View {
         }
     }
 
-    /** A globe: the language key. */
-    private void drawGlobe(Canvas canvas, RectF r, int color) {
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setStyle(Paint.Style.STROKE);
-        p.setStrokeWidth(1.8f * density);
-        p.setColor(color);
-        float rad = 10 * density;
-        float cx = r.centerX();
-        float cy = r.centerY();
-        canvas.drawCircle(cx, cy, rad, p);
-        canvas.drawOval(cx - rad * 0.45f, cy - rad, cx + rad * 0.45f, cy + rad, p);
-        canvas.drawLine(cx - rad, cy, cx + rad, cy, p);
-        canvas.drawLine(cx - rad * 0.87f, cy - rad * 0.5f, cx + rad * 0.87f, cy - rad * 0.5f, p);
-        canvas.drawLine(cx - rad * 0.87f, cy + rad * 0.5f, cx + rad * 0.87f, cy + rad * 0.5f, p);
+    /** The icon drawn instead of a label, or 0. */
+    private int iconOf(KeyDef k) {
+        switch (k.code) {
+            case MODE:
+                return Icons.GLOBE;
+            case SHIFT:
+                return capsLock ? Icons.CAPS_LOCK : shift ? Icons.SHIFT_ON : Icons.SHIFT;
+            case Native.KEY_BACKSPACE:
+                return Icons.BACKSPACE;
+            case Native.KEY_LEFT:
+                return Icons.LEFT;
+            case Native.KEY_RIGHT:
+                return Icons.RIGHT;
+            case Native.KEY_ENTER:
+                if (composing) return 0;
+                switch (enterAction) {
+                    case EditorInfo.IME_ACTION_SEARCH:
+                        return Icons.SEARCH;
+                    case EditorInfo.IME_ACTION_SEND:
+                        return Icons.SEND;
+                    case EditorInfo.IME_ACTION_GO:
+                    case EditorInfo.IME_ACTION_NEXT:
+                        return Icons.FORWARD;
+                    case EditorInfo.IME_ACTION_PREVIOUS:
+                        return Icons.BACK;
+                    case EditorInfo.IME_ACTION_DONE:
+                        return Icons.DONE;
+                    default:
+                        return Icons.RETURN;
+                }
+            default:
+                return 0;
+        }
     }
 
     private KeyDef keyAt(float x, float y) {

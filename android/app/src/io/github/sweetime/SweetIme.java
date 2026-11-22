@@ -307,30 +307,11 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         return action;
     }
 
-    private String enterLabel() {
-        switch (enterAction()) {
-            case EditorInfo.IME_ACTION_SEARCH:
-                return english ? "Search" : "検索";
-            case EditorInfo.IME_ACTION_SEND:
-                return english ? "Send" : "送信";
-            case EditorInfo.IME_ACTION_GO:
-                return english ? "Go" : "移動";
-            case EditorInfo.IME_ACTION_NEXT:
-                return english ? "Next" : "次へ";
-            case EditorInfo.IME_ACTION_DONE:
-                return english ? "Done" : "完了";
-            case EditorInfo.IME_ACTION_PREVIOUS:
-                return english ? "Prev" : "前へ";
-            default:
-                return "⏎";
-        }
-    }
-
     /** Space and Enter labels, and Shift at the start of an English sentence. */
     private void updateKeys() {
         if (keyboard == null) return;
         boolean converting = composing && ctx != 0 && Native.converting(ctx);
-        keyboard.setState(composing, converting, enterLabel());
+        keyboard.setState(composing, converting, enterAction());
         boolean caps = false;
         EditorInfo ei = getCurrentInputEditorInfo();
         InputConnection ic = getCurrentInputConnection();
@@ -495,19 +476,24 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         candidateRow.removeAllViews();
         if (items.length == 0) {
             // Nothing to pick: the settings button.
-            TextView gear = new TextView(this);
-            gear.setText("⚙");
-            gear.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-            gear.setTextColor(theme.subText);
-            gear.setGravity(Gravity.CENTER);
-            gear.setPadding(dp(14), 0, dp(14), 0);
+            Icons icons = new Icons();
+            android.graphics.RectF bounds = new android.graphics.RectF();
+            View gear = new View(this) {
+                @Override
+                protected void onDraw(android.graphics.Canvas canvas) {
+                    bounds.set(0, 0, getWidth(), getHeight());
+                    icons.draw(canvas, Icons.SETTINGS, bounds, dp(22), theme.subText);
+                }
+            };
+            gear.setContentDescription("設定");
+            gear.setMinimumWidth(dp(52));
             gear.setOnClickListener(v -> {
                 android.content.Intent i = new android.content.Intent(this, SettingsActivity.class);
                 i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(i);
             });
             candidateRow.addView(gear, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                    dp(52), ViewGroup.LayoutParams.MATCH_PARENT));
             candidateScroll.scrollTo(0, 0);
             return;
         }
