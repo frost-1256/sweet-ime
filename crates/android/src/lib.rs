@@ -5,8 +5,8 @@
 //! snapshot string (see [`Context::snapshot`]); the Java side parses it and
 //! updates the composing text and the candidate bar.
 
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
@@ -29,25 +29,104 @@ const ITEM: char = '\u{1e}';
 
 static DICT_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// The converter shared by every keyboard in the process.
-pub fn converter() -> Option<&'static Converter> {
-    static CONV: OnceLock<Option<Converter>> = OnceLock::new();
-    // Not loaded before `init` names the dictionary.
-    let dict = DICT_PATH.get()?;
-    CONV.get_or_init(|| {
-        let mut conv = Dictionary::open(dict).ok().map(Converter::new)?;
-        if let Some(p) = paths::history_file() {
-            conv = conv.with_history(sweet_engine::UserHistory::with_file(p));
+/// The converter shared by every keyboard in the process, rebuilt when the
+/// zenz model is installed or removed.
+static CONV: RwLock<Option<Shared>> = RwLock::new(None);
+
+struct Shared {
+    conv: Arc<Converter>,
+    /// The model file the reranker was loaded from, if any.
+    zenz: Option<PathBuf>,
+}
+
+/// The zenz model to use: installed and turned on in the settings.
+fn wanted_zenz(neural: bool) -> Option<PathBuf> {
+    paths::zenz_file().filter(|p| neural && p.is_file())
+}
+
+fn build(dict: &Path, zenz: Option<&Path>) -> Option<Converter> {
+    let mut conv = Dictionary::open(dict).ok().map(Converter::new)?;
+    if let Some(p) = paths::history_file() {
+        conv = conv.with_history(sweet_engine::UserHistory::with_file(p));
+    }
+    if let Some(p) = paths::user_dict_file() {
+        conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(p));
+    }
+    if let Some(z) = zenz.and_then(|p| sweet_zenz::Zenz::load(p).ok()) {
+        conv = conv.with_reranker(Box::new(sweet_zenz::ZenzReranker::new(z)));
+    }
+    let o = paths::load_options();
+    conv.configure(o.neural, o.learning);
+    conv.set_english_words(o.english_words, o.english_katakana);
+    Some(conv)
+}
+
+/// The shared converter; `None` before `init` names the dictionary.
+pub fn converter() -> Option<Arc<Converter>> {
+    if let Some(s) = CONV.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return Some(s.conv.clone());
+    }
+    refresh_converter();
+    CONV.read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|s| s.conv.clone())
+}
+
+/// Loads the converter, or loads it again when the model to use changed
+/// (downloaded, removed, or AI conversion turned on or off), and applies
+/// the settings.
+pub fn refresh_converter() {
+    let Some(dict) = DICT_PATH.get() else { return };
+    let o = paths::load_options();
+    let zenz = wanted_zenz(o.neural);
+    let mut slot = CONV.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = slot.as_ref() {
+        if s.zenz == zenz {
+            s.conv.configure(o.neural, o.learning);
+            s.conv
+                .set_english_words(o.english_words, o.english_katakana);
+            return;
         }
-        if let Some(p) = paths::user_dict_file() {
-            conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(p));
-        }
-        let o = paths::load_options();
-        conv.configure(false, o.learning);
-        conv.set_english_words(o.english_words, o.english_katakana);
-        Some(conv)
-    })
-    .as_ref()
+    }
+    // A model that fails to load leaves the dictionary-only converter.
+    let conv = build(dict, zenz.as_deref());
+    let loaded = conv.as_ref().is_some_and(|c| c.reranker_loaded());
+    if let Some(conv) = conv {
+        *slot = Some(Shared {
+            conv: Arc::new(conv),
+            zenz: zenz.filter(|_| loaded),
+        });
+    }
+}
+
+/// Converts `hf_dir` (config.json, model.safetensors, vocab.json,
+/// merges.txt from Hugging Face) into the model file the IME loads, then
+/// checks that it loads. Returns an error message on failure.
+pub fn pack_zenz(hf_dir: &Path, out: &Path) -> Result<(), String> {
+    let tmp = out.with_extension("swz.new");
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    sweet_zenz::Zenz::pack(hf_dir, &tmp).map_err(|e| e.to_string())?;
+    let z = sweet_zenz::Zenz::load(&tmp).map_err(|e| e.to_string())?;
+    if z.generate(&sweet_zenz::Zenz::prompt("きょう", ""), 4)
+        .is_empty()
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("the model produced no text".into());
+    }
+    drop(z);
+    std::fs::rename(&tmp, out).map_err(|e| e.to_string())
+}
+
+/// The best conversion of `reading` (with the model when loaded): runs on
+/// a background thread for live conversion.
+pub fn refine(reading: &str, left_context: &str) -> Option<String> {
+    let conv = converter()?;
+    conv.convert_best(reading, &[], left_context)
+        .first()
+        .map(|c| c.surface())
 }
 
 /// Points the per-user files at `files_dir` (the app's private storage)
@@ -113,6 +192,7 @@ impl Context {
     /// Handles a key; `None` when the app should get it.
     pub fn key(&mut self, code: i32) -> Option<String> {
         let conv = converter()?;
+        let conv = &*conv;
         let key = Self::key_of(code)?;
         let typing = matches!(key, Key::Char(_) | Key::ShiftedLetter(_));
         if !self.session.is_active() && !typing {
@@ -148,8 +228,8 @@ impl Context {
             return self.snapshot();
         };
         if let Some(conv) = converter() {
-            self.session.select_candidate(conv, index);
-            self.session.open_candidates(conv);
+            self.session.select_candidate(&conv, index);
+            self.session.open_candidates(&conv);
         }
         self.snapshot()
     }
@@ -188,12 +268,23 @@ impl Context {
 
     /// Reads the settings file again (the settings screen wrote it).
     pub fn reload_options(&mut self) {
-        let o = paths::load_options();
-        if let Some(c) = converter() {
-            c.configure(false, o.learning);
-            c.set_english_words(o.english_words, o.english_katakana);
-        }
-        self.session.options = o;
+        refresh_converter();
+        self.session.options = paths::load_options();
+    }
+
+    /// The live conversion to refine in the background, when the model is
+    /// loaded: (reading, left context).
+    pub fn live_request(&self) -> Option<(String, String)> {
+        converter().filter(|c| c.has_reranker())?;
+        self.session.live_request()
+    }
+
+    /// Shows the refined live conversion if the reading is still the one
+    /// typed; `None` when nothing changed.
+    pub fn apply_live(&mut self, reading: &str, surface: &str) -> Option<String> {
+        self.session
+            .apply_live(reading, surface)
+            .then(|| self.snapshot())
     }
 
     /// Whether a conversion is shown (Space picks the next candidate).
@@ -393,6 +484,76 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_setLeftContext(
     let c = unsafe { ctx(p) };
     let t = to_string(&mut env, &text);
     guard((), || c.set_left_context(&t));
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_liveRequest(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+) -> jstring {
+    let c = unsafe { ctx(p) };
+    let s = guard(None, || {
+        c.live_request().map(|(r, l)| format!("{r}{FIELD}{l}"))
+    });
+    to_java(&mut env, s)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_refine(
+    mut env: JNIEnv,
+    _: JClass,
+    reading: JString,
+    left: JString,
+) -> jstring {
+    let reading = to_string(&mut env, &reading);
+    let left = to_string(&mut env, &left);
+    let s = guard(None, || refine(&reading, &left));
+    to_java(&mut env, s)
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_applyLive(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+    reading: JString,
+    surface: JString,
+) -> jstring {
+    let c = unsafe { ctx(p) };
+    let reading = to_string(&mut env, &reading);
+    let surface = to_string(&mut env, &surface);
+    let s = guard(None, || c.apply_live(&reading, &surface));
+    to_java(&mut env, s)
+}
+
+/// Returns null on success, else the error.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_packZenz(
+    mut env: JNIEnv,
+    _: JClass,
+    hf_dir: JString,
+    out: JString,
+) -> jstring {
+    let dir = to_string(&mut env, &hf_dir);
+    let out = to_string(&mut env, &out);
+    let r = guard(Err("panicked".to_string()), || {
+        pack_zenz(Path::new(&dir), Path::new(&out))
+    });
+    to_java(&mut env, r.err())
+}
+
+/// Whether the converter runs with the zenz model now.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_zenzActive(_: JNIEnv, _: JClass) -> jboolean {
+    guard(false, || {
+        refresh_converter();
+        converter().is_some_and(|c| c.has_reranker())
+    }) as jboolean
 }
 
 #[cfg(test)]

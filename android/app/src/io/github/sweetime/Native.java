@@ -41,6 +41,21 @@ final class Native {
     /** Whether conversion candidates are shown. */
     static native boolean converting(long ctx);
 
+    /** The live conversion to refine with zenz ("reading\u001fleft"), or null. */
+    static native String liveRequest(long ctx);
+
+    /** The best conversion with the model; slow, for a background thread. */
+    static native String refine(String reading, String leftContext);
+
+    /** Shows a refined live conversion; null when nothing changed. */
+    static native String applyLive(long ctx, String reading, String surface);
+
+    /** Converts a downloaded Hugging Face zenz model; null on success, else the error. */
+    static native String packZenz(String hfDir, String out);
+
+    /** Whether conversion uses the zenz model now (loads or drops it as needed). */
+    static native boolean zenzActive();
+
     /** A parsed snapshot (see Context::snapshot in crates/android). */
     static final class State {
         String commit = "";

@@ -23,7 +23,15 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
 /** Setup steps, conversion settings and keyboard settings. */
 public final class SettingsActivity extends Activity {
@@ -113,6 +121,8 @@ public final class SettingsActivity extends Activity {
             }));
         }
 
+        aiSection(engine);
+
         // Keyboard.
         LinearLayout kb = section("キーボード");
         kb.addView(prefToggle("数字の段", "文字キーの上に数字の段を表示します。オフのときは q〜p の長押しで数字を入力します。", Prefs.NUMBER_ROW, false));
@@ -140,6 +150,163 @@ public final class SettingsActivity extends Activity {
         getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
                 | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         setContentView(scroll);
+    }
+
+    /** zenz models offered for download: Hugging Face id and label. */
+    private static final String[][] MODELS = {
+        {"Miwa-Keita/zenz-v3.1-xsmall", "xsmall(約 100 MB・速い)"},
+        {"Miwa-Keita/zenz-v3.1-small", "small(約 380 MB・高精度・遅い)"},
+    };
+    private TextView aiStatus;
+    private Button aiDownload;
+    private Button aiRemove;
+    private int aiModel;
+    private volatile boolean downloading;
+
+    private File zenzFile() {
+        return new File(new File(getFilesDir(), "sweet-ime"), "zenz.swz");
+    }
+
+    private File zenzNameFile() {
+        return new File(new File(getFilesDir(), "sweet-ime"), "zenz-model.txt");
+    }
+
+    /** AI conversion: the switch and the model download. */
+    private void aiSection(Prefs.Engine engine) {
+        LinearLayout ai = section("AI 変換");
+        ai.addView(toggle("AI 変換を使う",
+                "文脈に合わせてニューラル言語モデル(zenz)で変換候補を選び直します。モデルのダウンロードが必要です。",
+                engine.get("neural"), on -> {
+                    engine.set("neural", on);
+                    try {
+                        engine.save();
+                    } catch (IOException e) {
+                        Toast.makeText(this, "保存できませんでした: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                }));
+        aiStatus = text("", 15, theme.text);
+        aiStatus.setPadding(0, dp(8), 0, dp(8));
+        ai.addView(aiStatus);
+        RadioGroup group = new RadioGroup(this);
+        for (int i = 0; i < MODELS.length; i++) {
+            RadioButton rb = new RadioButton(this);
+            rb.setText(MODELS[i][1]);
+            rb.setTextColor(theme.text);
+            rb.setId(View.generateViewId());
+            group.addView(rb);
+            final int value = i;
+            if (i == aiModel) rb.setChecked(true);
+            rb.setOnCheckedChangeListener((b, checked) -> {
+                if (checked) aiModel = value;
+            });
+        }
+        ai.addView(group);
+        aiDownload = button("モデルをダウンロード");
+        aiDownload.setOnClickListener(v -> startDownload(MODELS[aiModel][0]));
+        ai.addView(aiDownload);
+        aiRemove = button("モデルを削除");
+        aiRemove.setOnClickListener(v -> {
+            if (!zenzFile().delete() && zenzFile().exists()) {
+                Toast.makeText(this, "削除できませんでした", Toast.LENGTH_LONG).show();
+            }
+            zenzNameFile().delete();
+            updateAi(null);
+        });
+        ai.addView(aiRemove);
+        ai.addView(text("zenz モデル(作者: Miwa Keita、ライセンス: CC BY-SA 4.0)を Hugging Face から"
+                + "ダウンロードして、この端末で変換します。モデルはアプリに含まれていません。"
+                + "変換が正確になる代わりに、電池と処理時間を使います。", 13, theme.subText));
+        updateAi(null);
+    }
+
+    /** Shows the installed model, or `progress` while downloading. */
+    private void updateAi(String progress) {
+        if (aiStatus == null) return;
+        File f = zenzFile();
+        String name = "";
+        try {
+            name = new String(Files.readAllBytes(zenzNameFile().toPath()), StandardCharsets.UTF_8).trim();
+        } catch (IOException ignored) {
+            // Unknown model name.
+        }
+        if (progress != null) {
+            aiStatus.setText(progress);
+        } else if (f.exists()) {
+            String label = name.isEmpty() ? "" : "(" + name.substring(name.indexOf('/') + 1) + ")";
+            aiStatus.setText("✓ モデルをインストール済み" + label + " · " + (f.length() >> 20) + " MB");
+        } else {
+            aiStatus.setText("モデルはまだありません。");
+        }
+        aiDownload.setEnabled(!downloading);
+        aiDownload.setAlpha(downloading ? 0.5f : 1f);
+        aiRemove.setVisibility(f.exists() && !downloading ? View.VISIBLE : View.GONE);
+    }
+
+    /** Downloads `model` from Hugging Face and converts it on a background thread. */
+    private void startDownload(String model) {
+        if (downloading) return;
+        downloading = true;
+        updateAi("ダウンロードを準備しています…");
+        new Thread(() -> {
+            File dir = new File(getCacheDir(), "zenz-download");
+            String error = null;
+            try {
+                if (!dir.exists() && !dir.mkdirs()) throw new IOException("mkdir " + dir);
+                for (String name : new String[] {"config.json", "vocab.json", "merges.txt", "model.safetensors"}) {
+                    download("https://huggingface.co/" + model + "/resolve/main/" + name, new File(dir, name), name);
+                }
+                runOnUiThread(() -> updateAi("モデルを変換しています…"));
+                error = Native.packZenz(dir.getAbsolutePath(), zenzFile().getAbsolutePath());
+                if (error == null) Files.write(zenzNameFile().toPath(), model.getBytes(StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                error = e.getMessage() != null ? e.getMessage() : e.toString();
+            } finally {
+                File[] left = dir.listFiles();
+                if (left != null) {
+                    for (File f : left) f.delete();
+                }
+                dir.delete();
+            }
+            final String failed = error;
+            runOnUiThread(() -> {
+                downloading = false;
+                updateAi(null);
+                Toast.makeText(this, failed == null
+                        ? "AI 変換の準備ができました。キーボードを次に表示したときから使われます。"
+                        : "ダウンロードできませんでした: " + failed, Toast.LENGTH_LONG).show();
+            });
+        }, "sweet-ime-zenz-download").start();
+    }
+
+    private void download(String url, File out, String label) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setInstanceFollowRedirects(true);
+        c.setConnectTimeout(20000);
+        c.setReadTimeout(30000);
+        try {
+            int code = c.getResponseCode();
+            if (code != 200) throw new IOException("HTTP " + code + " (" + label + ")");
+            long total = c.getContentLengthLong();
+            long done = 0;
+            long shownMb = -1;
+            try (InputStream in = c.getInputStream(); OutputStream o = new FileOutputStream(out)) {
+                byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    o.write(buf, 0, n);
+                    done += n;
+                    long mb = done >> 20;
+                    if (mb != shownMb) {
+                        shownMb = mb;
+                        String text = label + " をダウンロード中… " + mb
+                                + (total > 0 ? " / " + (total >> 20) : "") + " MB";
+                        runOnUiThread(() -> updateAi(text));
+                    }
+                }
+            }
+        } finally {
+            c.disconnect();
+        }
     }
 
     private void updateStatus() {

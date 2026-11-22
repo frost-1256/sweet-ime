@@ -85,11 +85,47 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onCreate() {
         super.onCreate();
+        refineThread.start();
+        refiner = new Handler(refineThread.getLooper());
         loadEngine();
+    }
+
+    /** Runs the zenz model for live conversion off the main thread. */
+    private final android.os.HandlerThread refineThread = new android.os.HandlerThread("sweet-ime-zenz");
+    private Handler refiner;
+    /** The newest live conversion to refine: {reading, left context}. */
+    private volatile String[] liveJob;
+    /** The last request sent, so a refined result does not ask again. */
+    private String lastLive = "";
+
+    /**
+     * Refines the live conversion with the model in the background; the
+     * result replaces it if the reading is still the same.
+     */
+    private void requestLive() {
+        if (ctx == 0 || !composing || refiner == null) return;
+        String req = Native.liveRequest(ctx);
+        if (req == null || req.equals(lastLive)) return;
+        lastLive = req;
+        liveJob = req.split("\u001f", 2);
+        refiner.removeCallbacksAndMessages(null);
+        refiner.post(() -> {
+            String[] job = liveJob;
+            liveJob = null;
+            if (job == null || job.length < 2) return;
+            String surface = Native.refine(job[0], job[1]);
+            if (surface == null) return;
+            main.post(() -> {
+                if (ctx == 0 || !composing) return;
+                String snap = Native.applyLive(ctx, job[0], surface);
+                if (snap != null) apply(snap);
+            });
+        });
     }
 
     @Override
     public void onDestroy() {
+        refineThread.quitSafely();
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         if (ctx != 0) {
             Native.free(ctx);
@@ -608,6 +644,11 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         ic.endBatchEdit();
         showCandidates(st.candidates, st.selected, st.suggestions);
         updateKeys();
+        if (composing) {
+            requestLive();
+        } else {
+            lastLive = "";
+        }
     }
 
     private View iconButton(java.util.function.IntSupplier icon, String label, Runnable action) {

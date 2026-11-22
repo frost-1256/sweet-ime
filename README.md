@@ -183,7 +183,10 @@ move the caret. The app holds the conversion and keyboard settings (key
 height, number row, vibration, sound, theme). Themes include Material 3 and
 Material 3 Expressive, which take the wallpaper colors (Material You) on
 Android 12 and later, and the desktop color themes.
-Neural reranking is not used on Android yet.
+For AI conversion, download a zenz model under **AI 変換** in the app
+(xsmall, about 100 MB, or small, about 380 MB). The app converts it on the
+phone and reranks conversions with it; live conversion is refined in the
+background. With xsmall a sentence takes about 0.2 s on a recent phone.
 
 ## Keys
 

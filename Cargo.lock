@@ -2285,6 +2285,7 @@ version = "0.1.15"
 dependencies = [
  "jni 0.21.1",
  "sweet-engine",
+ "sweet-zenz",
 ]
 
 [[package]]

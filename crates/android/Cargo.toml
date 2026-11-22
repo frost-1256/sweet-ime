@@ -11,4 +11,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 sweet-engine = { path = "../engine" }
+sweet-zenz = { path = "../zenz" }
 jni = "0.21"
