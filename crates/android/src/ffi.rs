@@ -84,6 +84,21 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_select(
 /// # Safety
 /// `p` is a live context.
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_undoCommit(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+    text: JString,
+) -> jstring {
+    let text = to_string(&mut env, &text);
+    let c = unsafe { ctx(p) };
+    let s = guard(None, || c.undo_commit(&text));
+    to_java(&mut env, s)
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn Java_io_github_sweetime_Native_commitAll(
     mut env: JNIEnv,
     _: JClass,

@@ -140,8 +140,6 @@ pub struct Context {
     /// For each candidate in the last snapshot after `typed`, its index in
     /// the session's list (duplicates of `typed` are left out).
     listed: Vec<usize>,
-    /// Text committed by tapping one of `typed`, for the next snapshot.
-    commit: String,
     /// The field is a password or asks not to be learned from (a private
     /// browser tab); the session learns nothing there if the option is on.
     private_field: bool,
@@ -161,7 +159,6 @@ impl Context {
             session,
             typed: Vec::new(),
             listed: Vec::new(),
-            commit: String::new(),
             private_field: false,
         }
     }
@@ -218,8 +215,7 @@ impl Context {
 
     pub fn select(&mut self, index: usize) -> String {
         if let Some(text) = self.typed.get(index).cloned() {
-            self.session.reset();
-            self.commit.push_str(&text);
+            self.session.commit_as(&text);
             return self.snapshot();
         }
         let Some(&index) = self.listed.get(index - self.typed.len()) else {
@@ -256,10 +252,22 @@ impl Context {
         self.snapshot()
     }
 
+    /// Restores an idle composition after the editor verified the commit.
+    pub fn undo_commit(&mut self, text: &str) -> Option<String> {
+        if self.private_field || self.session.undoable_commit() != Some(text) {
+            return None;
+        }
+        let conv = converter()?;
+        if !self.session.handle(&conv, Key::UndoCommit) {
+            return None;
+        }
+        self.session.take_undo();
+        Some(self.snapshot())
+    }
+
     pub fn reset(&mut self) {
         self.session.reset();
         self.session.take_commit();
-        self.commit.clear();
         self.typed.clear();
         self.listed.clear();
     }
@@ -299,13 +307,16 @@ impl Context {
 
     /// The state for the Java side, fields joined by U+001F: commit text,
     /// preedit, caret, spans, candidate kind, selected candidate, then the
-    /// candidates joined by U+001E. While typing, the candidates start with
+    /// candidates joined by U+001E and a flag for an undoable commit.
+    /// While typing, the candidates start with
     /// the text as shown and its reading. Offsets are UTF-16 units; spans are
     /// `start,end,attr` joined by `;` (attr 0 input, 1 converted, 2
     /// focused); kind is 0 for conversion and 1 for predictions; the
     /// selected candidate is -1 for predictions.
     pub fn snapshot(&mut self) -> String {
-        let commit = std::mem::take(&mut self.commit) + &self.session.take_commit();
+        let commit = self.session.take_commit();
+        let undoable =
+            !self.private_field && self.session.undoable_commit() == Some(commit.as_str());
         self.typed = self.typed_items();
         let p = self.session.preedit();
         let u16_at = |byte: usize| p.text[..byte.min(p.text.len())].encode_utf16().count();
@@ -346,6 +357,7 @@ impl Context {
             kind.to_string(),
             selected.to_string(),
             items.join(&ITEM.to_string()),
+            u8::from(undoable).to_string(),
         ]
         .join(&FIELD.to_string())
     }
@@ -380,6 +392,7 @@ mod tests {
         let mut c = Context::new();
         c.session.options.live_conversion = false;
         c.session.options.suggestions = false;
+        c.session.options.undo_commit = true;
         let mut last = String::new();
         for ch in "kana".chars() {
             last = c.key(ch as i32).unwrap();
@@ -388,6 +401,15 @@ mod tests {
         assert_eq!(fields[..3], ["", "かな", "2"]);
         let done = c.key(KEY_ENTER).unwrap();
         assert!(done.starts_with("かな\u{1f}\u{1f}0"));
+        assert_eq!(done.split(FIELD).nth(7), Some("1"));
+        assert!(c.undo_commit("別の文字").is_none());
+        let restored = c.undo_commit("かな").unwrap();
+        assert_eq!(
+            restored.split(FIELD).take(3).collect::<Vec<_>>(),
+            ["", "かな", "2"]
+        );
+        assert!(c.undo_commit("かな").is_none());
+        c.reset();
         // Space converts and shows the candidates at once; a digit then
         // commits and types the digit.
         for ch in "kisya".chars() {
@@ -416,5 +438,29 @@ mod tests {
         assert_eq!(items[1], "かわいい", "{typing}");
         let done = c.select(1);
         assert!(done.starts_with("かわいい\u{1f}\u{1f}0"), "{done}");
+        assert_eq!(done.split(FIELD).nth(7), Some("1"));
+        assert!(c.undo_commit("かわいい").is_some());
+        c.reset();
+
+        for ch in "kikai".chars() {
+            c.key(ch as i32);
+        }
+        c.key(KEY_SPACE).unwrap();
+        let done = c.select(0);
+        let fields: Vec<_> = done.split(FIELD).collect();
+        assert_eq!(fields[7], "1", "{done}");
+        c.set_private(true);
+        assert!(c.undo_commit(fields[0]).is_none());
+        c.set_private(false);
+        let restored = c.undo_commit(fields[0]).unwrap();
+        assert_eq!(restored.split(FIELD).nth(1), Some("きかい"));
+        c.reset();
+
+        for ch in "kana".chars() {
+            c.key(ch as i32);
+        }
+        c.key(KEY_ENTER).unwrap();
+        c.reset();
+        assert!(c.undo_commit("かな").is_none());
     }
 }

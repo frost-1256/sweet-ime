@@ -21,6 +21,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -54,6 +55,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private final java.util.ArrayList<String> recentClips = new java.util.ArrayList<>();
     private View expandButton;
     private View clipboardButton;
+    private Button undoButton;
+    private UndoTarget undoTarget;
     private TextView panelTitle;
     private String[] candidateItems = new String[0];
     private boolean candidatesExpanded;
@@ -209,6 +212,12 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         panelTitle.setGravity(Gravity.CENTER_VERTICAL);
         panelTitle.setPadding(dp(14), 0, 0, 0);
         toolbar.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
+        undoButton = new Button(this);
+        undoButton.setText("戻す");
+        undoButton.setContentDescription("確定を取り消して読みに戻す");
+        undoButton.setTextColor(theme.text);
+        undoButton.setOnClickListener(v -> undoCommit());
+        toolbar.addView(undoButton, new LinearLayout.LayoutParams(dp(72), dp(48)));
         expandButton = iconButton(() -> candidatesExpanded ? Icons.COLLAPSE : Icons.EXPAND,
                 "候補を展開", () -> {
                     candidatesExpanded = !candidatesExpanded;
@@ -297,6 +306,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         theme = Theme.of(this);
         inputRoot.setBackgroundColor(theme.background);
         panelTitle.setTextColor(theme.text);
+        undoButton.setTextColor(theme.text);
         clipboardButton.invalidate();
         expandButton.invalidate();
         for (int i = 0; i < candidateRow.getChildCount(); i++) {
@@ -331,6 +341,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onStartInput(EditorInfo attr, boolean restarting) {
         super.onStartInput(attr, restarting);
+        clearUndo();
         if (ctx != 0) Native.reset(ctx);
         composing = false;
         composingLength = 0;
@@ -381,6 +392,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onFinishInputView(boolean finishingInput) {
+        clearUndo();
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
         emojiOpen = false;
@@ -393,6 +405,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onFinishInput() {
+        clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         super.onFinishInput();
     }
@@ -402,6 +415,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                                   int candidatesStart, int candidatesEnd) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd,
                 candidatesStart, candidatesEnd);
+        if (undoTarget != null && (newSelStart != undoTarget.end || newSelEnd != undoTarget.end)
+                && commitEnd(getCurrentInputConnection(), undoTarget.text) != undoTarget.end) {
+            clearUndo();
+        }
         // The editor shows our composing text: from now on, losing it
         // means the app committed it (e.g. on a tap). Updates can be late,
         // so only one matching the current text counts.
@@ -439,6 +456,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onToggleMode() {
+        clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         english = !english;
         if (!fieldEnglish) chosenEnglish = english;
@@ -448,6 +466,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onText(String text) {
+        clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) ic.commitText(text, 1);
@@ -456,6 +475,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onEmoji() {
+        clearUndo();
         // What is being typed goes in first, as when tapping an emoji.
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         clipboardOpen = false;
@@ -472,6 +492,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     }
 
     private void pasteSystemClipboard() {
+        clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
@@ -492,6 +513,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         InputConnection ic = getCurrentInputConnection();
         EditorInfo editor = getCurrentInputEditorInfo();
         if (ic == null || privateField) return;
+        clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         if (ClipboardImages.pasteSaved(this, ic, editor, uri, mime)) {
             closeClipboard();
@@ -535,6 +557,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onKey(int code) {
+        clearUndo();
         if (!english && engine()) {
             // A new reading: the text before it is the model's context
             // (it changes with every commit and caret move).
@@ -550,6 +573,46 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         }
         direct(code);
         updateKeys();
+    }
+
+    private static final class UndoTarget {
+        final String text;
+        final int end;
+
+        UndoTarget(String text, int end) {
+            this.text = text;
+            this.end = end;
+        }
+    }
+
+    private void clearUndo() {
+        undoTarget = null;
+        if (undoButton != null) undoButton.setVisibility(View.GONE);
+    }
+
+    /** Returns the absolute UTF-16 caret offset if this exact text precedes it. */
+    private static int commitEnd(InputConnection ic, String text) {
+        if (ic == null) return -1;
+        ExtractedTextRequest request = new ExtractedTextRequest();
+        request.hintMaxChars = Math.max(256, text.length());
+        ExtractedText extracted = ic.getExtractedText(request, 0);
+        if (extracted == null || extracted.text == null || extracted.startOffset < 0) return -1;
+        int end = extracted.selectionEnd;
+        if (extracted.selectionStart != end || end < text.length()
+                || end > extracted.text.length()) return -1;
+        return android.text.TextUtils.equals(
+                extracted.text.subSequence(end - text.length(), end), text)
+                ? extracted.startOffset + end : -1;
+    }
+
+    private void undoCommit() {
+        UndoTarget target = undoTarget;
+        clearUndo();
+        InputConnection ic = getCurrentInputConnection();
+        if (target == null || ctx == 0 || privateField || composing
+                || commitEnd(ic, target.text) != target.end) return;
+        String snapshot = Native.undoCommit(ctx, target.text);
+        if (snapshot != null) apply(Native.State.parse(snapshot), ic, target);
     }
 
     /** What the key does without the IME. */
@@ -634,11 +697,18 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     /** Shows a snapshot from the engine. */
     private void apply(String snapshot) {
-        Native.State st = Native.State.parse(snapshot);
         InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
+        if (ic != null) apply(Native.State.parse(snapshot), ic, null);
+    }
+
+    private void apply(Native.State st, InputConnection ic, UndoTarget replace) {
         ic.beginBatchEdit();
-        if (!st.commit.isEmpty()) ic.commitText(st.commit, 1);
+        if (replace != null && !ic.setComposingRegion(replace.end - replace.text.length(), replace.end)) {
+            Native.reset(ctx);
+            ic.endBatchEdit();
+            return;
+        }
+        boolean committed = !st.commit.isEmpty() && ic.commitText(st.commit, 1);
         if (st.preedit.isEmpty()) {
             if (composing && st.commit.isEmpty()) ic.commitText("", 1);
             composing = false;
@@ -659,7 +729,12 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 text.setSpan(new UnderlineSpan(), 0, st.preedit.length(),
                         Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
-            ic.setComposingText(text, 1);
+            if (!ic.setComposingText(text, 1) && replace != null) {
+                ic.finishComposingText();
+                Native.reset(ctx);
+                ic.endBatchEdit();
+                return;
+            }
             composing = true;
             // The caret inside the reading (moved with the arrow keys).
             int back = st.preedit.length() - Math.max(0, Math.min(st.caret, st.preedit.length()));
@@ -681,6 +756,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
             while (shown.size() > 32) shown.removeFirst();
         }
         ic.endBatchEdit();
+        if (committed && st.undoable && !privateField) {
+            int end = commitEnd(ic, st.commit);
+            if (end >= 0) undoTarget = new UndoTarget(st.commit, end);
+        }
         showCandidates(st.candidates, st.selected, st.suggestions);
         updateKeys();
         if (composing) {
@@ -723,6 +802,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         panelTitle.setVisibility(panel ? View.VISIBLE : View.GONE);
         panelTitle.setText(emojiOpen ? "絵文字" : clipboardOpen ? "クリップボード" : "候補一覧");
         panelTitle.setTextColor(theme.text);
+        undoButton.setVisibility(!panel && undoTarget != null ? View.VISIBLE : View.GONE);
         expandButton.setVisibility(!clipboardOpen && !emojiOpen && candidateItems.length > 1
                 ? View.VISIBLE : View.GONE);
         String expandLabel = candidatesExpanded ? "候補を閉じる" : "候補を展開";

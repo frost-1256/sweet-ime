@@ -266,6 +266,8 @@ impl Session {
     pub fn reset(&mut self) {
         self.comp = Composing::default();
         self.conv = None;
+        self.last_commit = None;
+        self.undo = None;
     }
 
     /// Commit whatever is shown (used when focus is lost).
@@ -332,6 +334,7 @@ impl Session {
     /// Picks entry `index` of the list returned by [`Session::candidates`]
     /// (e.g. a mouse click). Returns whether anything changed.
     pub fn select_candidate(&mut self, conv: &Converter, index: usize) -> bool {
+        let before = self.commit_state();
         let changed = if self.conv.is_none() {
             // Suggestion list: commit the prediction directly.
             match self.comp.suggestions.get(index).cloned() {
@@ -347,8 +350,19 @@ impl Session {
         } else {
             false
         };
+        if changed {
+            self.remember_commit(before);
+        }
         self.refresh(conv);
         changed
+    }
+
+    /// Commits the frontend's choice of surface for the current reading.
+    pub fn commit_as(&mut self, text: &str) {
+        let before = self.commit_state();
+        self.commit.push_str(text);
+        self.reset();
+        self.remember_commit(before);
     }
 
     /// Selects candidate `idx` of the focused segment, closes the window and
@@ -386,6 +400,14 @@ impl Session {
         self.options.undo_commit && self.last_commit.is_some() && !self.is_active()
     }
 
+    /// The exact committed text the frontend must verify before restoring the reading.
+    pub fn undoable_commit(&self) -> Option<&str> {
+        self.last_commit
+            .as_ref()
+            .filter(|_| self.can_undo())
+            .map(|last| last.text.as_str())
+    }
+
     /// Text to remove before the caret: the commit that
     /// [`Key::UndoCommit`] took back. The frontend deletes it (if the
     /// document still has it there) and shows the restored reading.
@@ -415,17 +437,30 @@ impl Session {
             self.refresh(conv);
             return true;
         }
-        let before = (self.comp.kana(), self.comp.raw.clone(), self.comp.literal, self.commit.len());
+        let before = self.commit_state();
         let consumed = self.handle_key(conv, key);
-        if self.commit.len() > before.3 && !self.is_active() && !before.0.is_empty() {
+        self.remember_commit(before);
+        consumed
+    }
+
+    fn commit_state(&self) -> (String, String, bool, usize) {
+        (
+            self.comp.kana(),
+            self.comp.raw.clone(),
+            self.comp.literal,
+            self.commit.len(),
+        )
+    }
+
+    fn remember_commit(&mut self, (kana, raw, literal, commit_start): (String, String, bool, usize)) {
+        if self.commit.len() > commit_start && !self.is_active() && !kana.is_empty() {
             self.last_commit = Some(LastCommit {
-                text: self.commit[before.3..].to_string(),
-                kana: before.0,
-                raw: before.1,
-                literal: before.2,
+                text: self.commit[commit_start..].to_string(),
+                kana,
+                raw,
+                literal,
             });
         }
-        consumed
     }
 
     fn handle_key(&mut self, conv: &Converter, key: Key) -> bool {

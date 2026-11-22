@@ -29,6 +29,8 @@ final class Native {
 
     static native String select(long ctx, int index);
 
+    static native String undoCommit(long ctx, String committedText);
+
     static native String commitAll(long ctx);
 
     static native void reset(long ctx);
@@ -71,6 +73,7 @@ final class Native {
         boolean suggestions;
         int selected = -1;
         String[] candidates = new String[0];
+        boolean undoable;
 
         static State parse(String s) {
             State st = new State();
@@ -92,6 +95,7 @@ final class Native {
             st.suggestions = f[4].equals("1");
             st.selected = Integer.parseInt(f[5]);
             st.candidates = f[6].isEmpty() ? new String[0] : f[6].split("\u001e", -1);
+            st.undoable = f.length >= 8 && f[7].equals("1");
             return st;
         }
     }
