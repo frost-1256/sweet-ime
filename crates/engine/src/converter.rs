@@ -56,6 +56,57 @@ impl Conversion {
     }
 }
 
+/// How many lattice candidates per reranker slot `convert_best` draws its
+/// diverse candidates from.
+const RERANK_POOL: usize = 6;
+
+/// Words of `c` as (reading start, reading end, surface), offsets in bytes.
+fn word_spans(c: &Conversion) -> Vec<(usize, usize, &str)> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for w in c.segments.iter().flat_map(|s| &s.words) {
+        out.push((at, at + w.reading.len(), w.surface.as_str()));
+        at += w.reading.len();
+    }
+    out
+}
+
+/// Alternatives `convert_best` offers the reranker beyond its N-best.
+const RERANK_EXTRA: usize = 2;
+
+/// The reranker's candidates from the cost-ordered `pool`: the `n` best,
+/// then up to [`RERANK_EXTRA`] cheapest alternatives that differ from the
+/// best in a part of the reading none of those does. The plain N-best tends
+/// to spend every slot on one spot (機会が故障/こしょう/胡椒...) and never
+/// offer another word elsewhere (機械).
+fn diverse(pool: Vec<Conversion>, n: usize) -> Vec<Conversion> {
+    if pool.len() <= n {
+        return pool;
+    }
+    let best = word_spans(&pool[0]);
+    let region = |c: &Conversion| {
+        let diff: Vec<_> = word_spans(c)
+            .into_iter()
+            .filter(|w| !best.contains(w))
+            .collect();
+        diff.first().zip(diff.last()).map(|(a, b)| (a.0, b.1))
+    };
+    let mut regions: Vec<(usize, usize)> = pool[1..n].iter().filter_map(region).collect();
+    let mut picked: Vec<usize> = (0..n).collect();
+    for (i, c) in pool.iter().enumerate().skip(n) {
+        if picked.len() >= n + RERANK_EXTRA {
+            break;
+        }
+        let Some(r) = region(c) else { continue };
+        if !regions.iter().any(|&(a, b)| r.0 < b && a < r.1) {
+            regions.push(r);
+            picked.push(i);
+        }
+    }
+    let mut pool: Vec<Option<Conversion>> = pool.into_iter().map(Some).collect();
+    picked.into_iter().filter_map(|i| pool[i].take()).collect()
+}
+
 /// Where an extra lattice word came from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Origin {
@@ -585,7 +636,11 @@ impl Converter {
     /// The chosen candidate is first; the rest follow in lattice order.
     pub fn convert_best(&self, text: &str, boundaries: &[usize], left_context: &str) -> Vec<Conversion> {
         let n = self.reranker.as_ref().filter(|_| self.has_reranker()).map_or(1, |r| r.candidates().max(1));
-        let mut res = self.convert(text, boundaries, n);
+        let mut res = if n > 1 {
+            diverse(self.convert(text, boundaries, n * RERANK_POOL), n)
+        } else {
+            self.convert(text, boundaries, 1)
+        };
         if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
             // Don't let the model override what the user taught us.
             if res.first().is_some_and(|c| c.learned_words() > 0 || c.user_words() > 0) {
