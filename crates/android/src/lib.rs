@@ -153,6 +153,9 @@ pub struct Context {
     listed: Vec<usize>,
     /// Text committed by tapping one of `typed`, for the next snapshot.
     commit: String,
+    /// The field is a password or asks not to be learned from (a private
+    /// browser tab); the session learns nothing there if the option is on.
+    private_field: bool,
 }
 
 impl Default for Context {
@@ -170,7 +173,13 @@ impl Context {
             typed: Vec::new(),
             listed: Vec::new(),
             commit: String::new(),
+            private_field: false,
         }
+    }
+
+    pub fn set_private(&mut self, on: bool) {
+        self.private_field = on;
+        self.session.private = on && self.session.options.private_fields;
     }
 
     pub fn key_of(code: i32) -> Option<Key> {
@@ -270,6 +279,7 @@ impl Context {
     pub fn reload_options(&mut self) {
         refresh_converter();
         self.session.options = paths::load_options();
+        self.set_private(self.private_field);
     }
 
     /// The live conversion to refine in the background, when the model is
@@ -554,6 +564,52 @@ pub extern "system" fn Java_io_github_sweetime_Native_zenzActive(_: JNIEnv, _: J
         refresh_converter();
         converter().is_some_and(|c| c.has_reranker())
     }) as jboolean
+}
+
+/// Marks the field as private (see [`Context::set_private`]).
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_setPrivate(
+    _: JNIEnv,
+    _: JClass,
+    p: jlong,
+    on: jboolean,
+) {
+    let c = unsafe { ctx(p) };
+    guard((), || c.set_private(on != 0));
+}
+
+/// How many words the user history at `path` holds.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_learnedCount(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+) -> jint {
+    let path = to_string(&mut env, &path);
+    guard(0, || sweet_engine::UserHistory::with_file(path).len() as jint)
+}
+
+/// Forgets what the user history at `path` learned in the last `secs`
+/// seconds, or everything when `secs` is 0 or less. Returns how many words
+/// went, or -1 on failure. A running converter rereads the changed file.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_forgetLearned(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+    secs: jlong,
+) -> jint {
+    let path = to_string(&mut env, &path);
+    guard(-1, || {
+        let mut h = sweet_engine::UserHistory::with_file(path);
+        let n = h.len();
+        let r = if secs > 0 {
+            h.forget_recent(std::time::Duration::from_secs(secs as u64))
+        } else {
+            h.clear().map(|()| n)
+        };
+        r.map_or(-1, |n| n as jint)
+    })
 }
 
 #[cfg(test)]

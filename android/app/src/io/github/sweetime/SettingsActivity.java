@@ -49,6 +49,7 @@ public final class SettingsActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateStatus();
+        updateLearned();
     }
 
     @Override
@@ -121,6 +122,7 @@ public final class SettingsActivity extends Activity {
             }));
         }
 
+        learningSection();
         aiSection(engine);
 
         // Keyboard.
@@ -150,6 +152,50 @@ public final class SettingsActivity extends Activity {
         getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
                 | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         setContentView(scroll);
+    }
+
+    private TextView learnedStatus;
+
+    private String historyFile() {
+        return new File(new File(getFilesDir(), "sweet-ime"), "history.tsv").getAbsolutePath();
+    }
+
+    /** The conversion history: how much it holds, and ways to forget it. */
+    private void learningSection() {
+        LinearLayout box = section("学習データ");
+        learnedStatus = text("", 15, theme.text);
+        learnedStatus.setPadding(0, dp(4), 0, dp(8));
+        box.addView(learnedStatus);
+        Button hour = button("直近 1 時間の学習を消す");
+        hour.setOnClickListener(v -> forget(3600, "直近 1 時間"));
+        box.addView(hour);
+        Button day = button("今日(24 時間)の学習を消す");
+        day.setOnClickListener(v -> forget(24 * 3600, "直近 24 時間"));
+        box.addView(day);
+        Button all = button("すべて消去");
+        all.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("学習データをすべて消去しますか?")
+                .setMessage("覚えた変換をすべて忘れます。元に戻せません。")
+                .setPositiveButton("消去", (d, w) -> forget(0, null))
+                .setNegativeButton("キャンセル", null)
+                .show());
+        box.addView(all);
+        box.addView(text("うっかり覚えさせた変換を取り消せます。", 13, theme.subText));
+        updateLearned();
+    }
+
+    private void updateLearned() {
+        if (learnedStatus != null) learnedStatus.setText("覚えた単語: " + Native.learnedCount(historyFile()) + " 件");
+    }
+
+    /** Forgets the last `secs` seconds of learning, or all of it if 0. */
+    private void forget(long secs, String label) {
+        int n = Native.forgetLearned(historyFile(), secs);
+        String msg = n < 0 ? "消去できませんでした"
+                : label == null ? "学習データを消去しました"
+                : label + "に覚えた " + n + " 件を消しました";
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+        updateLearned();
     }
 
     /** zenz models offered for download: Hugging Face id and label. */

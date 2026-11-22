@@ -178,6 +178,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (!ready) return false;
         if (ctx == 0) {
             ctx = Native.create();
+            if (ctx != 0) Native.setPrivate(ctx, privateField);
             String before = textBeforeCursor();
             if (before != null) Native.setLeftContext(ctx, before);
         }
@@ -325,6 +326,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 || (cls == EditorInfo.TYPE_CLASS_NUMBER
                     && variation == EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD);
         privateField = password || (attr.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0;
+        if (ctx != 0) Native.setPrivate(ctx, privateField);
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
         boolean url = variation == EditorInfo.TYPE_TEXT_VARIATION_URI

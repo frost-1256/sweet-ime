@@ -55,6 +55,12 @@ final class Native {
 
     /** Whether conversion uses the zenz model now (loads or drops it as needed). */
     static native boolean zenzActive();
+    /** Learn nothing in this field (a password or a private tab). */
+    static native void setPrivate(long ctx, boolean on);
+    /** How many words the conversion history file holds. */
+    static native int learnedCount(String path);
+    /** Forgets the last {@code secs} seconds of learning, or all of it if 0; -1 on failure. */
+    static native int forgetLearned(String path, long secs);
 
     /** A parsed snapshot (see Context::snapshot in crates/android). */
     static final class State {

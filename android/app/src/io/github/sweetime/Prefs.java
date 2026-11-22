@@ -47,6 +47,8 @@ final class Prefs {
             {"live_conversion", "ライブ変換", "打ちながら変換結果を表示します。確定は Enter。"},
             {"suggestions", "予測変換", "入力中に続きの候補を表示します。タップで確定。"},
             {"learning", "学習", "選んだ候補を覚えて、次から優先します。"},
+            {"private_fields", "シークレット入力では学習しない",
+                "パスワード欄やブラウザのシークレットタブでは、何も覚えません。"},
             {"english_words", "英単語の認識", "github や test のようにつづりで打った英単語を変換します。"},
             {"english_katakana", "英単語をカタカナで出す", "best → ベスト のように、外来語を先に出します。"},
             {"shift_one_word", "Shift の英字入力を1単語で戻す",
