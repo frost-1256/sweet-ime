@@ -455,8 +455,7 @@ final class KeyboardView extends View {
                 textPaint.setTextSize(size * density);
                 textPaint.setColor(on ? theme.onAccent : theme.text);
                 textPaint.setFakeBoldText(theme.boldFunctions && k.isFunction());
-                float y = k.rect.centerY() - (textPaint.descent() + textPaint.ascent()) / 2;
-                canvas.drawText(label, k.rect.centerX(), y, textPaint);
+                drawCentered(canvas, label, k.rect.centerX(), k.rect.centerY());
                 textPaint.setFakeBoldText(false);
             }
         }
@@ -476,11 +475,40 @@ final class KeyboardView extends View {
             canvas.drawRoundRect(p, radius * 1.5f, radius * 1.5f, keyPaint);
             textPaint.setTextSize(28 * density);
             textPaint.setColor(theme.text);
-            float y = p.centerY() - (textPaint.descent() + textPaint.ascent()) / 2;
-            canvas.drawText(longPressed && pressed.hint != null && !pressed.hint.equals(EMOJI_HINT)
-                    ? hintOf(pressed) : labelOf(pressed),
-                    p.centerX(), y, textPaint);
+            drawCentered(canvas, longPressed && pressed.hint != null && !pressed.hint.equals(EMOJI_HINT)
+                    ? hintOf(pressed) : labelOf(pressed), p.centerX(), p.centerY());
         }
+    }
+
+    private final android.graphics.Rect bounds = new android.graphics.Rect();
+
+    /**
+     * Draws a label so that it looks centered at (cx, cy): Latin letters and
+     * digits by their x-height or cap height (descenders hang below, as on
+     * other keyboards), anything else by its own ink, so the Japanese comma
+     * and period, drawn low and left in their em box, and symbols such as
+     * '*' or ':' sit in the middle of the key. Quotes keep their raised
+     * position so they don't read as commas.
+     */
+    private void drawCentered(Canvas canvas, String label, float cx, float cy) {
+        if (label.isEmpty()) return;
+        boolean ascii = true;
+        for (int i = 0; i < label.length(); i++) {
+            if (label.charAt(i) > 0x7e) ascii = false;
+        }
+        char c = label.charAt(0);
+        boolean ink = !ascii
+                || label.length() == 1 && !Character.isLetterOrDigit(c) && "'\"`".indexOf(c) < 0;
+        float x = cx;
+        if (ink) {
+            textPaint.getTextBounds(label, 0, label.length(), bounds);
+            // Text is drawn centered on x: move the ink's center there.
+            x = cx - bounds.exactCenterX() + textPaint.measureText(label) / 2;
+        } else {
+            boolean lower = label.length() == 1 && Character.isLowerCase(c);
+            textPaint.getTextBounds(lower ? "x" : "H", 0, 1, bounds);
+        }
+        canvas.drawText(label, x, cy - bounds.exactCenterY(), textPaint);
     }
 
     /** The icon drawn instead of a label, or 0. */
