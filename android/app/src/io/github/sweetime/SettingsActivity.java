@@ -102,7 +102,24 @@ public final class SettingsActivity extends Activity {
         getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
                 | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         setContentView(scroll);
-        show(saved != null ? saved.getString("page", HOME) : HOME);
+        // The update notification opens the about page.
+        String start = saved != null ? saved.getString("page", HOME) : getIntent().getStringExtra("page");
+        show(start != null ? start : HOME);
+        Updater.schedule(this);
+        if (saved == null) {
+            handleInstallStatus(getIntent());
+            askNotificationsOnce();
+            if (Updater.autoCheck(this) && Updater.due(this)) checkUpdate(true);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (handleInstallStatus(intent)) return;
+        String p = intent.getStringExtra("page");
+        if (p != null) show(p);
     }
 
     @Override
@@ -153,6 +170,12 @@ public final class SettingsActivity extends Activity {
         aiStatus = null;
         aiSummary = null;
         learningSummary = null;
+        updateText = null;
+        updateNotes = null;
+        updateButton = null;
+        updateSkip = null;
+        homeBanner = null;
+        homeBannerText = null;
         box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         padBox();
@@ -187,6 +210,7 @@ public final class SettingsActivity extends Activity {
         updateBack();
         updateStatus();
         updateSummaries();
+        updateUpdate();
     }
 
     /** Lets back return home from a category page (Android 13 and later). */
@@ -215,6 +239,21 @@ public final class SettingsActivity extends Activity {
         TextView sub = text("Rust で書いた日本語入力", 14, theme.subText);
         sub.setPadding(dp(4), 0, 0, 0);
         box.addView(sub);
+
+        // Filled in once a check finds a new release.
+        homeBanner = card(null);
+        homeBannerText = text("", 16, theme.text);
+        homeBannerText.setPadding(0, dp(4), 0, dp(10));
+        homeBanner.addView(homeBannerText);
+        Button update = button("アップデート");
+        update.setOnClickListener(v -> {
+            show(ABOUT);
+            startUpdate();
+        });
+        homeBanner.addView(update);
+        Button skip = tonalButton("このバージョンをスキップ");
+        skip.setOnClickListener(v -> skipRelease());
+        homeBanner.addView(skip);
 
         LinearLayout setup = card(null);
         status = text("", 16, theme.text);
@@ -409,6 +448,7 @@ public final class SettingsActivity extends Activity {
         Button releases = tonalButton("最新のリリース");
         releases.setOnClickListener(v -> open("https://github.com/frost-1256/sweet-ime/releases/latest"));
         app.addView(releases);
+        updateSection();
         LinearLayout lic = card("ライセンス");
         for (String[] l : new String[][] {
             {"プログラム", "MIT License"},
@@ -458,6 +498,224 @@ public final class SettingsActivity extends Activity {
         } catch (IOException e) {
             return "モデルあり";
         }
+    }
+
+    // ---- Updates ----
+
+    /** The latest release found by a check, or null. */
+    private Updater.Release release;
+    private boolean checking;
+    /** Downloading or installing; cleared by the installer's status. */
+    private boolean updating;
+    private String updateProgress;
+    private String updateError;
+    private TextView updateText;
+    private TextView updateNotes;
+    private Button updateButton;
+    private Button updateSkip;
+    private LinearLayout homeBanner;
+    private TextView homeBannerText;
+
+    /** The アップデート card of the about page. */
+    private void updateSection() {
+        LinearLayout c = card("アップデート");
+        updateText = text("", 16, theme.text);
+        updateText.setPadding(0, dp(4), 0, dp(6));
+        c.addView(updateText);
+        updateNotes = text("", 13, theme.subText);
+        updateNotes.setPadding(0, 0, 0, dp(10));
+        c.addView(updateNotes);
+        updateButton = button("");
+        c.addView(updateButton);
+        updateSkip = tonalButton("このバージョンをスキップ");
+        updateSkip.setOnClickListener(v -> skipRelease());
+        c.addView(updateSkip);
+        c.addView(toggle("アップデートを自動で確認",
+                "1 日に 1 回 GitHub で新しいバージョンを確認し、見つかったら通知します。",
+                Updater.autoCheck(this), on -> {
+                    Prefs.keyboard(this).edit().putBoolean(Updater.AUTO_CHECK, on).apply();
+                    Updater.schedule(this);
+                    if (on) askNotifications();
+                }));
+    }
+
+    private boolean newer() {
+        return release != null && release.apkUrl != null
+                && Updater.isNewer(release.version, Updater.current(this));
+    }
+
+    /** Shows the update state on the about card and the home banner. */
+    private void updateUpdate() {
+        String current = Updater.current(this);
+        boolean newer = newer();
+        if (updateText != null) {
+            updateText.setText(updating ? updateProgress
+                    : checking ? "確認しています…"
+                    : updateError != null ? updateError
+                    : newer ? "新しいバージョン " + release.version + " があります(今は " + current + ")"
+                    : release != null ? "最新版です(" + current + ")"
+                    : "今のバージョン: " + current);
+            String notes = newer && !updating ? release.notes : "";
+            if (notes.length() > 800) notes = notes.substring(0, 800) + "…";
+            updateNotes.setText(notes);
+            updateNotes.setVisibility(notes.isEmpty() ? View.GONE : View.VISIBLE);
+            updateButton.setText(newer ? "ダウンロードして更新" : "アップデートを確認");
+            updateButton.setEnabled(!checking && !updating);
+            updateButton.setAlpha(checking || updating ? 0.5f : 1f);
+            updateButton.setOnClickListener(v -> {
+                if (newer()) startUpdate();
+                else checkUpdate(false);
+            });
+            updateSkip.setVisibility(newer && !updating && !release.version.equals(Updater.skipped(this))
+                    ? View.VISIBLE : View.GONE);
+        }
+        if (homeBanner != null) {
+            boolean offer = release != null && Updater.offer(this, release) && !updating;
+            homeBanner.setVisibility(offer ? View.VISIBLE : View.GONE);
+            if (offer) homeBannerText.setText("Sweet IME " + release.version + " が出ています");
+        }
+    }
+
+    /** Asks GitHub for the latest release; `quiet` keeps failures to itself. */
+    private void checkUpdate(boolean quiet) {
+        if (checking || updating) return;
+        checking = true;
+        if (!quiet) updateError = null;
+        updateUpdate();
+        new Thread(() -> {
+            Updater.Release found = null;
+            String error = null;
+            try {
+                found = Updater.fetchLatest();
+                Updater.checked(this);
+            } catch (Exception e) {
+                error = Updater.describe(e);
+            }
+            final Updater.Release r = found;
+            final String failed = error;
+            runOnUiThread(() -> {
+                checking = false;
+                if (r != null) release = r;
+                if (!quiet && failed != null) updateError = "確認できませんでした: " + failed;
+                updateUpdate();
+            });
+        }, "sweet-ime-update-check").start();
+    }
+
+    private void skipRelease() {
+        if (release == null) return;
+        Updater.skip(this, release.version);
+        updateUpdate();
+    }
+
+    /** Downloads the new APK and hands it to the system installer. */
+    private void startUpdate() {
+        if (release == null || release.apkUrl == null || updating) return;
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("インストールの許可が必要です")
+                    .setMessage("更新をインストールするには、Sweet IME に「不明なアプリのインストール」を"
+                            + "許可してください。許可したら、もう一度「ダウンロードして更新」を押してください。")
+                    .setPositiveButton("設定を開く", (d, w) -> startActivity(new Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()))))
+                    .setNegativeButton("キャンセル", null)
+                    .show();
+            return;
+        }
+        Updater.Release r = release;
+        updating = true;
+        updateError = null;
+        updateProgress = "ダウンロードを準備しています…";
+        updateUpdate();
+        new Thread(() -> {
+            String error = null;
+            try {
+                long[] shownMb = {-1};
+                File apk = Updater.download(this, r, (done, total) -> {
+                    long mb = done >> 20;
+                    if (mb == shownMb[0]) return;
+                    shownMb[0] = mb;
+                    String t = "ダウンロード中… " + mb + (total > 0 ? " / " + (total >> 20) : "") + " MB";
+                    runOnUiThread(() -> {
+                        updateProgress = t;
+                        updateUpdate();
+                    });
+                });
+                runOnUiThread(() -> {
+                    updateProgress = "インストールしています…";
+                    updateUpdate();
+                });
+                Updater.install(this, apk);
+            } catch (Exception e) {
+                error = Updater.describe(e);
+            }
+            final String failed = error;
+            runOnUiThread(() -> {
+                if (failed != null) {
+                    updating = false;
+                    updateError = "更新できませんでした: " + failed;
+                }
+                updateUpdate();
+            });
+        }, "sweet-ime-update").start();
+    }
+
+    /** Handles the installer's answer; returns whether `intent` was one. */
+    @SuppressWarnings("deprecation")
+    private boolean handleInstallStatus(Intent intent) {
+        if (intent == null || !Updater.ACTION_INSTALL_STATUS.equals(intent.getAction())) return false;
+        // Not again when the activity is recreated.
+        setIntent(new Intent(this, SettingsActivity.class));
+        int s = intent.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS,
+                android.content.pm.PackageInstaller.STATUS_FAILURE);
+        if (s == android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+            if (confirm != null) {
+                updating = true;
+                updateProgress = "インストールの確認を待っています…";
+                startActivity(confirm);
+            }
+            updateUpdate();
+            return true;
+        }
+        updating = false;
+        String msg = intent.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE);
+        switch (s) {
+            case android.content.pm.PackageInstaller.STATUS_SUCCESS:
+                updateError = null;
+                Toast.makeText(this, "更新しました", Toast.LENGTH_SHORT).show();
+                break;
+            case android.content.pm.PackageInstaller.STATUS_FAILURE_ABORTED:
+                updateError = "更新をキャンセルしました";
+                break;
+            case android.content.pm.PackageInstaller.STATUS_FAILURE_CONFLICT:
+            case android.content.pm.PackageInstaller.STATUS_FAILURE_INCOMPATIBLE:
+                updateError = "インストール済みのアプリと署名が違うため、更新できませんでした。"
+                        + "GitHub のリリースから入れ直してください。";
+                break;
+            default:
+                updateError = "更新できませんでした" + (msg != null ? ": " + msg : "");
+                break;
+        }
+        if (!page.equals(ABOUT)) show(ABOUT);
+        else updateUpdate();
+        return true;
+    }
+
+    /** Asks once for notifications, which the daily check uses. */
+    private void askNotificationsOnce() {
+        if (!Updater.autoCheck(this) || Prefs.flag(this, "asked_notifications", false)) return;
+        askNotifications();
+    }
+
+    private void askNotifications() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        Prefs.keyboard(this).edit().putBoolean("asked_notifications", true).apply();
+        requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 1);
     }
 
     // ---- Learning ----
