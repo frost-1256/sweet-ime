@@ -459,55 +459,90 @@ final class KeyboardView extends View {
         }
     }
 
+    /** The pointer holding `pressed`; other fingers start new presses. */
+    private int pointerId = -1;
+
+    /** Starts pressing the key under pointer `index`. */
+    private void press(MotionEvent e, int index) {
+        pointerId = e.getPointerId(index);
+        pressed = keyAt(e.getX(index), e.getY(index));
+        if (pressed == null) return;
+        feedback(pressed);
+        swipeX = e.getX(index);
+        swiped = false;
+        longPressed = false;
+        if (pressed.hint != null) handler.postDelayed(longPress, 350);
+        if (pressed.code == Native.KEY_BACKSPACE) {
+            fire(pressed);
+            handler.postDelayed(repeat, 400);
+        }
+    }
+
+    /** Ends the current press, typing its key unless it was used already. */
+    private void release() {
+        handler.removeCallbacks(repeat);
+        handler.removeCallbacks(longPress);
+        KeyDef k = pressed;
+        pressed = null;
+        pointerId = -1;
+        if (k != null && k.code != Native.KEY_BACKSPACE && !swiped && !longPressed) fire(k);
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                pressed = keyAt(e.getX(), e.getY());
-                if (pressed == null) return true;
-                feedback(pressed);
-                swipeX = e.getX();
-                swiped = false;
-                longPressed = false;
-                if (pressed.hint != null) handler.postDelayed(longPress, 350);
-                if (pressed.code == Native.KEY_BACKSPACE) {
-                    fire(pressed);
-                    handler.postDelayed(repeat, 400);
-                }
+                press(e, 0);
                 invalidate();
                 return true;
-            case MotionEvent.ACTION_MOVE:
-                if (pressed != null && pressed.code == Native.KEY_SPACE) {
+            case MotionEvent.ACTION_POINTER_DOWN:
+                // Another finger while a key is held: type the held key now
+                // and follow the new one (rollover, as on common keyboards).
+                release();
+                press(e, e.getActionIndex());
+                invalidate();
+                return true;
+            case MotionEvent.ACTION_MOVE: {
+                int index = e.findPointerIndex(pointerId);
+                if (index < 0 || pressed == null) return true;
+                float x = e.getX(index);
+                if (pressed.code == Native.KEY_SPACE) {
                     float step = 14 * density;
-                    while (Math.abs(e.getX() - swipeX) >= step) {
-                        boolean right = e.getX() > swipeX;
+                    while (Math.abs(x - swipeX) >= step) {
+                        boolean right = x > swipeX;
                         swipeX += right ? step : -step;
                         swiped = true;
                         if (listener != null) listener.onKey(right ? Native.KEY_RIGHT : Native.KEY_LEFT);
                     }
                     return true;
                 }
-                KeyDef k = keyAt(e.getX(), e.getY());
-                if (k != pressed && !longPressed
-                        && (pressed == null || pressed.code != Native.KEY_BACKSPACE)) {
+                KeyDef k = keyAt(x, e.getY(index));
+                if (k != pressed && !longPressed && pressed.code != Native.KEY_BACKSPACE) {
                     handler.removeCallbacks(longPress);
                     pressed = k;
                     invalidate();
                 }
                 return true;
-            case MotionEvent.ACTION_UP:
-                handler.removeCallbacks(repeat);
-                handler.removeCallbacks(longPress);
-                if (pressed != null && pressed.code != Native.KEY_BACKSPACE && !swiped && !longPressed) {
-                    fire(pressed);
+            }
+            case MotionEvent.ACTION_POINTER_UP:
+                // Only the finger holding the key types it; an earlier
+                // finger lifting later does nothing.
+                if (e.getPointerId(e.getActionIndex()) == pointerId) {
+                    release();
+                    invalidate();
                 }
+                return true;
+            case MotionEvent.ACTION_UP:
+                if (e.getPointerId(e.getActionIndex()) == pointerId) release();
                 pressed = null;
+                pointerId = -1;
                 invalidate();
                 return true;
             case MotionEvent.ACTION_CANCEL:
                 handler.removeCallbacks(repeat);
                 handler.removeCallbacks(longPress);
                 pressed = null;
+                pointerId = -1;
                 invalidate();
                 return true;
             default:
