@@ -73,6 +73,91 @@ pub fn romaji_readings() -> &'static [(String, &'static str)] {
     })
 }
 
+/// (reading, spelling) for each bundled spelling whose keys are all romaji
+/// (ime reads いめ for IME). These only convert at the start of the text,
+/// where Japanese rarely begins with such kana.
+pub fn kana_spelled_readings() -> &'static [(String, &'static str)] {
+    static READINGS: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
+    READINGS.get_or_init(|| {
+        let mut out: Vec<(String, &'static str)> = Vec::new();
+        for (spelling, _) in spellings() {
+            let keys: String = spelling.chars().filter(|c| !matches!(c, ' ' | '.' | '-')).collect();
+            if keys.len() < 3 || !keys.bytes().all(|b| b.is_ascii_alphabetic()) {
+                continue;
+            }
+            let reading = romaji::to_hiragana(&keys.to_ascii_lowercase());
+            // A doubled first kana is usually Japanese (aao reads ああお,
+            // as in ああおいしい).
+            let mut kana = reading.chars();
+            if kana.next() == kana.next() {
+                continue;
+            }
+            if !reading.bytes().any(|b| b.is_ascii_alphabetic()) && !out.iter().any(|(r, _)| *r == reading) {
+                out.push((reading, spelling));
+            }
+        }
+        out
+    })
+}
+
+/// Words in typed keys whose letters romaji splits around a little kana
+/// ("kyouhasystemctl" reads きょうはsysてmctl): letter runs that are not
+/// romaji, joined across at most two kana between them. Returns (reading,
+/// keys) for each, when `raw` types exactly `reading`.
+pub fn split_words(raw: &str, reading: &str) -> Vec<(String, String)> {
+    let chars: Vec<(usize, char)> = reading.char_indices().collect();
+    let letter = |c: char| c.is_ascii_alphabetic();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !letter(chars[i].1) {
+            i += 1;
+            continue;
+        }
+        // A letter run, then (≤2 kana, letter run) pairs.
+        let start = i;
+        let mut end = i;
+        while end < chars.len() && letter(chars[end].1) {
+            end += 1;
+        }
+        let mut joined = false;
+        loop {
+            let mut k = end;
+            while k < chars.len() && !letter(chars[k].1) && k - end < 3 {
+                k += 1;
+            }
+            let gap = k - end;
+            if gap == 0 || gap > 2 || k >= chars.len() || !letter(chars[k].1) {
+                break;
+            }
+            end = k;
+            while end < chars.len() && letter(chars[end].1) {
+                end += 1;
+            }
+            joined = true;
+        }
+        if joined {
+            let (from, to) = (chars[start].0, chars.get(end).map_or(reading.len(), |c| c.0));
+            let span = &reading[from..to];
+            // Bundled and listed words already convert with their spelling.
+            let known = romaji_readings().iter().any(|(r, _)| r == span) || word_index().get(span).is_some();
+            if let Some(keys) = keys_for(raw, &reading[..from], &reading[..to]).filter(|_| !known) {
+                out.push((span.to_string(), keys));
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// The keys of `raw` that type the part of the reading between the
+/// prefixes `before` and `upto`.
+fn keys_for(raw: &str, before: &str, upto: &str) -> Option<String> {
+    let prefix = |text: &str| (0..=raw.len()).filter(|&i| raw.is_char_boundary(i)).find(|&i| romaji::to_hiragana(&raw[..i]) == text);
+    let (a, b) = (prefix(before)?, prefix(upto)?);
+    (a < b).then(|| raw[a..b].to_string())
+}
+
 /// The readings typing `spelling` gives when its keys are not romaji: the
 /// reading itself, and the one with a final consonant doubled by the next
 /// word's first key ("discordde" reads ぢscおrっで).
@@ -403,5 +488,21 @@ mod tests {
         assert!(covers_letters("んぎんxをつかう", false));
         assert!(!covers_letters("しgとお", true));
         assert!(!covers_letters("これ", true));
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    #[test]
+    fn letter_runs_join_across_little_kana() {
+        let raw = "kyouhasystemctl";
+        let reading = romaji::to_hiragana(raw);
+        assert_eq!(split_words(raw, &reading), vec![("sysてmctl".to_string(), "systemctl".to_string())]);
+        // One run alone, or runs far apart, are not joined.
+        assert!(split_words("kinoutest", &romaji::to_hiragana("kinoutest")).is_empty());
+        let raw = "bxkaisyanox";
+        assert!(split_words(raw, &romaji::to_hiragana(raw)).is_empty());
     }
 }

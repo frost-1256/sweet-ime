@@ -861,3 +861,43 @@ fn undo_commit_restores_the_reading() {
     assert!(!s.can_undo());
     assert!(!s.handle(&c, Key::UndoCommit));
 }
+
+/// Live text after typing `typed`.
+fn live_text(c: &Converter, typed: &str) -> String {
+    let mut s = Session::new();
+    type_str(&mut s, c, typed);
+    s.preedit().text
+}
+
+#[test]
+fn spellings_typed_as_romaji_convert_at_the_start() {
+    let Some(c) = converter() else { return };
+    // ime reads いめ: IME live too, and Enter commits it.
+    assert_eq!(live_text(&c, "ime"), "IME");
+    let mut s = Session::new();
+    type_str(&mut s, &c, "ime");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "IME");
+    assert!(live_text(&c, "imewotsukau").starts_with("IMEを"));
+    assert!(live_text(&c, "debiannoinsuto").starts_with("Debianの"));
+    // Japanese that starts with the same kana stays Japanese.
+    assert_eq!(live_text(&c, "ime-ji"), "イメージ");
+    assert!(live_text(&c, "aaoishii").starts_with("ああ"));
+}
+
+#[test]
+fn a_word_ending_in_pending_keys_converts_at_once() {
+    let Some(c) = converter() else { return };
+    // The last key ("x", "b") is still pending romaji.
+    assert_eq!(live_text(&c, "kyouhalinux"), "今日はLinux");
+    assert_eq!(live_text(&c, "kyouhagithub"), "今日はGitHub");
+    assert_eq!(live_text(&c, "kyouhak"), "今日はk");
+}
+
+#[test]
+fn a_typed_word_split_by_romaji_stays_whole() {
+    let Some(c) = converter() else { return };
+    // "systemctl" reads sysてmctl.
+    assert_eq!(live_text(&c, "kyouhasystemctl"), "今日はsystemctl");
+    assert!(live_text(&c, "systemctlwotsukau").starts_with("systemctlを"));
+}

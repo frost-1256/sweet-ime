@@ -170,7 +170,13 @@ pub struct Converter {
     rerank: Mutex<RerankState>,
     /// Signalled when a reranker run finishes (see `cached_choice`).
     rerank_done: std::sync::Condvar,
+    /// Words typed by their spelling in the current compositions, as
+    /// (reading, spelling), newest last (see [`Converter::note_typed_word`]).
+    typed: Mutex<Vec<(String, String)>>,
 }
+
+/// How many typed words [`Converter::note_typed_word`] keeps.
+const TYPED_WORDS: usize = 16;
 
 /// Reranker key: (reading, left context, candidate surfaces).
 type RerankKey = (String, String, Vec<String>);
@@ -209,7 +215,20 @@ impl Converter {
             english_on: std::sync::atomic::AtomicBool::new(true),
             katakana_on: std::sync::atomic::AtomicBool::new(true),
             rerank: Mutex::new(RerankState::default()),
-            rerank_done: std::sync::Condvar::new() }
+            rerank_done: std::sync::Condvar::new(),
+            typed: Mutex::new(Vec::new()) }
+    }
+
+    /// Remembers that `reading` was typed as the keys `word` ("systemctl"
+    /// reads sysてmctl), so conversions place the word there. Only a few
+    /// recent words are kept; committing one learns it for good.
+    pub fn note_typed_word(&self, reading: &str, word: &str) {
+        let mut typed = self.typed.lock().unwrap_or_else(|e| e.into_inner());
+        typed.retain(|(r, _)| r != reading);
+        typed.push((reading.to_string(), word.to_string()));
+        if typed.len() > TYPED_WORDS {
+            typed.remove(0);
+        }
     }
 
     pub fn with_history(self, h: UserHistory) -> Self {
@@ -307,10 +326,25 @@ impl Converter {
     /// English words typed by their spelling in `text` (ぎてゅb), as
     /// lattice extras with that spelling (GitHub).
     fn spelling_extras(&self, text: &str, out: &mut Vec<Extra>) {
+        let id = self.dict.pos_id("名詞,一般,*,*,*,*,*").unwrap_or(self.dict.unknown_id());
+        // Spellings typed as romaji (ime reads いめ), at the start only.
+        for (reading, spelling) in crate::english::kana_spelled_readings() {
+            if text.starts_with(reading.as_str()) {
+                out.push(Extra {
+                    start: 0,
+                    end: reading.len(),
+                    lid: id,
+                    rid: id,
+                    cost: SPELLING_COST,
+                    surface: (*spelling).to_string(),
+                    origin: Origin::Spelling,
+                });
+                self.n_row_after(spelling, reading, &text[reading.len()..], reading.len(), out);
+            }
+        }
         if !text.bytes().any(|b| b.is_ascii_alphabetic()) {
             return;
         }
-        let id = self.dict.pos_id("名詞,一般,*,*,*,*,*").unwrap_or(self.dict.unknown_id());
         for (reading, spelling) in crate::english::romaji_readings() {
             for (start, _) in text.match_indices(reading.as_str()) {
                 out.push(Extra {
@@ -328,6 +362,19 @@ impl Converter {
         }
         if !self.english_words_enabled() {
             return;
+        }
+        for (reading, word) in self.typed.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            for (start, _) in text.match_indices(reading.as_str()) {
+                out.push(Extra {
+                    start,
+                    end: start + reading.len(),
+                    lid: id,
+                    rid: id,
+                    cost: SPELLING_COST + 200,
+                    surface: word.clone(),
+                    origin: Origin::Spelling,
+                });
+            }
         }
         // Common English words ("kinoutestwo" reads きのうてstを).
         let index = crate::english::word_index();

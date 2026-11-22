@@ -244,6 +244,9 @@ struct Composing {
     live: Option<LiveConversion>,
     /// `live` shows the typed keys as an English word (see `Composing::english`).
     live_english: bool,
+    /// `live` already includes the pending keys: they end an English word
+    /// ("kyouhalinux" shows 今日はLinux, not 今日はぃぬx).
+    live_pending: bool,
     /// Live conversion turned off for this composition (Esc / caret moves).
     live_off: bool,
     /// The last background-refined live conversion. While the reading only
@@ -442,7 +445,7 @@ impl Session {
         let c = &self.comp;
         if let Some(live) = &c.live {
             // An English word already includes the pending keys.
-            let pending = if c.live_english { "" } else { c.composer.pending() };
+            let pending = if c.live_english || c.live_pending { "" } else { c.composer.pending() };
             let text = format!("{}{}", live.surface, pending);
             let spans = if text.is_empty() { vec![] } else { vec![(0, text.len(), SpanAttr::Input)] };
             return Preedit { caret: text.len(), text, spans };
@@ -480,6 +483,7 @@ impl Session {
         let c = &mut self.comp;
         c.live = None;
         c.live_english = false;
+        c.live_pending = false;
         c.suggestions.clear();
         if c.is_empty() {
             c.literal = false;
@@ -509,6 +513,11 @@ impl Session {
         // A bundled spelling also counts its pending keys ("github" settles
         // as ぎてゅ until the last "b" resolves).
         let kana = c.kana();
+        if self.options.english_words && c.before.is_empty() && c.after.is_empty() {
+            for (reading, word) in english::split_words(&c.raw, &kana) {
+                conv.note_typed_word(&reading, &word);
+            }
+        }
         let english = if live && typo::has_unresolved_romaji(&kana) {
             let bundled = c.bundled_candidates(&kana).map(|b| b[0].clone());
             let typo_possible = c.typo_input(&settled).is_some() && !c.composer.pending().is_empty();
@@ -534,10 +543,23 @@ impl Session {
             c.live = match correction.take_if(|_| unresolved) {
                 Some(fix) => Some(LiveConversion { reading: fix.reading, surface: fix.surface }),
                 None => {
-                    live_best = conv.convert(&settled, &[], 1).into_iter().next();
+                    // Pending keys that end an English word ("linux" keeps
+                    // its x pending) convert with it.
+                    let with_pending = (!c.composer.pending().is_empty() && kana != settled)
+                        .then(|| conv.convert(&kana, &[], 1).into_iter().next())
+                        .flatten()
+                        .filter(|r| {
+                            r.segments.last().and_then(|s| s.words.last()).is_some_and(|w| {
+                                w.reading.bytes().any(|b| b.is_ascii_alphabetic())
+                                    && english::is_spelling(&w.reading, &w.surface)
+                            })
+                        });
+                    let reading = if with_pending.is_some() { kana.clone() } else { settled.clone() };
+                    c.live_pending = with_pending.is_some();
+                    live_best = with_pending.or_else(|| conv.convert(&settled, &[], 1).into_iter().next());
                     live_best.as_ref().map(|r| LiveConversion {
-                        reading: settled.clone(),
-                        surface: stable_live(c.refined.as_ref(), &settled, r),
+                        surface: stable_live(c.refined.as_ref(), &reading, r),
+                        reading,
                     })
                 }
             };
@@ -729,7 +751,11 @@ impl Session {
                 let kana = self.comp.kana();
                 let text = match &self.comp.live {
                     // Commit exactly what is shown.
-                    Some(live) if self.comp.live_english || self.comp.composer.pending().is_empty() => {
+                    Some(live)
+                        if self.comp.live_english
+                            || self.comp.live_pending
+                            || self.comp.composer.pending().is_empty() =>
+                    {
                         live.surface.clone()
                     }
                     // Pending romaji resolves to more kana: convert again.
