@@ -3,23 +3,28 @@
 //!   sweet-cli <dict> repl
 //!   sweet-cli <dict> eval <evaluation.tsv>
 //!   sweet-cli <dict> bench
+//!   sweet-cli <dict> audit [readings]   (with SWEET_ZENZ; see audit.rs)
 
 use anyhow::{Result, bail};
 use std::io::{BufRead, Write};
 use std::time::Instant;
 use sweet_engine::{Converter, Dictionary, romaji};
 
+mod audit;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        bail!("usage: sweet-cli <dict> (repl | eval <tsv> | bench)");
+        bail!("usage: sweet-cli <dict> (repl | eval <tsv> | bench | audit [readings])");
     }
     let t0 = Instant::now();
     let mut conv = Converter::new(Dictionary::open(&args[1])?);
     if let Ok(path) = std::env::var("SWEET_USER_DICT") {
         conv = conv.with_user_dict(sweet_engine::UserDictionary::with_file(path));
     }
-    if let Ok(path) = std::env::var("SWEET_ZENZ") {
+    // audit compares the lattice alone with the model.
+    let rerank = if args[2] == "audit" { None } else { std::env::var("SWEET_ZENZ").ok() };
+    if let Some(path) = rerank {
         let t = Instant::now();
         let mut r = sweet_zenz::ZenzReranker::new(sweet_zenz::Zenz::load(&path)?);
         if let Some(n) = std::env::var("SWEET_RERANK_N").ok().and_then(|v| v.parse().ok()) {
@@ -40,6 +45,7 @@ fn main() -> Result<()> {
         "repl" => repl(&conv),
         "eval" => eval(&conv, args.get(3).map(String::as_str).unwrap_or("evaluation.tsv")),
         "bench" => bench(&conv),
+        "audit" => audit::audit(&conv, args.get(3).and_then(|n| n.parse().ok())),
         other => bail!("unknown command {other}"),
     }
 }

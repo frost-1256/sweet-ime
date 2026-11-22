@@ -190,6 +190,11 @@ impl Dictionary {
         self.features.iter().position(|f| &**f == feature).map(|i| i as u16)
     }
 
+    /// The id.def feature of a POS id, if the dictionary records features.
+    pub fn feature(&self, id: u16) -> Option<&str> {
+        self.features.get(usize::from(id)).map(|f| &**f)
+    }
+
     pub fn pos_count(&self) -> usize {
         self.dim
     }
