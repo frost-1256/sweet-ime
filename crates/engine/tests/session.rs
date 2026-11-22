@@ -901,3 +901,49 @@ fn a_typed_word_split_by_romaji_stays_whole() {
     assert_eq!(live_text(&c, "kyouhasystemctl"), "今日はsystemctl");
     assert!(live_text(&c, "systemctlwotsukau").starts_with("systemctlを"));
 }
+
+/// Types `text` with Shift on its first letter; returns what was committed
+/// and the preedit.
+fn shift_type(c: &Converter, s: &mut Session, text: &str) -> (String, String) {
+    let mut committed = String::new();
+    for (i, ch) in text.chars().enumerate() {
+        let key = if i == 0 {
+            Key::ShiftedLetter(ch)
+        } else {
+            Key::Char(ch)
+        };
+        assert!(s.handle(c, key));
+        committed.push_str(&s.take_commit());
+    }
+    (committed, s.preedit().text)
+}
+
+#[test]
+fn a_shift_word_ends_when_japanese_follows() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    let (committed, shown) = shift_type(&c, &mut s, "Googlehakensakuenzindesu");
+    assert_eq!(committed, "Google");
+    assert_eq!(shown, "は検索エンジンです");
+    // The longest word: Hello + を, not Hell + おを.
+    let mut s = Session::new();
+    assert_eq!(shift_type(&c, &mut s, "Hellowosagasu").0, "Hello");
+    // A particle ends it at Enter or Space.
+    let mut s = Session::new();
+    shift_type(&c, &mut s, "Googleha");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "Googleは");
+    // A whole word, or no Japanese after it, stays English.
+    let mut s = Session::new();
+    shift_type(&c, &mut s, "Hello");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.take_commit(), "Hello ");
+    // Off: English until Space.
+    let mut s = Session::new();
+    s.options.shift_one_word = false;
+    let (committed, shown) = shift_type(&c, &mut s, "Googlehakensaku");
+    assert_eq!(
+        (committed.as_str(), shown.as_str()),
+        ("", "Googlehakensaku")
+    );
+}

@@ -114,6 +114,9 @@ pub struct Options {
     /// Show such a word as its katakana loanword first (best -> ベスト),
     /// with the spelling as the next candidate.
     pub english_katakana: bool,
+    /// A word started with Shift ends by itself once Japanese follows it
+    /// ("Googlehakensaku" -> Google, then はけんさく).
+    pub shift_one_word: bool,
 }
 
 impl Default for Options {
@@ -133,6 +136,7 @@ impl Default for Options {
             private_fields: true,
             english_words: true,
             english_katakana: true,
+            shift_one_word: true,
         }
     }
 }
@@ -160,6 +164,7 @@ impl Options {
                 "private_fields" => o.private_fields = on,
                 "english_words" => o.english_words = on,
                 "english_katakana" => o.english_katakana = on,
+                "shift_one_word" => o.shift_one_word = on,
                 _ => {}
             }
         }
@@ -185,6 +190,7 @@ impl Options {
              private_fields = {}
              english_words = {}
              english_katakana = {}
+             shift_one_word = {}
 ",
             b(self.live_conversion),
             b(self.suggestions),
@@ -200,6 +206,7 @@ impl Options {
             b(self.private_fields),
             b(self.english_words),
             b(self.english_katakana),
+            b(self.shift_one_word),
         )
     }
 }
@@ -325,6 +332,13 @@ impl Composing {
         (kana >= 2 && letters <= 3).then_some(&self.raw)
     }
 }
+
+/// Particles that end a word typed after Shift at Space or Enter
+/// ("Googleha" -> Google + は).
+const PARTICLES: &[&str] = &[
+    "は", "が", "を", "に", "で", "の", "と", "も", "へ", "や", "か", "って", "から", "まで",
+    "より",
+];
 
 /// What to show for `reading` while its refined conversion is pending:
 /// the lattice result, unless it rewrites text the refined result for an
@@ -720,11 +734,66 @@ impl Session {
         consumed
     }
 
+    /// Ends a word typed after Shift once Japanese follows it: when the
+    /// letters are a known word followed by romaji for three or more kana
+    /// ("Googlehaken" -> Google + はけん), or, at Space or Enter (`ending`),
+    /// by a particle ("Googleha"), commits the word and goes on in Japanese
+    /// with the rest. Returns whether it did.
+    fn end_shift_word(&mut self, ending: bool) -> bool {
+        let c = &self.comp;
+        if !self.options.shift_one_word || !c.literal || !c.after.is_empty() || !c.before.is_ascii()
+        {
+            return false;
+        }
+        let text = c.before.clone();
+        if english::is_known_word(&text) {
+            return false;
+        }
+        // The longest known word with only romaji after it ("Hellowosa" is
+        // Hello + をさ, not Hell + おをさ), once enough Japanese follows.
+        let romaji_after = |end: usize| {
+            let rest = &text[end..];
+            if !rest.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') {
+                return None;
+            }
+            let mut composer = romaji::Composer::new();
+            for ch in rest.chars() {
+                composer.push(ch);
+            }
+            let kana = composer.kana();
+            (!kana.bytes().any(|b| b.is_ascii_alphabetic()))
+                .then(|| (kana.to_string(), composer.pending().is_empty()))
+        };
+        let Some((end, (kana, whole))) = (2..text.len())
+            .rev()
+            .filter_map(|end| romaji_after(end).map(|r| (end, r)))
+            .find(|(end, _)| english::is_known_word(&text[..*end]))
+        else {
+            return false;
+        };
+        let japanese = if ending {
+            whole && PARTICLES.contains(&kana.as_str())
+        } else {
+            kana.chars().count() >= 3
+        };
+        if !japanese {
+            return false;
+        }
+        self.commit.push_str(&text[..end]);
+        self.comp = Composing::default();
+        for ch in text[end..].chars() {
+            self.comp.composer.push(ch);
+            self.comp.raw.push(ch);
+        }
+        true
+    }
+
     fn handle_composing(&mut self, conv: &Converter, key: Key) -> bool {
         let empty = self.comp.is_empty();
         match key {
             Key::Char(ch) if self.comp.literal && !ch.is_control() => {
                 self.comp.before.push(ch);
+                self.end_shift_word(false);
                 true
             }
             Key::Char(c) if !c.is_control() => {
@@ -737,6 +806,11 @@ impl Session {
                 true
             }
             _ if empty => false,
+            // Space or Enter right after one Japanese kana ("Googleha").
+            Key::Space | Key::Enter if self.comp.literal && self.end_shift_word(true) => {
+                self.refresh(conv);
+                self.handle_composing(conv, key)
+            }
             Key::Space if self.comp.literal => {
                 self.commit_all();
                 self.commit.push(' ');
@@ -1204,7 +1278,7 @@ mod option_tests {
         let o = Options::parse("# comment\nlive_conversion = off\n suggestions=1 # trailing\nunknown = 3\n");
         assert_eq!(o, Options { live_conversion: false, ..Options::default() });
         assert_eq!(Options::parse(""), Options::default());
-        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false, english_words: true, english_katakana: false };
+        let o = Options { live_conversion: false, suggestions: true, neural: false, learning: true, mode_indicator: false, theme: crate::Theme::Sakura, update_check: false, dates: false, emoji: true, calculator: false, undo_commit: false, private_fields: false, english_words: true, english_katakana: false, shift_one_word: false };
         assert_eq!(Options::parse(&o.to_text()), o);
         assert_eq!(Options::parse("theme = midnight").theme, crate::Theme::Midnight);
         assert_eq!(Options::parse("theme = unknown").theme, crate::Theme::Default);

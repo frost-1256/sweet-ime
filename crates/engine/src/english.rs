@@ -23,6 +23,53 @@ pub fn spellings() -> impl Iterator<Item = (&'static str, Option<&'static str>)>
     word_keys::bundled_spellings(TECH_TERMS, VRCHAT_TERMS, ENGLISH_WORDS)
 }
 
+/// Whether `word` is a bundled spelling or on the word list, in any case
+/// (Google, github, Test).
+pub fn is_known_word(word: &str) -> bool {
+    if spellings().any(|(s, _)| spells(s, word)) {
+        return true;
+    }
+    in_word_list(&word.to_ascii_lowercase())
+}
+
+/// Whether the word list has `word` (lowercase). The list is sorted, so
+/// this is a binary search over its lines.
+fn in_word_list(word: &str) -> bool {
+    let list = WORD_LIST.as_bytes();
+    let mut body = 0;
+    while list[body..].starts_with(b"#") {
+        body = list[body..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(list.len(), |p| body + p + 1);
+    }
+    let text = &list[body..];
+    let line_at = |i: usize| {
+        let start = text[..i]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |p| p + 1);
+        let end = text[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(text.len(), |p| start + p);
+        (start, end)
+    };
+    let (mut lo, mut hi) = (0, text.len());
+    while lo < hi {
+        let (start, end) = line_at((lo + hi) / 2);
+        let line = std::str::from_utf8(&text[start..end])
+            .unwrap_or("")
+            .trim_end_matches('\r');
+        match line.cmp(word) {
+            std::cmp::Ordering::Equal => return true,
+            std::cmp::Ordering::Less => lo = (end + 1).min(text.len()),
+            std::cmp::Ordering::Greater => hi = start,
+        }
+    }
+    false
+}
+
 /// Whether the keys `raw` type `spelling`: the same letters and digits in
 /// any case, ignoring spaces, dots and hyphens ("vscode" types "VS Code").
 pub fn spells(spelling: &str, raw: &str) -> bool {
@@ -424,6 +471,21 @@ mod split_tests {
         assert_eq!(INDEX.get("てst"), Some("test"));
         assert_eq!(INDEX.get("ぶsy"), Some("busy"));
         assert_eq!(INDEX.get("これ"), None);
+    }
+
+    #[test]
+    fn word_list_lookup_finds_every_word() {
+        let words: Vec<&str> = WORD_LIST
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .collect();
+        for w in &words {
+            assert!(in_word_list(w), "{w}");
+        }
+        for w in ["", "a", "zzzzzz", "helloo", "aaaaa"] {
+            assert!(!in_word_list(w), "{w}");
+        }
+        assert!(is_known_word("Hello") && is_known_word("GitHub") && !is_known_word("Hellowo"));
     }
 
     #[test]

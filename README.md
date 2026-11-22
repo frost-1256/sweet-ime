@@ -183,7 +183,11 @@ text cursor.
 While the IME is on, start a word with Shift+letter to type it in English.
 Release Shift to continue typing the word. Space commits it with a
 half-width space, and Enter commits the word alone. Both return to Japanese
-input. Escape cancels the word. For common technical terms, type `ime`,
+input. Escape cancels the word. A known word also ends by itself when
+Japanese follows it: `Googlehakensaku` commits `Google` and goes on with
+`は検索`, and `Googleha` followed by Enter commits `Googleは`
+(`shift_one_word = off` keeps English until Space or Enter). For common
+technical terms, type `ime`,
 `ieee`, or `github` and press Space to convert to `IME`, `IEEE`, or
 `GitHub`. Japanese readings such as `あいえむいー` also work.
 
@@ -234,6 +238,7 @@ undo_commit = on       # Ctrl+Backspace right after a commit restores the readin
 private_fields = on    # learn nothing in password fields and private windows
 english_words = on     # common English words convert inside sentences
 english_katakana = on  # ... as their katakana loanword first (best -> ベスト)
+shift_one_word = on    # a word started with Shift ends when Japanese follows
 ```
 
 Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one

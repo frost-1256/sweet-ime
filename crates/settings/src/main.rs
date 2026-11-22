@@ -333,6 +333,9 @@ impl App {
         card(ui, "英単語の判定", "「korehabestdesu」→「これはベストです」、「softwarewo」→「softwareを」のように、ローマ字にならない英単語を文の途中でも変換します。F10 で英字に直した単語も覚えます。", |ui| {
             changed |= toggle(ui, &mut self.opts.english_words).changed();
         });
+        card(ui, "Shift の英字入力を1単語で戻す", "Shift を押しながら打ち始めた英字は、知っている単語のあとにローマ字が続くと、そこで確定して日本語入力に戻ります (「Googlehakensaku」→「Google」+「検索」)。オフにすると Space か Enter まで英字のままです。", |ui| {
+            changed |= toggle(ui, &mut self.opts.shift_one_word).changed();
+        });
         card(ui, "英単語をカタカナで出す", "「best」→「ベスト」のように、よく使うカタカナ語がある英単語はカタカナを先に出します。英字は次の候補になります。", |ui| {
             changed |= toggle(ui, &mut self.opts.english_katakana).changed();
         });
