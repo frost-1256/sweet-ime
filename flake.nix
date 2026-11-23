@@ -37,6 +37,8 @@
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (import ./nix/gui-libs.nix pkgs);
           SWEET_TEST_DBUS_CONFIG = "${pkgs.dbus}/share/dbus-1/session.conf";
+          FCITX_ADDON_DIRS = "${pkgs.fcitx5}/lib/fcitx5";
+          XDG_DATA_DIRS = "${pkgs.fcitx5}/share:/usr/local/share:/usr/share";
         };
       });
     };
