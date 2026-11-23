@@ -1365,6 +1365,9 @@ fn marked_spellings_convert_inside_japanese_sentences() {
         ("kyouhaqwen3.6wotsukau", "今日はQwen3.6を使う"),
         ("kyouham.2wotsukau", "今日はM.2を使う"),
         ("kyouhagm2wotsukau", "今日はgm2を使う"),
+        ("kyouhaq4_kmwotsukau", "今日はQ4_K_Mを使う"),
+        ("ci/cdde", "CI/CDで"),
+        ("kyouhawi-fiwotsukau", "今日はWi-Fiを使う"),
     ] {
         let mut s = Session::new();
         type_str(&mut s, &c, typed);

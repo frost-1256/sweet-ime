@@ -166,16 +166,31 @@ fn marked_spellings() -> &'static [(String, &'static str)] {
         for (spelling, _) in spellings().filter(|(s, _)| {
             s.is_ascii() && s.bytes().any(|b| b.is_ascii_digit() || b.is_ascii_punctuation())
         }) {
-            let keys = spelling.to_ascii_lowercase().replace(' ', "");
-            for omitted in ["", "-", ".", "._-"] {
-                let input: String = keys.chars().filter(|&ch| !omitted.contains(ch)).collect();
+            let mut inputs = vec![String::new()];
+            for key in spelling.bytes().filter(|&key| key != b' ') {
+                if matches!(key, b'.' | b'-' | b'_') {
+                    let omitted = inputs.clone();
+                    for input in &mut inputs {
+                        input.push(char::from(key));
+                    }
+                    inputs.extend(omitted);
+                } else {
+                    for input in &mut inputs {
+                        input.push(char::from(key.to_ascii_lowercase()));
+                    }
+                }
+            }
+            for input in inputs {
                 // Compact spellings without any markers already use the word index.
                 if !input.bytes().any(|b| b.is_ascii_digit() || b.is_ascii_punctuation()) {
                     continue;
                 }
                 let reading = romaji::to_hiragana(&input);
-                if seen.insert(reading.clone()) {
-                    readings.push((reading, spelling));
+                let doubled = word_keys::doubled_final_consonant(&reading);
+                for reading in std::iter::once(reading).chain(doubled) {
+                    if seen.insert(reading.clone()) {
+                        readings.push((reading, spelling));
+                    }
                 }
             }
         }
@@ -189,7 +204,7 @@ pub(crate) fn marked_spelling_matches(
     let marked = text
         .bytes()
         .any(|b| b.is_ascii_digit() || b.is_ascii_punctuation())
-        || (text.bytes().any(|b| b.is_ascii_alphabetic()) && text.contains(['。', 'ー', '・']));
+        || text.contains(['。', 'ー', '・']);
     let spellings = if marked { marked_spellings() } else { &[] };
     spellings.iter().flat_map(move |(reading, spelling)| {
         text.match_indices(reading.as_str())

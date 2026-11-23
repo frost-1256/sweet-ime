@@ -46,12 +46,16 @@ pub fn readings_of(spelling: &str, min_len: usize) -> Vec<String> {
     if !reading.bytes().any(|b| b.is_ascii_alphabetic()) {
         return Vec::new();
     }
-    let doubled = reading
-        .strip_suffix(|c: char| c.is_ascii_alphabetic() && c != 'n')
+    let doubled = doubled_final_consonant(&reading)
         // Still not romaji without that letter (Apex: あぺっ is).
-        .filter(|stem| stem.bytes().any(|b| b.is_ascii_alphabetic()))
-        .map(|stem| format!("{stem}っ"));
+        .filter(|candidate| candidate.bytes().any(|b| b.is_ascii_alphabetic()));
     std::iter::once(reading).chain(doubled).collect()
+}
+
+pub fn doubled_final_consonant(reading: &str) -> Option<String> {
+    reading
+        .strip_suffix(|c: char| c.is_ascii_alphabetic() && c != 'n')
+        .map(|stem| format!("{stem}っ"))
 }
 
 /// Readings of bundled spellings (3+ keys) that are not romaji.
