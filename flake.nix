@@ -36,6 +36,7 @@
             ]))
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (import ./nix/gui-libs.nix pkgs);
+          SWEET_TEST_DBUS_CONFIG = "${pkgs.dbus}/share/dbus-1/session.conf";
         };
       });
     };
