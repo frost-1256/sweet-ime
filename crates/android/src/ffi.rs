@@ -170,6 +170,41 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_liveRequest(
     to_java(&mut env, s)
 }
 
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_liveCommitRequest(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+) -> jstring {
+    let c = unsafe { ctx(p) };
+    let s = guard(None, || {
+        c.live_commit_request()
+            .map(|(r, l)| format!("{r}{FIELD}{l}"))
+    });
+    to_java(&mut env, s)
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_commitRefinedLive(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+    reading: JString,
+    left: JString,
+    surface: JString,
+) -> jstring {
+    let c = unsafe { ctx(p) };
+    let reading = to_string(&mut env, &reading);
+    let left = to_string(&mut env, &left);
+    let surface = to_string(&mut env, &surface);
+    let s = guard(None, || c.commit_refined_live(&reading, &left, &surface));
+    to_java(&mut env, s)
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_sweetime_Native_refine(
     mut env: JNIEnv,

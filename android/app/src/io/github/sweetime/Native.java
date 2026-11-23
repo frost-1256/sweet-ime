@@ -46,6 +46,11 @@ final class Native {
     /** The live conversion to refine with zenz ("reading\u001fleft"), or null. */
     static native String liveRequest(long ctx);
 
+    /** Reading and context for a live conversion being confirmed with Enter. */
+    static native String liveCommitRequest(long ctx);
+
+    static native String commitRefinedLive(long ctx, String reading, String leftContext, String surface);
+
     /** The best conversion with the model; slow, for a background thread. */
     static native String refine(String reading, String leftContext);
 

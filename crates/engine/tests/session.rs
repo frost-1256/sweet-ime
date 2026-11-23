@@ -22,6 +22,30 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
+fn exposes_exact_homophones_beyond_the_ranked_candidates() {
+    let Some(c) = converter() else { return };
+    let reading = "こう";
+    let ranked = c.segment_candidates(reading, 40);
+    let exact = c.dictionary().lookup(reading);
+    let omitted = exact
+        .iter()
+        .find(|word| !ranked.iter().any(|candidate| candidate == word.surface))
+        .expect("the bounded ranking should omit some exact matches");
+
+    let mut s = plain();
+    type_str(&mut s, &c, "kou");
+    s.handle(&c, Key::Space);
+    let first = s.preedit().text;
+    assert!(s.open_candidates(&c));
+    let list = s.candidates().unwrap();
+    assert_eq!(list.items.first(), Some(&first));
+    assert!(exact.iter().all(|word| list.items.iter().any(|item| item == word.surface)));
+    let index = list.items.iter().position(|item| item == omitted.surface).unwrap();
+    assert!(s.select_candidate(&c, index));
+    assert_eq!(s.take_commit(), omitted.surface);
+}
+
+#[test]
 fn shift_starts_english_until_space_or_enter() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();

@@ -27,6 +27,22 @@ impl Session {
         Some((live.reading.clone(), self.left_context.clone()))
     }
 
+    /// Reading to refine when confirming live conversion. A final pending
+    /// `n` becomes ん on confirmation, so the preview may cover less text.
+    pub fn live_commit_request(&self) -> Option<(String, String)> {
+        let live = self.comp.live.as_ref()?;
+        if self.conv.is_some() || self.comp.live_english || !self.options.live_conversion {
+            return None;
+        }
+        let reading = match self.comp.composer.pending() {
+            _ if self.comp.live_pending => live.reading.clone(),
+            "" => live.reading.clone(),
+            "n" => self.comp.kana(),
+            _ => return None,
+        };
+        Some((reading, self.left_context.clone()))
+    }
+
     /// Replaces the live conversion with `surface` if `reading` is still what
     /// is being typed. Returns whether the display changed.
     pub fn apply_live(&mut self, reading: &str, surface: &str) -> bool {

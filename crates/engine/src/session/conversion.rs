@@ -179,6 +179,7 @@ impl Session {
                 s.cands.push(c);
             }
         }
+        conv.append_exact_candidates(&s.reading, &mut s.cands);
     }
 
     pub(super) fn commit_conversion(&mut self, conv: &Converter) {

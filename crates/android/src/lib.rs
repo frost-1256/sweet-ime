@@ -286,6 +286,26 @@ impl Context {
         self.session.live_request()
     }
 
+    pub fn live_commit_request(&self) -> Option<(String, String)> {
+        converter().filter(|c| c.has_reranker())?;
+        self.session.live_commit_request()
+    }
+
+    /// Commits the result only for the same reading and editor context.
+    pub fn commit_refined_live(
+        &mut self,
+        reading: &str,
+        left: &str,
+        surface: &str,
+    ) -> Option<String> {
+        let (current, context) = self.session.live_commit_request()?;
+        if current != reading || context != left || surface.is_empty() {
+            return None;
+        }
+        self.session.commit_as(surface);
+        Some(self.snapshot())
+    }
+
     /// Shows the refined live conversion if the reading is still the one
     /// typed; `None` when nothing changed.
     pub fn apply_live(&mut self, reading: &str, surface: &str) -> Option<String> {
@@ -462,5 +482,49 @@ mod tests {
         c.key(KEY_ENTER).unwrap();
         c.reset();
         assert!(c.undo_commit("かな").is_none());
+    }
+
+    #[test]
+    fn confirms_neural_result_for_the_current_reading() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        let Ok(dict) = Dictionary::open(data.join("system.dict")) else {
+            return;
+        };
+        let mut conv = Converter::new(dict);
+        let model = sweet_zenz::Zenz::load(data.join("zenz-v3.1-xsmall.swz")).ok();
+        let has_model = model.is_some();
+        if let Some(model) = model {
+            conv = conv.with_reranker(Box::new(sweet_zenz::ZenzReranker::new(model)));
+        }
+        let mut ctx = Context::new();
+        ctx.session.options = sweet_engine::Options::default();
+        ctx.session.set_left_context("資料を探しています。");
+        for ch in "kinounokaiginoshiryou".chars() {
+            ctx.session.handle(&conv, Key::Char(ch));
+        }
+        let (reading, left) = ctx.session.live_commit_request().unwrap();
+        assert_eq!(reading, "きのうのかいぎのしりょう");
+        let surface = if has_model {
+            conv.refine_live(&reading, &left).unwrap()
+        } else {
+            "昨日の会議の資料".into()
+        };
+        assert_ne!(ctx.session.preedit().text, surface);
+        assert!(
+            ctx.commit_refined_live(&reading, "別の文脈", &surface)
+                .is_none()
+        );
+        let snapshot = ctx.commit_refined_live(&reading, &left, &surface).unwrap();
+        assert_eq!(snapshot.split(FIELD).next(), Some("昨日の会議の資料"));
+        assert_eq!(snapshot.split(FIELD).nth(7), Some("1"));
+        assert!(ctx.commit_refined_live(&reading, &left, &surface).is_none());
+
+        for ch in "kouen".chars() {
+            ctx.session.handle(&conv, Key::Char(ch));
+        }
+        assert_eq!(ctx.session.live_request().unwrap().0, "こうえ");
+        assert_eq!(ctx.session.live_commit_request().unwrap().0, "こうえん");
+        ctx.session.handle(&conv, Key::Space);
+        assert!(ctx.session.live_commit_request().is_none());
     }
 }

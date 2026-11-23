@@ -93,44 +93,102 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     /** Runs the zenz model for live conversion off the main thread. */
     private final android.os.HandlerThread refineThread = new android.os.HandlerThread("sweet-ime-zenz");
     private Handler refiner;
-    /** The newest live conversion to refine: {reading, left context}. */
-    private volatile String[] liveJob;
-    /** The last request sent, so a refined result does not ask again. */
-    private String lastLive = "";
-    /**
-     * How long typing must pause before the model runs: one run per pause
-     * instead of one per key keeps the phone cool. Space still converts with
-     * the model right away.
-     */
-    private static final long LIVE_DELAY_MS = 250;
+    private LiveJob liveJob;
+    private LiveJob pendingEnter;
+    private final Runnable enterTimeout = () -> finishEnter(pendingEnter, null);
 
-    /**
-     * Refines the live conversion with the model in the background; the
-     * result replaces it if the reading is still the same.
-     */
+    // Debounce previews to limit load during continuous typing. Enter starts
+    // the matching job immediately but only waits briefly for its result.
+    private static final long LIVE_DELAY_MS = 250;
+    private static final long ENTER_WAIT_MS = 500;
+
+    private final class LiveJob implements Runnable {
+        final String request;
+        final String reading;
+        final String left;
+        private final java.util.concurrent.atomic.AtomicBoolean started =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        boolean finished;
+
+        LiveJob(String request) {
+            this.request = request;
+            int sep = request.indexOf('\u001f');
+            reading = request.substring(0, sep);
+            left = request.substring(sep + 1);
+        }
+
+        @Override
+        public void run() {
+            if (!started.compareAndSet(false, true)) return;
+            String surface = Native.refine(reading, left);
+            main.post(() -> onRefined(this, surface));
+        }
+    }
+
+    private void cancelLive() {
+        if (liveJob != null && refiner != null) refiner.removeCallbacks(liveJob);
+        liveJob = null;
+        pendingEnter = null;
+        main.removeCallbacks(enterTimeout);
+    }
+
+    private LiveJob jobFor(String request) {
+        if (liveJob == null || !liveJob.request.equals(request)) {
+            cancelLive();
+            liveJob = new LiveJob(request);
+        }
+        return liveJob;
+    }
+
     private void requestLive() {
-        if (ctx == 0 || !composing || refiner == null) return;
-        String req = Native.liveRequest(ctx);
-        if (req == null || req.equals(lastLive)) return;
-        lastLive = req;
-        liveJob = req.split("\u001f", 2);
-        refiner.removeCallbacksAndMessages(null);
-        refiner.postDelayed(() -> {
-            String[] job = liveJob;
-            liveJob = null;
-            if (job == null || job.length < 2) return;
-            String surface = Native.refine(job[0], job[1]);
-            if (surface == null) return;
-            main.post(() -> {
-                if (ctx == 0 || !composing) return;
-                String snap = Native.applyLive(ctx, job[0], surface);
-                if (snap != null) apply(snap);
-            });
-        }, LIVE_DELAY_MS);
+        String request = ctx != 0 && composing && refiner != null ? Native.liveRequest(ctx) : null;
+        if (request == null) {
+            cancelLive();
+        } else if (liveJob == null || !liveJob.request.equals(request)) {
+            refiner.postDelayed(jobFor(request), LIVE_DELAY_MS);
+        }
+    }
+
+    private void onRefined(LiveJob job, String surface) {
+        if (job != liveJob || ctx == 0 || !composing) return;
+        job.finished = true;
+        if (job == pendingEnter) {
+            finishEnter(job, surface);
+        } else if (surface != null && job.request.equals(Native.liveRequest(ctx))) {
+            String snapshot = Native.applyLive(ctx, job.reading, surface);
+            if (snapshot != null) apply(snapshot);
+        }
+    }
+
+    private boolean deferEnter() {
+        if (!composing || refiner == null) return false;
+        String request = Native.liveCommitRequest(ctx);
+        if (request == null) return false;
+        LiveJob job = jobFor(request);
+        if (job.finished) return false;
+        pendingEnter = job;
+        refiner.removeCallbacks(job);
+        refiner.post(job);
+        main.postDelayed(enterTimeout, ENTER_WAIT_MS);
+        return true;
+    }
+
+    private void finishEnter(LiveJob job, String surface) {
+        if (job == null || job != pendingEnter) return;
+        pendingEnter = null;
+        main.removeCallbacks(enterTimeout);
+        if (ctx == 0 || !composing) return;
+        String current = Native.liveCommitRequest(ctx);
+        if (current != null && !job.request.equals(current)) return;
+        String snapshot = surface != null && current != null
+                ? Native.commitRefinedLive(ctx, job.reading, job.left, surface) : null;
+        if (snapshot == null) snapshot = Native.key(ctx, Native.KEY_ENTER);
+        if (snapshot != null) apply(snapshot);
     }
 
     @Override
     public void onDestroy() {
+        cancelLive();
         refineThread.quitSafely();
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         if (ctx != 0) {
@@ -336,6 +394,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onStartInput(EditorInfo attr, boolean restarting) {
         super.onStartInput(attr, restarting);
+        cancelLive();
         clearUndo();
         if (ctx != 0) Native.reset(ctx);
         composing = false;
@@ -387,6 +446,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onFinishInputView(boolean finishingInput) {
+        cancelLive();
         clearUndo();
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
@@ -400,6 +460,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onFinishInput() {
+        cancelLive();
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         super.onFinishInput();
@@ -433,6 +494,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (lost || moved || composing && candidatesStart >= 0
                 && (newSelStart != newSelEnd || newSelStart < candidatesStart
                 || newSelStart > candidatesEnd)) {
+            cancelLive();
             Native.reset(ctx);
             composing = false;
             InputConnection ic = getCurrentInputConnection();
@@ -445,7 +507,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private String textBeforeCursor() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        CharSequence t = ic.getTextBeforeCursor(32, 0);
+        CharSequence t = ic.getTextBeforeCursor(40, 0);
         return t == null ? null : t.toString();
     }
 
@@ -552,6 +614,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onKey(int code) {
+        finishEnter(pendingEnter, null);
         clearUndo();
         if (!english && engine()) {
             // A new reading: the text before it is the model's context
@@ -560,6 +623,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 String before = textBeforeCursor();
                 Native.setLeftContext(ctx, before != null ? before : "");
             }
+            if (code == Native.KEY_ENTER && deferEnter()) return;
             String s = Native.key(ctx, code);
             if (s != null) {
                 apply(s);
@@ -757,11 +821,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         }
         showCandidates(st.candidates, st.selected, st.suggestions);
         updateKeys();
-        if (composing) {
-            requestLive();
-        } else {
-            lastLive = "";
-        }
+        requestLive();
     }
 
     private View iconButton(java.util.function.IntSupplier icon, String label, Runnable action) {

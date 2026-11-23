@@ -525,4 +525,17 @@ impl Converter {
         add(crate::romaji::to_katakana(reading), &mut out);
         out
     }
+
+    /// Adds exact dictionary matches that did not make the ranked lattice list.
+    pub(crate) fn append_exact_candidates(&self, reading: &str, candidates: &mut Vec<String>) {
+        let mut seen: HashSet<_> = candidates.iter().map(String::as_str).collect();
+        let missing: Vec<_> = self
+            .dict
+            .lookup(reading)
+            .into_iter()
+            .filter(|entry| !entry.surface.is_empty() && seen.insert(entry.surface))
+            .map(|entry| entry.surface.to_owned())
+            .collect();
+        candidates.extend(missing);
+    }
 }
