@@ -545,6 +545,43 @@ fn decimal_point_between_digits() {
 }
 
 #[test]
+fn url_keys_stay_ascii_in_japanese_mode() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "https");
+    assert!(s.handle_url_symbol(&c, ':'));
+    assert!(s.handle_url_symbol(&c, '/'));
+    assert!(s.handle_url_symbol(&c, '/'));
+    type_str(&mut s, &c, "example.com/");
+    s.handle(&c, Key::ShiftedLetter('A'));
+    type_str(&mut s, &c, "Pi?x=5.3&y=foo-bar#Part");
+    let url = "https://example.com/APi?x=5.3&y=foo-bar#Part";
+    assert_eq!(s.preedit().text, url);
+    assert!(s.live_request().is_none());
+    s.handle(&c, Key::Space);
+    assert_eq!(s.take_commit(), format!("{url} "));
+    type_str(&mut s, &c, "nihongo");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "日本語");
+}
+
+#[test]
+fn bare_domains_keep_their_typed_spelling() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    for url in ["www.example.dev/a", "example.co.jp/wiki", "my-site.com"] {
+        type_str(&mut s, &c, url);
+        assert_eq!(s.preedit().text, url);
+        s.handle(&c, Key::Enter);
+        assert_eq!(s.take_commit(), url);
+    }
+    type_str(&mut s, &c, "arigatou.");
+    assert!(!s.handle_url_symbol(&c, '/'));
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "ありがとう。");
+}
+
+#[test]
 fn typo_early_in_a_long_reading_is_fixed() {
     let Some(c) = converter() else { return };
     let mut s = plain();
@@ -589,12 +626,47 @@ fn valid_kana_typo_is_offered_as_a_suggestion() {
     assert_eq!(s.take_commit(), "こにゃく");
 }
 
+#[test]
+fn typo_correction_restores_missing_consonants() {
+    let Some(c) = converter() else { return };
+    for (keys, reading) in [
+        ("oyasuminaai", "おやすみなさい"),
+        ("dennshagatomateiru", "でんしゃがとまっている"),
+    ] {
+        let fix = sweet_engine::typo::correct(&c, keys, 1000, std::time::Duration::from_millis(100))
+            .unwrap();
+        assert_eq!(fix.reading, reading, "{keys}");
+    }
+}
+
 /// Always prefers the last candidate, to make reranking observable.
 struct PickLast;
 
 impl sweet_engine::Reranker for PickLast {
     fn choose(&self, _r: &str, _l: &str, c: &[sweet_engine::Conversion]) -> Option<usize> {
         Some(c.len() - 1)
+    }
+}
+
+#[test]
+fn distinguishes_release_announcements_from_seeds() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "imadetane");
+    s.handle(&c, Key::Enter);
+    assert_eq!(s.take_commit(), "今出たね");
+    assert_eq!(c.convert("にわでたね", &[], 1)[0].surface(), "庭で種");
+    assert_eq!(
+        c.convert("はなをそだてるのでたねをかう", &[], 1)[0].surface(),
+        "花を育てるので種を買う"
+    );
+
+    let c = c.with_reranker(Box::new(PickLast));
+    for (reading, context, surface) in [
+        ("GLM 5.3でたね", "", "GLM 5.3出たね"),
+        ("でたね", "GLM 5.3", "出たね"),
+    ] {
+        assert_eq!(c.convert_best(reading, &[], context)[0].surface(), surface);
     }
 }
 

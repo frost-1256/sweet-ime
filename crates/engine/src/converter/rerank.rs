@@ -133,6 +133,21 @@ impl Converter {
             {
                 return res;
             }
+            // After a version number, でたね is usually a release
+            // announcement. Keep the lattice's release phrase when present.
+            if super::release_phrase::follows_version(text, left_context)
+                && res.first().is_some_and(|c| {
+                    c.segments
+                        .iter()
+                        .flat_map(|segment| &segment.words)
+                        .any(|word| {
+                            word.reading == super::release_phrase::READING
+                                && word.surface == super::release_phrase::SURFACE
+                        })
+                })
+            {
+                return res;
+            }
             if res.len() > 1 {
                 let surfaces: Vec<String> = res.iter().map(|c| c.surface()).collect();
                 if let Some(mut i) =

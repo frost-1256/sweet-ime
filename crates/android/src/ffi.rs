@@ -70,6 +70,20 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_key(
 /// # Safety
 /// `p` is a live context.
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_urlSymbol(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+    code: jint,
+) -> jstring {
+    let c = unsafe { ctx(p) };
+    let s = guard(None, || c.url_symbol(char::from_u32(code as u32)?));
+    to_java(&mut env, s)
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn Java_io_github_sweetime_Native_select(
     mut env: JNIEnv,
     _: JClass,

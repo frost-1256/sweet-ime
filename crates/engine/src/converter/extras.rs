@@ -1,6 +1,6 @@
 //! Additional lattice words from learning, the user dictionary, numbers, and English.
 
-use super::{Converter, UserHistory};
+use super::{Converter, UserHistory, release_phrase};
 
 /// Where an extra lattice word came from.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -13,6 +13,7 @@ pub(super) enum Origin {
     Spelling,
     /// A colloquial long vowel kept in hiragana (ちょーだい).
     LongVowel,
+    ReleasePhrase,
 }
 
 /// A word placed into the lattice in addition to the system dictionary.
@@ -181,7 +182,28 @@ impl Converter {
         self.number_extras(text, &mut out);
         self.spelling_extras(text, &mut out);
         self.long_vowel_extras(text, &mut out);
+        self.release_phrase_extra(text, &mut out);
         out
+    }
+
+    fn release_phrase_extra(&self, text: &str, out: &mut Vec<Extra>) {
+        let Some((start, end)) = release_phrase::span(text) else {
+            return;
+        };
+        let lid = self.dict.pos_id("動詞,自立,*,*,一段,連用形,出る");
+        let rid = self.dict.pos_id("助詞,終助詞,*,*,*,*,ね");
+        if let (Some(lid), Some(rid)) = (lid, rid) {
+            out.push(Extra {
+                start,
+                end,
+                lid,
+                rid,
+                // Lower than the uncontracted path through 出 + た + ね.
+                cost: 1800,
+                surface: release_phrase::SURFACE.into(),
+                origin: Origin::ReleasePhrase,
+            });
+        }
     }
 
     /// Colloquial long vowels kept in hiragana. A katakana dictionary word

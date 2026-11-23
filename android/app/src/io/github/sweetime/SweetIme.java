@@ -69,6 +69,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private boolean chosenEnglish;
     /** This field wants no conversion (passwords, URLs, numbers). */
     private boolean fieldEnglish;
+    private boolean fieldUrl;
     private boolean composing;
     private int selectedCandidate = -1;
     private int composingLength;
@@ -298,6 +299,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
         keyboard = new KeyboardView(this, theme);
         keyboard.setListener(this);
+        keyboard.setUrlField(fieldUrl);
         keyboard.setEnglish(english);
         configureKeyboard();
         KeyboardView keys = keyboard;
@@ -412,12 +414,15 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
         emojiOpen = false;
-        boolean url = variation == EditorInfo.TYPE_TEXT_VARIATION_URI
-                || variation == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        fieldUrl = cls == EditorInfo.TYPE_CLASS_TEXT && variation == EditorInfo.TYPE_TEXT_VARIATION_URI;
+        boolean address = fieldUrl || variation == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS;
-        fieldEnglish = cls != EditorInfo.TYPE_CLASS_TEXT || password || url;
+        fieldEnglish = cls != EditorInfo.TYPE_CLASS_TEXT || password || address;
         english = fieldEnglish || chosenEnglish;
-        if (keyboard != null) keyboard.setEnglish(english);
+        if (keyboard != null) {
+            keyboard.setUrlField(fieldUrl);
+            keyboard.setEnglish(english);
+        }
         if (ctx != 0) {
             String before = textBeforeCursor();
             if (before != null) Native.setLeftContext(ctx, before);
@@ -522,7 +527,19 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     }
 
     @Override
-    public void onText(String text) {
+    public void onSymbol(String text) {
+        finishEnter(pendingEnter, null);
+        if (!english && composing && ctx != 0 && text.length() == 1) {
+            String snapshot = Native.urlSymbol(ctx, text.charAt(0));
+            if (snapshot != null) {
+                apply(snapshot);
+                return;
+            }
+        }
+        onText(text);
+    }
+
+    private void onText(String text) {
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         InputConnection ic = getCurrentInputConnection();

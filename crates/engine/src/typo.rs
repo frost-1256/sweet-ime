@@ -5,7 +5,7 @@
 //! A variant wins when its conversion is much more plausible than the
 //! original's, by more than a per-edit penalty.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::converter::Converter;
@@ -80,7 +80,10 @@ fn near_stray_letters(b: &[char]) -> Vec<bool> {
 /// distinct reading. Edits are limited to the keys around letters left
 /// over, if any, or else to the last `window` keys.
 pub fn variants(raw: &str, window: usize) -> Vec<(String, String)> {
-    edits(raw, window).into_iter().map(|(keys, kana, _)| (keys, kana)).collect()
+    edits(raw, window)
+        .into_iter()
+        .map(|(keys, kana, _)| (keys, kana))
+        .collect()
 }
 
 /// The kind of slip a variant undoes.
@@ -88,6 +91,9 @@ pub fn variants(raw: &str, window: usize) -> Vec<(String, String)> {
 enum Slip {
     /// A key was missed (the variant adds it).
     Missing,
+    /// An omitted onset or doubled consonant. Many replacements are legal
+    /// romaji, so these need stronger evidence than an omitted vowel.
+    MissingConsonant,
     /// A key was pressed twice or brushed (the variant drops it).
     Extra,
     Swapped,
@@ -104,6 +110,7 @@ impl Slip {
             Slip::Extra => EDIT_PENALTY + 500,
             Slip::Swapped => EDIT_PENALTY - 500,
             Slip::Missing | Slip::Neighbour => EDIT_PENALTY,
+            Slip::MissingConsonant => EDIT_PENALTY + 800,
         }
     }
 }
@@ -129,8 +136,8 @@ fn edits(raw: &str, window: usize) -> Vec<(String, String, Slip)> {
     }
     prefixes.push(composer.clone());
     composer.flush();
-    let mut out = Vec::new();
-    let mut seen = HashSet::from([composer.kana().to_owned()]);
+    let mut out: Vec<(String, String, Slip)> = Vec::new();
+    let mut seen = HashMap::new();
     let mut add = |i: usize, edit: &[char], tail: &[char], slip: Slip| {
         if !at[i] {
             return;
@@ -141,9 +148,22 @@ fn edits(raw: &str, window: usize) -> Vec<(String, String, Slip)> {
         }
         variant.flush();
         let kana = variant.kana();
-        if !kana.is_empty() && !has_unresolved_romaji(kana) && seen.insert(kana.to_owned()) {
-            let keys = b[..i].iter().chain(edit).chain(tail).collect();
-            out.push((keys, kana.to_owned(), slip));
+        if kana.is_empty() || kana == composer.kana() || has_unresolved_romaji(kana) {
+            return;
+        }
+        if let Some(&index) = seen.get(kana) {
+            let (keys, _, previous): &mut (String, String, Slip) = &mut out[index];
+            if slip.penalty() < previous.penalty() {
+                *keys = b[..i].iter().chain(edit).chain(tail).collect();
+                *previous = slip;
+            }
+        } else {
+            seen.insert(kana.to_owned(), out.len());
+            out.push((
+                b[..i].iter().chain(edit).chain(tail).collect(),
+                kana.to_owned(),
+                slip,
+            ));
         }
     };
     // Give a missing n (ん) a chance before the broader search.
@@ -163,6 +183,19 @@ fn edits(raw: &str, window: usize) -> Vec<(String, String, Slip)> {
         // Neighbouring key.
         for n in neighbours(b[i]).chars() {
             add(i, &[n], &b[i + 1..], Slip::Neighbour);
+        }
+    }
+    for i in from..b.len() {
+        let ch = b[i];
+        if "aiueoy".contains(ch) {
+            for onset in "kstmgzdbprfwcj".chars() {
+                add(i, &[onset], &b[i..], Slip::MissingConsonant);
+            }
+        } else if ch.is_ascii_lowercase()
+            && ch != 'n'
+            && ch != b.get(i.wrapping_sub(1)).copied().unwrap_or('\0')
+        {
+            add(i, &[ch], &b[i..], Slip::MissingConsonant);
         }
     }
     // Other missing keys: vowels, y (yoon) and h (sh/ch).
@@ -215,5 +248,9 @@ pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Op
         best
     })?;
     let surface = conv.convert(&reading, &[], 1).into_iter().next()?.surface();
-    Some(Correction { raw, reading, surface })
+    Some(Correction {
+        raw,
+        reading,
+        surface,
+    })
 }

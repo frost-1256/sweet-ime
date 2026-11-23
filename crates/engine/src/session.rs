@@ -10,6 +10,7 @@ use crate::width;
 mod conversion;
 mod live;
 mod options;
+mod url;
 
 use conversion::{Converting, SegState};
 use live::LiveConversion;
@@ -516,6 +517,24 @@ impl Session {
         consumed
     }
 
+    /// Routes a dedicated symbol key into a URL without changing how the
+    /// frontend normally inserts that symbol in Japanese text.
+    pub fn handle_url_symbol(&mut self, conv: &Converter, ch: char) -> bool {
+        let c = &self.comp;
+        if !ch.is_ascii_punctuation() || self.conv.is_some() {
+            return false;
+        }
+        let continues_url = c.literal && (url::recognizes(&c.before) || url::recognizes(&c.kana()));
+        let starts_scheme = ch == ':'
+            && c.after.is_empty()
+            && if c.literal {
+                url::scheme(&c.before)
+            } else {
+                c.before.is_empty() && url::scheme(&c.raw)
+            };
+        (continues_url || starts_scheme) && self.handle(conv, Key::Char(ch))
+    }
+
     /// Ends a word typed after Shift once Japanese follows it: when the
     /// letters are a known word followed by romaji for three or more kana
     /// ("Googlehaken" -> Google + はけん), or, at Space or Enter (`ending`),
@@ -523,7 +542,11 @@ impl Session {
     /// with the rest. Returns whether it did.
     fn end_shift_word(&mut self, ending: bool) -> bool {
         let c = &self.comp;
-        if !self.options.shift_one_word || !c.literal || !c.after.is_empty() || !c.before.is_ascii()
+        if !self.options.shift_one_word
+            || !c.literal
+            || !c.after.is_empty()
+            || !c.before.is_ascii()
+            || url::recognizes(&c.before)
         {
             return false;
         }
@@ -597,6 +620,15 @@ impl Session {
             Key::Char(c) if !c.is_control() => {
                 self.comp.composer.push(c);
                 self.comp.raw.push(c);
+                if self.comp.before.is_empty()
+                    && self.comp.after.is_empty()
+                    && matches!(c, ':' | '.' | 'a'..='z')
+                    && url::recognizes(&self.comp.raw)
+                {
+                    self.comp.before = std::mem::take(&mut self.comp.raw);
+                    self.comp.composer.clear();
+                    self.comp.literal = true;
+                }
                 true
             }
             Key::Space if empty => {

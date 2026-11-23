@@ -21,8 +21,8 @@ final class KeyboardView extends View {
         /** A character or a Native.KEY_* code. */
         void onKey(int code);
 
-        /** Text from the symbols page, typed as is. */
-        void onText(String text);
+        /** Text from the symbols page or a long-press shortcut. */
+        void onSymbol(String text);
 
         void onToggleMode();
 
@@ -94,6 +94,7 @@ final class KeyboardView extends View {
     private boolean capsLock;
     private long lastShiftTap;
     private boolean english;
+    private boolean urlField;
     /** 0 letters, 1 symbols, 2 more symbols. */
     private int page;
     private boolean composing;
@@ -128,7 +129,7 @@ final class KeyboardView extends View {
                 if (h.length() == 1 && h.charAt(0) >= '0' && h.charAt(0) <= '9') {
                     listener.onKey(h.charAt(0));
                 } else {
-                    listener.onText(h);
+                    listener.onSymbol(h);
                 }
                 invalidate();
             }
@@ -212,11 +213,16 @@ final class KeyboardView extends View {
             bottom.add(new KeyDef("?123", SYMBOLS, 1.5f));
             // As on Gboard: the comma key carries the emoji key and its
             // color, and the row adds up to ten keys like the ones above.
-            bottom.add(new KeyDef("、", ',', punctuationWidth).hint(EMOJI_HINT).fn());
+            if (english && urlField) {
+                bottom.add(new KeyDef("/", '/', punctuationWidth).hint(":").fn());
+            } else {
+                bottom.add(new KeyDef("、", ',', punctuationWidth).hint(EMOJI_HINT).fn());
+            }
             bottom.add(new KeyDef("", MODE, 1));
             if (english) {
                 bottom.add(new KeyDef("", Native.KEY_SPACE, 6 - 2 * punctuationWidth));
-                bottom.add(new KeyDef("。", '.', punctuationWidth).fn());
+                KeyDef period = new KeyDef("。", '.', punctuationWidth).fn();
+                bottom.add(urlField ? period.hint(".com") : period);
             } else {
                 bottom.add(new KeyDef("", Native.KEY_SPACE, 4 - 2 * punctuationWidth));
                 bottom.add(new KeyDef("。", '.', punctuationWidth));
@@ -289,6 +295,12 @@ final class KeyboardView extends View {
 
     void setListener(Listener l) {
         listener = l;
+    }
+
+    void setUrlField(boolean url) {
+        if (urlField == url) return;
+        urlField = url;
+        build();
     }
 
     void setEnglish(boolean english) {
@@ -725,7 +737,7 @@ final class KeyboardView extends View {
                 if (k.label.length() == 1 && k.label.charAt(0) >= '0' && k.label.charAt(0) <= '9') {
                     listener.onKey(k.label.charAt(0));
                 } else {
-                    listener.onText(k.label);
+                    listener.onSymbol(k.label);
                 }
                 return;
             default:

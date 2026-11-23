@@ -10,6 +10,7 @@ use crate::user_dict::UserDictionary;
 
 mod extras;
 mod lattice;
+mod release_phrase;
 mod rerank;
 
 use rerank::RerankState;

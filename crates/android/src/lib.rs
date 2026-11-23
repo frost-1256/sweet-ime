@@ -213,6 +213,13 @@ impl Context {
         Some(self.snapshot())
     }
 
+    pub fn url_symbol(&mut self, ch: char) -> Option<String> {
+        let conv = converter()?;
+        self.session
+            .handle_url_symbol(&conv, ch)
+            .then(|| self.snapshot())
+    }
+
     pub fn select(&mut self, index: usize) -> String {
         if let Some(text) = self.typed.get(index).cloned() {
             self.session.commit_as(&text);
