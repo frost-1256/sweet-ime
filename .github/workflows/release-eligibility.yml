@@ -1,0 +1,16 @@
+name: Verify release eligibility
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  eligibility:
+    name: Release eligibility
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify the branch
+        run: test "$GITHUB_REF" = refs/heads/main

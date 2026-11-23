@@ -5,7 +5,7 @@ apk=${1:?pass the built Sweet IME APK}
 package=io.github.sweetime
 ime="$package/.SweetIme"
 
-adb install "$apk"
+adb install -g "$apk"
 adb logcat -c
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell wm dismiss-keyguard

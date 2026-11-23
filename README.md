@@ -68,7 +68,7 @@ Runs can also be started manually from the Actions tab.
 
 Make development changes on `develop` and open a pull request into
 `main` for CodeRabbit review and CI. Cut release tags from commits on
-`main` after merging.
+`main` after merging and after its `Release eligibility` check passes.
 
 ## Install
 
