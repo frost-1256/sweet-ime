@@ -20,6 +20,7 @@ pub const KEY_SPACE: i32 = -3;
 pub const KEY_LEFT: i32 = -4;
 pub const KEY_RIGHT: i32 = -5;
 pub const KEY_ESCAPE: i32 = -6;
+pub const KEY_EXPAND: i32 = -7;
 /// Added to a letter typed with Shift.
 pub const SHIFTED: i32 = 0x4000_0000;
 
@@ -188,6 +189,9 @@ impl Context {
     pub fn key(&mut self, code: i32) -> Option<String> {
         let conv = converter()?;
         let conv = &*conv;
+        if code == KEY_EXPAND {
+            return self.session.expand_predictions(conv).then(|| self.snapshot());
+        }
         let key = Self::key_of(code)?;
         let typing = matches!(key, Key::Char(_) | Key::ShiftedLetter(_));
         if !self.session.is_active() && !typing {
@@ -533,5 +537,15 @@ mod tests {
         assert_eq!(ctx.session.live_commit_request().unwrap().0, "こうえん");
         ctx.session.handle(&conv, Key::Space);
         assert!(ctx.session.live_commit_request().is_none());
+
+        ctx.reset();
+        for ch in "kouen".chars() {
+            ctx.session.handle(&conv, Key::Char(ch));
+        }
+        let (preview, _) = ctx.session.live_request().unwrap();
+        let (reading, left) = ctx.session.live_commit_request().unwrap();
+        assert!(ctx.commit_refined_live(&preview, &left, "公演").is_none());
+        let snapshot = ctx.commit_refined_live(&reading, &left, "公演").unwrap();
+        assert_eq!(snapshot.split(FIELD).next(), Some("公演"));
     }
 }

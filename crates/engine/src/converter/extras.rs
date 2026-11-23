@@ -260,6 +260,17 @@ impl Converter {
             .dict
             .pos_id("名詞,一般,*,*,*,*,*")
             .unwrap_or(self.dict.unknown_id());
+        for (start, end, spelling) in crate::english::marked_spelling_matches(text) {
+            out.push(Extra {
+                start,
+                end,
+                lid: id,
+                rid: id,
+                cost: SPELLING_COST,
+                surface: spelling.to_owned(),
+                origin: Origin::Spelling,
+            });
+        }
         // Spellings typed as romaji (ime reads いめ), at the start only, or
         // anywhere when no Japanese word starts like them (nvidia reads
         // んゔぃぢあ).

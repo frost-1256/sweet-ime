@@ -41,7 +41,7 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "sweet-ime";
-  version = "0.1.25";
+  version = "0.1.26";
 
   src = lib.fileset.toSource {
     root = ../.;

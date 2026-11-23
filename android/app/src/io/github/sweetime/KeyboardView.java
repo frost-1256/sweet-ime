@@ -214,15 +214,14 @@ final class KeyboardView extends View {
             // As on Gboard: the comma key carries the emoji key and its
             // color, and the row adds up to ten keys like the ones above.
             if (english && urlField) {
-                bottom.add(new KeyDef("/", '/', punctuationWidth).hint(":").fn());
+                bottom.add(new KeyDef("/", '/', punctuationWidth).fn());
             } else {
                 bottom.add(new KeyDef("、", ',', punctuationWidth).hint(EMOJI_HINT).fn());
             }
             bottom.add(new KeyDef("", MODE, 1));
             if (english) {
                 bottom.add(new KeyDef("", Native.KEY_SPACE, 6 - 2 * punctuationWidth));
-                KeyDef period = new KeyDef("。", '.', punctuationWidth).fn();
-                bottom.add(urlField ? period.hint(".com") : period);
+                bottom.add(new KeyDef("。", '.', punctuationWidth).fn());
             } else {
                 bottom.add(new KeyDef("", Native.KEY_SPACE, 4 - 2 * punctuationWidth));
                 bottom.add(new KeyDef("。", '.', punctuationWidth));

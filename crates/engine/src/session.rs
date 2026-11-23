@@ -416,6 +416,15 @@ impl Session {
         true
     }
 
+    /// Opens conversion candidates from a touch keyboard's prediction bar.
+    pub fn expand_predictions(&mut self, conv: &Converter) -> bool {
+        if self.conv.is_some() || self.comp.is_empty() || self.comp.literal {
+            return false;
+        }
+        self.handle(conv, Key::Space);
+        self.open_candidates(conv)
+    }
+
     /// Whether [`Key::UndoCommit`] would restore the last commit now.
     pub fn can_undo(&self) -> bool {
         self.options.undo_commit && self.last_commit.is_some() && !self.is_active()
@@ -576,7 +585,7 @@ impl Session {
             return false;
         }
         let text = c.before.clone();
-        if english::is_known_word(&text) {
+        if english::is_known_word(&text) || (!ending && english::starts_spelling(&text)) {
             return false;
         }
         // A known word with only romaji after it, once enough Japanese
@@ -604,6 +613,13 @@ impl Session {
                 pending => (kana.to_string(), pending.is_empty()),
             })
         };
+        let japanese = |kana: &str, whole: bool| {
+            if ending {
+                whole && (PARTICLES.contains(&kana) || ENDINGS.contains(&kana))
+            } else {
+                kana.chars().count() >= 3
+            }
+        };
         let splits: Vec<(usize, (String, bool))> = (1..text.len())
             .rev()
             .filter_map(|end| romaji_after(end).map(|r| (end, r)))
@@ -612,20 +628,38 @@ impl Session {
                 english::is_known_word(w) || (w.ends_with(|c: char| c.is_ascii_uppercase()) && particle(kana))
             })
             .collect();
-        let Some((end, (kana, whole))) =
-            splits.iter().find(|(_, (kana, _))| particle(kana)).or(splits.first()).cloned()
+        let known = splits
+            .iter()
+            .find(|(end, _)| english::canonical_spelling(&text[..*end]).is_some())
+            .or_else(|| splits.iter().find(|(_, (kana, _))| particle(kana)))
+            .or(splits.first());
+        let guess = || {
+            // For unregistered identifiers require a digit or a second
+            // capital before a clear Japanese separator.
+            (1..text.len()).find(|&end| {
+                let word = &text[..end];
+                word.bytes().all(|b| b.is_ascii_alphanumeric())
+                    && word
+                        .bytes()
+                        .skip(1)
+                        .any(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                    && romaji_after(end).is_some_and(|(kana, whole)| {
+                        japanese(&kana, whole)
+                            && (kana.starts_with(['は', 'が', 'を', 'に', 'で', 'の', 'へ'])
+                                || ENDINGS.iter().any(|p| kana.starts_with(p)))
+                    })
+            })
+        };
+        let Some(end) = known
+            .filter(|(_, (kana, whole))| japanese(kana, *whole))
+            .map(|(end, _)| *end)
+            .or_else(|| if known.is_none() { guess() } else { None })
         else {
             return false;
         };
-        let japanese = if ending {
-            whole && (PARTICLES.contains(&kana.as_str()) || ENDINGS.contains(&kana.as_str()))
-        } else {
-            kana.chars().count() >= 3
-        };
-        if !japanese {
-            return false;
-        }
-        self.commit.push_str(&text[..end]);
+        let word = &text[..end];
+        self.commit
+            .push_str(english::canonical_spelling(word).unwrap_or(word));
         self.comp = Composing::default();
         for ch in text[end..].chars() {
             self.comp.composer.push(ch);

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::Mutex;
 
-use crate::dict::Dictionary;
+use crate::dict::{Dictionary, PosClass};
 use crate::learning::UserHistory;
 use crate::user_dict::UserDictionary;
 
@@ -171,11 +171,18 @@ impl Converter {
     /// dictionary words with a longer reading, ranked by cost with a penalty
     /// for each extra character.
     pub fn predict(&self, prefix: &str, n: usize) -> Vec<String> {
+        self.predict_after(prefix, n, None)
+    }
+
+    fn predict_after(&self, prefix: &str, n: usize, previous: Option<u16>) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         if self.learning_enabled() {
             let h = self.history();
-            for (_, e) in h.predictive(prefix).into_iter().take(n) {
+            for (_, e) in h.predictive(prefix) {
+                if out.len() >= n {
+                    break;
+                }
                 if seen.insert(e.surface.clone()) {
                     out.push(e.surface.clone());
                 }
@@ -206,7 +213,8 @@ impl Converter {
             let extra = reading[prefix.len()..].chars().count();
             let full_name = family == Some(e.lid) && given == Some(e.rid);
             if extra != 0 && !full_name {
-                scored.push((e.cost as i32 + 700 * extra as i32, e.surface));
+                let connection = previous.map_or(0, |rid| self.dict.connection(rid, e.lid));
+                scored.push((e.cost as i32 + 700 * extra as i32 + connection, e.surface));
             }
         });
         scored.sort_by_key(|x| x.0);
@@ -222,37 +230,97 @@ impl Converter {
     }
 
     /// Suggestions for text being typed: completions of the whole reading,
-    /// then the best conversion of all but the last bunsetsu followed by
-    /// completions of the last one (so predictions keep working mid-sentence).
+    /// then completions at the end of the best conversion. The unfinished
+    /// word can span a boundary in the provisional conversion.
     pub fn predict_sentence(&self, text: &str, n: usize) -> Vec<String> {
         self.predict_with_conversion(text, n, None)
     }
 
-    pub(crate) fn predict_with_conversion(&self, text: &str, n: usize, best: Option<&Conversion>) -> Vec<String> {
+    pub(crate) fn predict_with_conversion(
+        &self,
+        text: &str,
+        n: usize,
+        best: Option<&Conversion>,
+    ) -> Vec<String> {
         let mut out = self.predict(text, n);
         if out.len() >= n {
             return out;
         }
         let computed;
-        let best = if best.is_some() { best } else {
+        let best = if best.is_some() {
+            best
+        } else {
             computed = self.convert(text, &[], 1);
             computed.first()
         };
-        if let Some(conv) = best {
-            if conv.segments.len() >= 2 {
-                let (last, head) = conv.segments.split_last().unwrap();
-                let head: String = head.iter().map(|s| s.surface.as_str()).collect();
-                if last.reading.chars().count() >= 2 {
-                    for p in self.predict(&last.reading, n) {
-                        let full = format!("{head}{p}");
-                        if !out.contains(&full) {
-                            out.push(full);
-                        }
-                    }
-                }
+        let Some((last, head)) = best.and_then(|conv| conv.segments.split_last()) else {
+            return out;
+        };
+        let mut surface: String = head.iter().map(|s| s.surface.as_str()).collect();
+        let previous = head
+            .last()
+            .and_then(|segment| segment.words.last())
+            .map(|word| word.rid);
+        // Try a longer prefix first. For example the provisional
+        // ライブラリー | おブル can complete as LibraryOfRuina.
+        if let Some((penultimate, earlier)) =
+            head.split_last().filter(|(_, earlier)| !earlier.is_empty())
+        {
+            let prefix = format!("{}{}", penultimate.reading, last.reading);
+            if prefix.chars().count() >= 4 {
+                Self::append_predictions(
+                    &mut out,
+                    self.predict_after(
+                        &prefix,
+                        n,
+                        earlier.last().and_then(|s| s.words.last()).map(|w| w.rid),
+                    ),
+                    &surface[..surface.len() - penultimate.surface.len()],
+                    n,
+                );
             }
         }
-        out.truncate(n);
+        if !head.is_empty() && out.len() < n && last.reading.chars().count() >= 2 {
+            Self::append_predictions(
+                &mut out,
+                self.predict_after(&last.reading, n, previous),
+                &surface,
+                n,
+            );
+        }
+        // If no completion fits the bunsetsu, a noun in it may already
+        // be complete (お返事 | あり). Leave verb inflections intact.
+        let mut tail = last.reading.as_str();
+        for word in &last.words {
+            if !out.is_empty() {
+                break;
+            }
+            tail = &tail[word.reading.len()..];
+            surface.push_str(&word.surface);
+            if tail.chars().count() < 2 {
+                break;
+            }
+            if self.dict.pos_class(word.rid) == PosClass::Noun {
+                Self::append_predictions(
+                    &mut out,
+                    self.predict_after(tail, n, Some(word.rid)),
+                    &surface,
+                    n,
+                );
+            }
+        }
         out
+    }
+
+    fn append_predictions(out: &mut Vec<String>, predictions: Vec<String>, head: &str, n: usize) {
+        for prediction in predictions {
+            if out.len() >= n {
+                break;
+            }
+            let full = format!("{head}{prediction}");
+            if !out.contains(&full) {
+                out.push(full);
+            }
+        }
     }
 }

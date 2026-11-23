@@ -43,6 +43,12 @@ fn exposes_exact_homophones_beyond_the_ranked_candidates() {
     let index = list.items.iter().position(|item| item == omitted.surface).unwrap();
     assert!(s.select_candidate(&c, index));
     assert_eq!(s.take_commit(), omitted.surface);
+
+    type_str(&mut s, &c, "kou");
+    assert!(s.expand_predictions(&c));
+    let list = s.candidates().unwrap();
+    assert_eq!(list.kind, ListKind::Conversion);
+    assert!(exact.iter().all(|word| list.items.iter().any(|item| item == word.surface)));
 }
 
 #[test]
@@ -769,6 +775,19 @@ fn typo_early_in_a_long_reading_is_fixed() {
 }
 
 #[test]
+fn a_better_early_typo_repair_beats_a_late_candidate() {
+    let Some(c) = converter() else { return };
+    let fix = sweet_engine::typo::correct(
+        &c,
+        "ariatougozaimasu",
+        1000,
+        std::time::Duration::from_millis(250),
+    )
+    .expect("the missing g can be repaired");
+    assert_eq!(fix.reading, "ありがとうございます");
+}
+
+#[test]
 fn live_typo_correction_uses_the_corrected_reading() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
@@ -1340,6 +1359,24 @@ fn shift_type(c: &Converter, s: &mut Session, text: &str) -> (String, String) {
 }
 
 #[test]
+fn marked_spellings_convert_inside_japanese_sentences() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("kyouhaqwen3.6wotsukau", "今日はQwen3.6を使う"),
+        ("kyouham.2wotsukau", "今日はM.2を使う"),
+        ("kyouhagm2wotsukau", "今日はgm2を使う"),
+        ("kyouhaq4_kmwotsukau", "今日はQ4_K_Mを使う"),
+        ("ci/cdde", "CI/CDで"),
+        ("kyouhawi-fiwotsukau", "今日はWi-Fiを使う"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+    }
+}
+
+#[test]
 fn a_shift_word_ends_when_japanese_follows() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
@@ -1361,6 +1398,14 @@ fn a_shift_word_ends_when_japanese_follows() {
     for (text, word) in [("Xdekaku", "X"), ("AIwotukau", "AI")] {
         let mut s = Session::new();
         assert_eq!(shift_type(&c, &mut s, text).0, word);
+    }
+    for (text, word) in [
+        ("Qwen3.6wotsukau", "Qwen3.6"),
+        ("Projectmoonwotsukau", "ProjectMoon"),
+        ("Zyph42wotsukau", "Zyph42"),
+    ] {
+        let mut s = Session::new();
+        assert_eq!(shift_type(&c, &mut s, text).0, word, "{text}");
     }
     // Short endings end it at Enter too.
     for (text, out) in [("Applesan", "Appleさん"), ("Macdayo", "Macだよ"), ("GitHubdesu", "GitHubです")] {
@@ -1395,6 +1440,22 @@ fn a_shift_word_ends_when_japanese_follows() {
         (committed.as_str(), shown.as_str()),
         ("", "Googlehakensaku")
     );
+}
+
+#[test]
+fn predictions_use_the_preceding_words_and_an_unfinished_tail() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("しりょうをおく", "資料を送る"),
+        ("おへんじあり", "お返事ありがとう"),
+        ("きょうはらいぶらりーおぶる", "今日はLibraryOfRuina"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        let candidates = s.candidates().expect("predictions for incomplete reading");
+        assert_eq!(candidates.kind, ListKind::Suggestion);
+        assert_eq!(candidates.items.first().map(String::as_str), Some(expected), "{typed}");
+    }
 }
 
 #[test]
