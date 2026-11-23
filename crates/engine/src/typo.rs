@@ -96,6 +96,7 @@ enum Slip {
     MissingConsonant,
     /// A key was pressed twice or brushed (the variant drops it).
     Extra,
+    Repeated,
     Swapped,
     /// A key next to the right one was pressed.
     Neighbour,
@@ -108,6 +109,7 @@ impl Slip {
     fn penalty(self) -> i32 {
         match self {
             Slip::Extra => EDIT_PENALTY + 500,
+            Slip::Repeated => EDIT_PENALTY,
             Slip::Swapped => EDIT_PENALTY - 500,
             Slip::Missing | Slip::Neighbour => EDIT_PENALTY,
             Slip::MissingConsonant => EDIT_PENALTY + 800,
@@ -179,7 +181,17 @@ fn edits(raw: &str, window: usize, earlier: bool) -> Vec<(String, String, Slip)>
             continue;
         }
         // Extra key.
-        add(i, &[], &b[i + 1..], Slip::Extra);
+        let repeated = b.get(i + 1) == Some(&b[i]);
+        add(
+            i,
+            &[],
+            &b[i + 1..],
+            if repeated {
+                Slip::Repeated
+            } else {
+                Slip::Extra
+            },
+        );
         // Swapped keys.
         if i + 1 < b.len() && b[i] != b[i + 1] {
             add(i, &[b[i + 1], b[i]], &b[i + 2..], Slip::Swapped);
@@ -192,7 +204,7 @@ fn edits(raw: &str, window: usize, earlier: bool) -> Vec<(String, String, Slip)>
     for i in from..b.len() {
         let ch = b[i];
         if "aiueoy".contains(ch) {
-            for onset in "kstmgzdbprfwcj".chars() {
+            for onset in "kstmgzdbprfwcjv".chars() {
                 add(i, &[onset], &b[i..], Slip::MissingConsonant);
             }
         } else if ch.is_ascii_lowercase()
@@ -234,11 +246,11 @@ pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Op
     }
     const RECENT_KEYS: usize = 12;
     let variants = edits(raw, RECENT_KEYS, false);
-    let (raw, reading) = conv.score_typos(|cost| {
+    let (raw, reading, _) = conv.score_typos(|cost| {
         let base = cost(&typed);
-        let mut pick = |variants: Vec<(String, String, Slip)>, margin| {
+        let mut pick = |variants: Vec<(String, String, Slip)>, minimum_gain| {
             let mut best = None;
-            let mut best_gain = i64::from(margin);
+            let mut best_gain = minimum_gain;
             for (r, kana, slip) in variants {
                 if t.elapsed() > budget {
                     break;
@@ -247,21 +259,26 @@ pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Op
                 let gain = i64::from(base) - i64::from(cost(&kana)) - i64::from(slip.penalty());
                 if gain > best_gain {
                     best_gain = gain;
-                    best = Some((r, kana));
+                    best = Some((r, kana, gain));
                 }
             }
             best
         };
-        pick(variants, margin).or_else(|| {
-            if !(RECENT_KEYS + 1..=64).contains(&raw.len())
-                || has_unresolved_romaji(&typed)
-                || t.elapsed() >= budget
-            {
-                return None;
-            }
-            // Earlier changes need more evidence than edits near the caret.
-            pick(edits(raw, RECENT_KEYS, true), margin.saturating_add(1400))
-        })
+        let recent = pick(variants, i64::from(margin));
+        if !(RECENT_KEYS + 1..=64).contains(&raw.len())
+            || has_unresolved_romaji(&typed)
+            || t.elapsed() >= budget
+        {
+            return recent;
+        }
+        // Earlier changes need more evidence than edits near the caret.
+        // An incidental late edit should not hide a substantially better
+        // repair near the start.
+        let earlier_margin = recent
+            .as_ref()
+            .map_or(i64::from(margin), |(_, _, gain)| *gain)
+            + 1400;
+        pick(edits(raw, RECENT_KEYS, true), earlier_margin).or(recent)
     })?;
     let surface = conv.convert(&reading, &[], 1).into_iter().next()?.surface();
     Some(Correction {

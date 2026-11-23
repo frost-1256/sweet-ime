@@ -56,10 +56,15 @@ fn to_hiragana(katakana: &str) -> String {
 /// Whether `word` is a bundled spelling or on the word list, in any case
 /// (Google, github, Test).
 pub fn is_known_word(word: &str) -> bool {
-    if spellings().any(|(s, _)| spells(s, word)) {
-        return true;
-    }
-    in_word_list(&word.to_ascii_lowercase())
+    canonical_spelling(word).is_some() || in_word_list(&word.to_ascii_lowercase())
+}
+
+pub(crate) fn canonical_spelling(raw: &str) -> Option<&'static str> {
+    spellings().find_map(|(spelling, _)| spells(spelling, raw).then_some(spelling))
+}
+
+pub(crate) fn starts_spelling(raw: &str) -> bool {
+    spellings().any(|(spelling, _)| matches_spelling(spelling, raw, true))
 }
 
 /// Whether the word list has `word` (lowercase). The list is sorted, so
@@ -151,6 +156,50 @@ pub(crate) fn accepts_spelling_symbol(raw: &str, symbol: char) -> bool {
 pub fn romaji_readings() -> &'static [(String, &'static str)] {
     static READINGS: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
     READINGS.get_or_init(|| word_keys::bundled_readings(spellings()))
+}
+
+fn marked_spellings() -> &'static [(String, &'static str)] {
+    static READINGS: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
+    READINGS.get_or_init(|| {
+        let mut readings = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (spelling, _) in spellings().filter(|(s, _)| {
+            s.is_ascii() && s.bytes().any(|b| b.is_ascii_digit() || b.is_ascii_punctuation())
+        }) {
+            let keys = spelling.to_ascii_lowercase().replace(' ', "");
+            for omitted in ["", "-", ".", "._-"] {
+                let input: String = keys.chars().filter(|&ch| !omitted.contains(ch)).collect();
+                // Compact spellings without any markers already use the word index.
+                if !input.bytes().any(|b| b.is_ascii_digit() || b.is_ascii_punctuation()) {
+                    continue;
+                }
+                let reading = romaji::to_hiragana(&input);
+                if seen.insert(reading.clone()) {
+                    readings.push((reading, spelling));
+                }
+            }
+        }
+        readings
+    })
+}
+
+pub(crate) fn marked_spelling_matches(
+    text: &str,
+) -> impl Iterator<Item = (usize, usize, &'static str)> {
+    let marked = text
+        .bytes()
+        .any(|b| b.is_ascii_digit() || b.is_ascii_punctuation())
+        || (text.bytes().any(|b| b.is_ascii_alphabetic()) && text.contains(['。', 'ー', '・']));
+    let spellings = if marked { marked_spellings() } else { &[] };
+    spellings.iter().flat_map(move |(reading, spelling)| {
+        text.match_indices(reading.as_str())
+            .filter_map(move |(start, _)| {
+                let end = start + reading.len();
+                let in_identifier = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+                (!text[..start].ends_with(in_identifier) && !text[end..].starts_with(in_identifier))
+                    .then_some((start, end, *spelling))
+            })
+    })
 }
 
 /// (reading, spelling) for each bundled spelling whose keys are all romaji
@@ -429,6 +478,9 @@ pub fn covers_letters(reading: &str, listed: bool) -> bool {
             mark(start, r.len());
         }
     }
+    for (start, end, _) in marked_spelling_matches(reading) {
+        mark(start, end - start);
+    }
     if listed {
         for (start, _) in reading.char_indices() {
             let rest = &reading[start..];
@@ -456,6 +508,7 @@ pub fn is_spelling(reading: &str, surface: &str) -> bool {
         || romaji_readings()
             .iter()
             .any(|(r, s)| r == reading && *s == surface)
+        || marked_spellings().iter().any(|(r, s)| r == reading && *s == surface)
         // A listed word's loanword (てst -> テスト): only these put katakana
         // over letters.
         || (reading.bytes().any(|b| b.is_ascii_alphabetic())
