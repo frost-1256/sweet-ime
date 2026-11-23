@@ -801,6 +801,10 @@ fn valid_kana_typo_is_offered_as_a_suggestion() {
     assert_eq!(s.take_commit(), "こにゃく");
 }
 
+/// Enough time for the search to finish on a slow CI runner; these tests check
+/// what it finds, not how fast.
+const TYPO_TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[test]
 fn typo_correction_restores_missing_consonants() {
     let Some(c) = converter() else { return };
@@ -808,8 +812,7 @@ fn typo_correction_restores_missing_consonants() {
         ("oyasuminaai", "おやすみなさい"),
         ("dennshagatomateiru", "でんしゃがとまっている"),
     ] {
-        let fix = sweet_engine::typo::correct(&c, keys, 1000, std::time::Duration::from_millis(100))
-            .unwrap();
+        let fix = sweet_engine::typo::correct(&c, keys, 1000, TYPO_TEST_BUDGET).unwrap();
         assert_eq!(fix.reading, reading, "{keys}");
     }
 }
@@ -817,13 +820,7 @@ fn typo_correction_restores_missing_consonants() {
 #[test]
 fn corrects_early_typos_even_when_the_wrong_reading_is_all_kana() {
     let Some(c) = converter() else { return };
-    let fix = sweet_engine::typo::correct(
-        &c,
-        "raigatougozaimasu",
-        1000,
-        std::time::Duration::from_millis(100),
-    )
-    .unwrap();
+    let fix = sweet_engine::typo::correct(&c, "raigatougozaimasu", 1000, TYPO_TEST_BUDGET).unwrap();
     assert_eq!(fix.reading, "ありがとうございます");
 }
 

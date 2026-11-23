@@ -39,7 +39,11 @@ export FCITX_ADDON_DIRS="$pkg/lib/fcitx5${FCITX_ADDON_DIRS:+:$FCITX_ADDON_DIRS}"
 export XDG_DATA_DIRS="$pkg/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 unset WAYLAND_DISPLAY DISPLAY
 
-exec dbus-run-session -- sh -c '
+set --
+if [ -n "${SWEET_TEST_DBUS_CONFIG:-}" ]; then
+    set -- "--config-file=$SWEET_TEST_DBUS_CONFIG"
+fi
+dbus-run-session "$@" -- sh -c '
     fcitx5 --disable=wayland,waylandim,xim,kimpanel,notificationitem,classicui >"$1/fcitx5.log" 2>&1 &
     pid=$!
     python3 "$2/dbus_harness.py"
