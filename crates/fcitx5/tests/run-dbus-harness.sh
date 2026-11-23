@@ -49,6 +49,7 @@ dbus-run-session "$@" -- sh -c '
     python3 "$2/dbus_harness.py"
     status=$?
     kill $pid 2>/dev/null
+    wait "$pid" 2>/dev/null || :
     [ $status -eq 0 ] || { echo "--- fcitx5 log"; tail -40 "$1/fcitx5.log"; }
     exit $status
 ' sh "$tmp" "$here"
