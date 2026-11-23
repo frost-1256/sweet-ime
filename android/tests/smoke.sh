@@ -10,6 +10,13 @@ adb logcat -c
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell wm dismiss-keyguard
 adb shell settings put secure show_ime_with_hard_keyboard 1
+# The input method service registers the new IME shortly after the install returns.
+for ((attempt = 0; attempt < 30; attempt++)); do
+    if adb shell ime list -a -s | tr -d '\r' | grep -qx "$ime"; then
+        break
+    fi
+    sleep 1
+done
 adb shell ime enable "$ime"
 adb shell ime set "$ime"
 [[ $(adb shell settings get secure default_input_method | tr -d '\r') == "$ime" ]]
