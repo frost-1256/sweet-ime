@@ -145,6 +145,48 @@ fn japanese_readings_convert_to_game_names_and_music_genres() {
 }
 
 #[test]
+fn soundcloud_vocabulary_is_available_from_kana_and_romaji() {
+    let Some(c) = converter() else { return };
+    for (romaji, katakana, expected) in [
+        ("saundokuraudo", "サウンドクラウド", "SoundCloud"),
+        ("dejirukoa", "デジルコア", "digilcore"),
+        ("shijirukoa", "シジルコア", "sigilcore"),
+        ("bureikukoa", "ブレイクコア", "breakcore"),
+        ("firi-kurabu", "フィリークラブ", "philly club"),
+        ("puraguenubi-", "プラグエヌビー", "pluggnb"),
+        ("dorifutofonku", "ドリフトフォンク", "drift phonk"),
+        ("ha-dowe-bu", "ハードウェーブ", "hardwave"),
+    ] {
+        for typed in [romaji, katakana] {
+            let mut s = plain();
+            type_str(&mut s, &c, typed);
+            assert!(s.handle(&c, Key::Space));
+            assert_eq!(s.preedit().text, expected, "{typed}");
+        }
+    }
+
+    for (typed, first, alternative) in [
+        ("じゃーじーくらぶ", "jerseyclub", "jersey club"),
+        ("ふっとわーく", "フットワーク", "footwork"),
+        ("ぷらぐ", "プラグ", "plugg"),
+    ] {
+        let mut s = plain();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, first, "{typed}");
+        assert!(s.open_candidates(&c));
+        assert!(
+            s.candidates()
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| item == alternative),
+            "{alternative}",
+        );
+    }
+}
+
+#[test]
 fn lowercase_technical_terms_convert_to_their_canonical_spelling() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
