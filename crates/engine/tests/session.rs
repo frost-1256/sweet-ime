@@ -1404,6 +1404,22 @@ fn a_shift_word_ends_when_japanese_follows() {
 }
 
 #[test]
+fn predictions_use_the_preceding_words_and_an_unfinished_tail() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("しりょうをおく", "資料を送る"),
+        ("おへんじあり", "お返事ありがとう"),
+        ("きょうはらいぶらりーおぶる", "今日はLibraryOfRuina"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        let candidates = s.candidates().expect("predictions for incomplete reading");
+        assert_eq!(candidates.kind, ListKind::Suggestion);
+        assert_eq!(candidates.items.first().map(String::as_str), Some(expected), "{typed}");
+    }
+}
+
+#[test]
 fn full_names_do_not_lead_predictions() {
     let Some(c) = converter() else { return };
     let predictions = c.predict("ほしいな", 5);
