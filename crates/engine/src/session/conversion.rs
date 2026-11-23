@@ -72,10 +72,8 @@ impl Session {
             });
             return;
         }
-        let words = english::covers_letters(
-            &kana,
-            self.options.english_words && conv.english_words_enabled(),
-        );
+        let listed = self.options.english_words && conv.english_words_enabled();
+        let words = english::covers_letters(&kana, listed);
         let correction = if typo::has_unresolved_romaji(&kana) && !words {
             self.comp
                 .typo_input(&kana)
@@ -84,7 +82,7 @@ impl Session {
             None
         };
         if typo::has_unresolved_romaji(&kana) {
-            if let Some(word) = self.comp.english(&kana, correction.is_some()) {
+            if let Some(word) = self.comp.english(&kana, correction.is_some(), listed) {
                 // Keys that are not romaji: the word as typed, capitalized,
                 // then the kana reading's conversion.
                 let mut cands: Vec<String> = conv

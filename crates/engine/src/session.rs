@@ -156,7 +156,7 @@ impl Composing {
     /// The typed keys as an English word, for keys that are not romaji
     /// ("github" would otherwise read ぎtふb): a bundled spelling, or the
     /// keys themselves unless `corrected` (a typo fix reads as Japanese).
-    fn english(&self, reading: &str, corrected: bool) -> Option<String> {
+    fn english(&self, reading: &str, corrected: bool, listed: bool) -> Option<String> {
         if !self.raw.bytes().all(|b| b.is_ascii_alphabetic()) {
             return None;
         }
@@ -169,7 +169,34 @@ impl Composing {
         // is Japanese followed by a word being typed, not one word.
         let tail = reading.chars().rev().take_while(|c| !c.is_ascii_alphabetic()).count();
         let lead = reading.chars().take_while(|c| !c.is_ascii_alphabetic()).count();
-        (!corrected && tail <= 2 && lead <= 2 && self.raw_spells(reading)).then(|| self.raw.clone())
+        (!corrected
+            && tail <= 2
+            && lead <= 2
+            && self.raw_spells(reading)
+            && !english::has_bundled_part(reading)
+            && !(listed && english::has_listed_part(&self.raw, reading)))
+        .then(|| self.raw.clone())
+    }
+
+    fn backspace(&mut self) {
+        // Delete a key from a mixed spelling. Replaying the remainder can
+        // reopen a consonant that the deleted key made the composer emit.
+        let mixed = self.composer.kana().bytes().any(|b| b.is_ascii_alphabetic())
+            || (self.composer.pending() != "n"
+                && self.composer.pending().bytes().any(|b| b.is_ascii_alphabetic()));
+        if mixed
+            && self.raw.ends_with(|ch: char| ch.is_ascii_alphabetic())
+            && self.raw_spells(&self.kana())
+        {
+            self.raw.pop();
+            self.composer.clear();
+            self.composer.push_str(&self.raw);
+        } else {
+            if !self.composer.backspace() {
+                self.before.pop();
+            }
+            self.raw.pop();
+        }
     }
 
     fn typo_input(&self, reading: &str) -> Option<&str> {
@@ -741,10 +768,7 @@ impl Session {
                 true
             }
             Key::Backspace => {
-                if !self.comp.composer.backspace() {
-                    self.comp.before.pop();
-                }
-                self.comp.raw.pop();
+                self.comp.backspace();
                 true
             }
             Key::Delete => {

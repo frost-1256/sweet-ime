@@ -22,6 +22,66 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
+fn backspace_reopens_romaji_after_a_mistyped_key() {
+    let Some(c) = converter() else { return };
+    for (mistyped, deletes, rest, expected) in [
+        ("githyb", 2, "ub,", "GitHub、"),
+        ("anthorpic", 5, "ropic,", "Anthropic、"),
+        ("konnbanwq", 1, "a", "こんばんは"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, mistyped);
+        for _ in 0..deletes {
+            assert!(s.handle(&c, Key::Backspace));
+        }
+        type_str(&mut s, &c, rest);
+        assert_eq!(s.preedit().text, expected);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+
+    let mut s = plain();
+    type_str(&mut s, &c, "kya");
+    assert!(s.handle(&c, Key::Backspace));
+    assert_eq!(s.preedit().text, "き");
+}
+
+#[test]
+fn listed_english_word_preserves_a_following_japanese_ending() {
+    let Some(c) = converter() else { return };
+    for (input, expected) in [("busydesu", "busyです"), ("busy", "busy")] {
+        for convert in [false, true] {
+            let mut s = Session::new();
+            type_str(&mut s, &c, input);
+            if convert {
+                assert!(s.handle(&c, Key::Space));
+            }
+            assert_eq!(s.preedit().text, expected);
+            assert!(s.handle(&c, Key::Enter));
+            assert_eq!(s.take_commit(), expected);
+        }
+    }
+}
+
+#[test]
+fn lattice_prefers_currency_and_weather_homophones_in_context() {
+    let Some(c) = converter() else { return };
+    for (input, expected) in [
+        ("1000enn", "1000円"),
+        ("1,000ennwoshiharau", "1,000円を支払う"),
+        ("kyouhaamegafutteiru", "今日は雨が降っている"),
+        ("yukigafutteita", "雪が降っていた"),
+        ("hatawofutteiru", "旗を振っている"),
+    ] {
+        let mut s = plain();
+        type_str(&mut s, &c, input);
+        assert!(s.handle(&c, Key::Space));
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+    }
+}
+
+#[test]
 fn exposes_exact_homophones_beyond_the_ranked_candidates() {
     let Some(c) = converter() else { return };
     let reading = "こう";
@@ -1071,6 +1131,30 @@ fn english_words_typed_by_spelling_show_as_words() {
     for (i, ch) in "kyouhadiscorddehanasu".chars().enumerate() {
         assert!(s.handle(&c, Key::Char(ch)));
         assert!(i < 5 || s.preedit().text.starts_with("今日は"), "{}", s.preedit().text);
+    }
+}
+
+#[test]
+fn english_words_stay_intact_before_punctuation() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("anthropic,", "Anthropic、"),
+        ("anthropic.", "Anthropic。"),
+        ("korehaanthropic,", "これはAnthropic、"),
+        ("anthropicdesu", "Anthropicです"),
+        ("busy（", "busy（"),
+        ("busy）", "busy）"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert_eq!(s.preedit().text, expected, "{typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+
+        let mut s = plain();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
     }
 }
 

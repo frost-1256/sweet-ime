@@ -92,10 +92,8 @@ impl Session {
             self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2;
         let unresolved = typo::has_unresolved_romaji(&settled);
         let mut correction = None;
-        let words = english::covers_letters(
-            &settled,
-            self.options.english_words && conv.english_words_enabled(),
-        );
+        let listed = self.options.english_words && conv.english_words_enabled();
+        let words = english::covers_letters(&settled, listed);
         if (suggest || (live && unresolved)) && c.composer.pending().is_empty() && !words {
             if let Some(raw) = c.typo_input(&settled) {
                 correction = typo::correct(conv, raw, 1000, TYPO_SUGGESTION_BUDGET);
@@ -124,7 +122,7 @@ impl Session {
                 if !unresolved_kana || !unresolved || typo_possible {
                     return None;
                 }
-                c.english(&kana, correction.is_some())
+                c.english(&kana, correction.is_some(), listed)
                     .map(|word| conv.loanword_for(&word).unwrap_or(word))
             })
         } else {

@@ -105,6 +105,23 @@ fn in_word_list(word: &str) -> bool {
     false
 }
 
+/// Keep a full listed spelling intact. Otherwise let the lattice handle
+/// a listed word next to kana ("busydesu" reads ぶsyです).
+pub(crate) fn has_listed_part(raw: &str, reading: &str) -> bool {
+    if in_word_list(&raw.to_ascii_lowercase()) {
+        return false;
+    }
+    let kana = |ch| ('ぁ'..='ゖ').contains(&ch);
+    let index = word_index();
+    reading.char_indices().skip(1).any(|(at, _)| {
+        let (before, after) = reading.split_at(at);
+        (before.len() <= index.max_len && after.chars().all(kana) && index.get(before).is_some())
+            || (after.len() <= index.max_len
+                && before.chars().all(kana)
+                && index.get(after).is_some())
+    })
+}
+
 /// Whether `raw` types `spelling`, including its punctuation when present.
 /// Spaces, dots, hyphens and underscores may be left out ("vscode" types
 /// "VS Code"), while symbols like the # in C# identify the entry.
@@ -156,6 +173,18 @@ pub(crate) fn accepts_spelling_symbol(raw: &str, symbol: char) -> bool {
 pub fn romaji_readings() -> &'static [(String, &'static str)] {
     static READINGS: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
     READINGS.get_or_init(|| word_keys::bundled_readings(spellings()))
+}
+
+/// A registered spelling adjacent to kana should be converted as part of
+/// the sentence, even if the entire sequence could be an unlisted word.
+pub(crate) fn has_bundled_part(text: &str) -> bool {
+    let kana = |ch: char| ('ぁ'..='ゖ').contains(&ch);
+    let adjoins_kana =
+        |start: usize, end: usize| text[..start].ends_with(kana) || text[end..].starts_with(kana);
+    romaji_readings().iter().any(|(reading, _)| {
+        text.match_indices(reading.as_str())
+            .any(|(start, found)| adjoins_kana(start, start + found.len()))
+    }) || marked_spelling_matches(text).any(|(start, end, _)| adjoins_kana(start, end))
 }
 
 fn marked_spellings() -> &'static [(String, &'static str)] {

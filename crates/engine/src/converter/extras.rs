@@ -14,6 +14,7 @@ pub(super) enum Origin {
     /// A colloquial long vowel kept in hiragana (ちょーだい).
     LongVowel,
     ReleasePhrase,
+    Greeting,
 }
 
 /// A word placed into the lattice in addition to the system dictionary.
@@ -183,7 +184,40 @@ impl Converter {
         self.spelling_extras(text, &mut out);
         self.long_vowel_extras(text, &mut out);
         self.release_phrase_extra(text, &mut out);
+        self.greeting_extra(text, &mut out);
         out
+    }
+
+    fn greeting_extra(&self, text: &str, out: &mut Vec<Extra>) {
+        let Some((reading, surface)) = [("こんにちわ", "こんにちは"), ("こんばんわ", "こんばんは")]
+            .into_iter()
+            .find(|(reading, _)| {
+                text.strip_prefix(reading).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with(['、', '。', '！', '？', '…'])
+                })
+            })
+        else {
+            return;
+        };
+        // Borrow the dictionary's POS and prefer the standard spelling over
+        // the phonetic one. The original reading remains a candidate.
+        let standard = self
+            .dict
+            .lookup(surface)
+            .into_iter()
+            .filter(|entry| entry.surface == surface)
+            .min_by_key(|entry| entry.cost);
+        if let Some(entry) = standard {
+            out.push(Extra {
+                start: 0,
+                end: reading.len(),
+                lid: entry.lid,
+                rid: entry.rid,
+                cost: i32::from(entry.cost) - 700,
+                surface: surface.to_owned(),
+                origin: Origin::Greeting,
+            });
+        }
     }
 
     fn release_phrase_extra(&self, text: &str, out: &mut Vec<Extra>) {
