@@ -1,121 +1,86 @@
-# Sweet IME
+<p align="center">
+  <img src="assets/icon/sweet-ime-128.png" width="96" height="96" alt="">
+</p>
 
-A Japanese input method written from scratch in Rust.
+<h1 align="center">Sweet IME</h1>
 
-- **Engine**: a dictionary lattice with Viterbi and N-best search, using
-  the Mozc OSS dictionary and connection costs, with additional vocabulary
-  from SudachiDict. Conversion takes about
-  0.1 ms.
-- **Neural reranking**: an optional zenz (GPT-2) model reranks the top
-  lattice candidates using the text before the cursor. It runs natively
-  with AVX2 kernels and tree attention over a shared KV cache, in about
-  15–25 ms. During live conversion it runs on a background thread, so
-  typing never waits for it.
-- **Windows**: a TSF text service for both 64-bit and 32-bit applications.
-  It has a Direct2D candidate window that follows light/dark mode and the
-  accent color and accepts mouse clicks, plus a taskbar input mode
-  indicator ("あ" / "A").
-- **Linux**: an fcitx5 addon. It works on Wayland compositors that support
-  `input-method-v2` (such as niri, Sway and Hyprland) and with fcitx5's
-  other frontends. fcitx5 draws the candidate window, with a Sweet IME
-  theme chosen in the settings app.
-- **Android** (early): an input method with a QWERTY romaji keyboard and
-  a candidate bar.
-- **Features**: live conversion, predictive suggestions (including
-  mid-sentence), romaji typo correction, per-user learning, a user
-  dictionary, numbers read out in kana (さんぜんえん → 三千円 / 3000円),
-  bunsetsu resizing, and F6–F10 transliteration.
+<p align="center">
+  A Japanese input method written from scratch in Rust,<br>
+  for Windows, Linux (fcitx5) and Android.
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.ja.md">日本語</a>
+</p>
+
+---
+
+## Highlights
+
+- **Fast dictionary conversion.** A lattice with Viterbi and N-best search
+  over the Mozc OSS dictionary and connection costs, with extra vocabulary
+  from SudachiDict. A conversion takes about 0.1 ms.
+- **Optional AI reranking.** A zenz (GPT-2) model reranks the top
+  candidates using the text before the cursor. It runs natively with AVX2
+  kernels and tree attention over a shared KV cache, in about 15–25 ms, on
+  a background thread during live conversion, so typing never waits.
+- **Comfortable everyday typing.** Live conversion, predictive suggestions
+  (also mid-sentence), romaji typo correction, learning, a user dictionary,
+  English words inside Japanese, numbers read out in kana
+  (さんぜんえん → 三千円 / 3000円), bunsetsu resizing and F6–F10
+  transliteration.
+- **Private by default.** Learning, reports and settings stay on your
+  device. On Windows and Android, nothing is learned in password fields
+  or private windows (the Linux frontend does not detect them yet).
+
+| Platform | What you get |
+|---|---|
+| **Windows** | A TSF text service for 64-bit and 32-bit apps, a Direct2D candidate window that follows light/dark mode and the accent color, and an "あ" / "A" mode indicator |
+| **Linux** | An fcitx5 addon for Wayland compositors with `input-method-v2` (niri, Sway, Hyprland, …) and fcitx5's other frontends |
+| **Android** | A QWERTY romaji keyboard with a candidate bar, Material 3 themes and on-device AI conversion (Android 10 or later) |
 
 ## Accuracy
 
 Top-1 results on Mozc's `evaluation.tsv` (397 cases):
 
-| Configuration                    | Top-1 | Mean latency |
-|----------------------------------|-------|--------------|
-| Lattice only                     | 70.8% | ~0.1 ms      |
-| + zenz v3.1 xsmall (default)     | 82.6% | ~13 ms       |
-| + zenz v3.1 small                | 85.9% | ~41 ms       |
-| Mozc OSS (reference)             | 74.6% | —            |
-
-## Build
-
-Requirements:
-
-- Rust stable with the MSVC toolchain
-- The `i686-pc-windows-msvc` target, for the 32-bit DLL
-- The Mozc OSS dictionary in `third_party/mozc-data`
-
-To build, run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1
-```
-
-This stages the files in `dist\` and creates the single-file installer
-`out\SweetIME-Setup.exe`. The build downloads and verifies the pinned
-SudachiDict lexicons on first use. To build just the dictionary, run
-`./scripts/build-dictionary.ps1 -Output data/system.dict`.
-
-### CI and releases
-
-GitHub Actions runs the workspace tests and Windows TSF harness, checks
-that the Android APK starts with its bundled dictionary in an emulator,
-and builds and tests the fcitx5 package on x86-64 and ARM64 Linux.
-The Windows installer and Android APK are available as the
-`SweetIME-Windows` and `SweetIME-Android` artifacts. Pushing a version tag
-such as `v0.1.0` publishes both packages after all checks pass.
-Runs can also be started manually from the Actions tab.
-
-Make development changes on `develop` and open a pull request into
-`main` for CodeRabbit review and CI. Cut release tags from commits on
-`main` after merging and after its `Release eligibility` check passes.
+| Configuration                | Top-1 | Mean latency |
+|------------------------------|-------|--------------|
+| Lattice only                 | 70.8% | ~0.1 ms      |
+| + zenz v3.1 xsmall (default) | 82.6% | ~13 ms       |
+| + zenz v3.1 small            | 85.9% | ~41 ms       |
+| Mozc OSS (reference)         | 74.6% | —            |
 
 ## Install
 
-Run `SweetIME-Setup.exe`. It asks for administrator rights, then:
+### Windows
 
-- Installs to `%ProgramFiles%\SweetIME`
-- Registers the IME for 64-bit and 32-bit apps
-- Optionally adds it to the Japanese keyboard list, adds a Start menu
-  entry, and downloads the AI model
-- Registers it in Installed apps, where you can uninstall it
+Download `SweetIME-Setup.exe` from the
+[latest release](https://github.com/frost-1256/sweet-ime/releases/latest)
+and run it. It asks for administrator rights, then:
+
+- installs to `%ProgramFiles%\SweetIME`;
+- registers the IME for 64-bit and 32-bit apps;
+- optionally adds it to the Japanese keyboard list, adds a Start menu
+  entry, and downloads the AI model;
+- registers itself in Installed apps, where you can uninstall it.
 
 `SweetIME-Setup.exe --preview` shows the screens without changing
 anything.
 
-### Updates
+**Updates.** The settings app checks GitHub Releases when it opens, and the
+installer registers a check at sign-in (at most once a day). Either one
+offers to update: it downloads `SweetIME-Setup.exe`, checks its SHA-256
+against the release, and runs it with `--update`. To turn the checks off,
+use **Settings → 情報**, or set `update_check = off`.
 
-The settings app checks GitHub Releases for a newer version when it opens,
-and the installer registers a check at sign-in (at most once a day). Either
-one offers to update. The update downloads `SweetIME-Setup.exe` from the
-release, checks its SHA-256 against the release, and runs it with
-`--update`, which updates the existing install without asking again. To
-turn the checks off, use **Settings → 情報**, or set `update_check = off`.
+### Android
 
-To publish an update, raise `version` in `Cargo.toml` and `nix/package.nix`,
-then push a matching tag such as `v0.1.3`.
+Download `SweetIME-Android.apk` from the
+[latest release](https://github.com/frost-1256/sweet-ime/releases/latest)
+and install it. Open **Sweet IME** to turn the keyboard on, then pick it
+with the keyboard switcher. The dictionary is bundled.
 
-For development, `scripts\install.ps1 -AddToLanguageList` and
-`scripts\uninstall.ps1` do the same from an elevated PowerShell.
-
-### Optional: neural reranking
-
-The zenz model is not bundled, because it is licensed under
-CC BY-SA 4.0. To enable reranking, download it from **Settings → AI 変換**.
-You can also run the script yourself. Administrator rights are not
-needed:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:ProgramFiles\SweetIME\get-zenz.ps1"
-```
-
-The script writes `%LOCALAPPDATA%\SweetIME\zenz.swz`, which the IME
-loads the next time it is activated. Pass
-`-Model Miwa-Keita/zenz-v3.1-small` to use the larger, more accurate
-model. Without the model, the IME converts with the dictionary lattice
-only.
-
-## Linux (fcitx5)
+### Linux (fcitx5)
 
 The flake builds the fcitx5 addon, the system dictionary, the settings app
 and the model packer:
@@ -124,8 +89,7 @@ and the model packer:
 nix build github:frost-1256/sweet-ime
 ```
 
-On NixOS, add the package to the fcitx5 addons and to the input method
-group:
+On NixOS or Home Manager, add the package to the fcitx5 addons:
 
 ```nix
 # flake inputs
@@ -135,14 +99,18 @@ sweet-ime.url = "github:frost-1256/sweet-ime";
 i18n.inputMethod.fcitx5.addons = [ inputs.sweet-ime.packages.${pkgs.system}.default ];
 ```
 
-Then add **Sweet IME** to the input method list (input method name
-`sweetime`), for example in `~/.config/fcitx5/profile` or through the fcitx5
-settings. Its **設定** entry opens `sweet-settings`.
+Then add **Sweet IME** (input method name `sweetime`) to the input method
+list, for example in `~/.config/fcitx5/profile` or in the fcitx5 settings.
+Its **設定** entry opens `sweet-settings`.
 
 Without Nix, build with CMake. It runs cargo for the Rust part, so you
-need Rust, CMake and the fcitx5 development files:
+need Rust, CMake and the fcitx5 development files. The dictionary is
+built from the Mozc OSS sources, at the revision CI uses:
 
 ```sh
+git clone --filter=blob:none --no-checkout https://github.com/google/mozc third_party/mozc-data
+git -C third_party/mozc-data sparse-checkout set src/data/dictionary_oss
+git -C third_party/mozc-data checkout 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
 cmake -S crates/fcitx5 -B build -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build && sudo cmake --install build
 cargo build --release -p sweet-dictc
@@ -152,60 +120,37 @@ sudo install -Dm644 system.dict /usr/share/sweet-ime/system.dict
 
 To include the same vocabulary as the packaged builds, extract the three
 pinned SudachiDict CSV files listed in `nix/package.nix` and pass their
-directory as the third argument to `sweet-dictc`. Install
-`assets/licenses/sudachidict.txt` alongside the other dictionary notices
-when distributing the resulting dictionary.
+directory as the third argument to `sweet-dictc`. When you distribute the
+resulting dictionary, install `assets/licenses/sudachidict.txt` with the
+other dictionary notices.
 
-On Linux the files live in XDG directories:
+### AI conversion (optional)
 
-- Settings, key bindings and learned words: `~/.config/sweet-ime/`
-- The zenz model: `~/.local/share/sweet-ime/zenz.swz`. Download it from
-  **Settings → AI 変換** or with `share/sweet-ime/get-zenz.sh`, then restart
-  fcitx5.
+The zenz model is not bundled, because it is licensed under CC BY-SA 4.0.
+Without it, Sweet IME converts with the dictionary lattice only.
 
-The **テーマ** page writes the chosen colors as an fcitx5 classicui theme
-(`~/.local/share/fcitx5/themes/sweet-ime`) and selects it in
-`~/.config/fcitx5/conf/classicui.conf`, which also styles other input
-methods. **fcitx5 の標準テーマに戻す** selects fcitx5's own theme again. If
-Home Manager manages `classicui.conf`, set `Theme = sweet-ime` there
-instead (`sweet-ime-dark` as `DarkTheme` for the default theme).
+- **Windows**: download it from **Settings → AI 変換**, or run the script
+  yourself (no administrator rights needed):
 
-The key bindings file is shared with Windows. Japanese keyboard keys
-(半角/全角, 変換, 無変換, ひらがな, 英数) work the same way. fcitx5's own
-trigger key (Ctrl+Space by default) switches between Sweet IME and the
-keyboard layout.
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File "$env:ProgramFiles\SweetIME\get-zenz.ps1"
+  ```
 
-## Android
+  It writes `%LOCALAPPDATA%\SweetIME\zenz.swz`, which the IME loads the
+  next time it is activated. Pass `-Model Miwa-Keita/zenz-v3.1-small` for
+  the larger, more accurate model.
+- **Linux**: download it from **Settings → AI 変換**, or run
+  `share/sweet-ime/get-zenz.sh` from the Nix package (`scripts/get-zenz.sh`
+  in a checkout; the CMake install does not include it), then restart
+  fcitx5. The model lives in `$XDG_DATA_HOME/sweet-ime/zenz.swz`.
+- **Android**: download it under **AI 変換** in the app (xsmall, about
+  100 MB, or small, about 380 MB). The app converts it on the phone. Live
+  conversion is refined in the background; with xsmall a sentence takes
+  about 0.2 s on a recent phone.
 
-`android/` holds an input method with a QWERTY romaji keyboard, built
-without Gradle by `android/build.ps1` (cargo-ndk, aapt2, javac, d8 and
-apksigner). It needs the Android SDK with `platforms;android-36`,
-`build-tools;36.0.0` and an NDK, a JDK 17 or newer, `cargo install
-cargo-ndk`, `rustup target add aarch64-linux-android x86_64-linux-android`, and
-the Mozc sources in `third_party/mozc-data`. The script builds the bundled
-dictionary from Mozc and the pinned SudachiDict lexicons:
+## Typing
 
-```powershell
-powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
-```
-
-The APK (`out/SweetIME-Android.apk`) bundles the dictionary and copies
-it to the app's storage on first use. Open **Sweet IME** to turn the
-keyboard on, then pick it with the keyboard switcher. Shift starts an
-English word as on the desktop, and the globe key switches to direct
-English input. Password, URL, email and number fields start in English.
-The layout follows common Android keyboards: long-press q–p for digits,
-**?123** for symbols and a number pad, and swipe along the space bar to
-move the caret. The app holds the conversion and keyboard settings (key
-height, number row, vibration, sound, theme). Themes include Material 3 and
-Material 3 Expressive, which take the wallpaper colors (Material You) on
-Android 12 and later, and the desktop color themes.
-For AI conversion, download a zenz model under **AI 変換** in the app
-(xsmall, about 100 MB, or small, about 380 MB). The app converts it on the
-phone and reranks conversions with it; live conversion is refined in the
-background. With xsmall a sentence takes about 0.2 s on a recent phone.
-
-## Keys
+### Keys
 
 | Key                      | While typing                      | While converting                 |
 |--------------------------|-----------------------------------|----------------------------------|
@@ -218,59 +163,82 @@ background. With xsmall a sentence takes about 0.2 s on a recent phone.
 | 1–9                      | —                                 | Select candidate                 |
 | F6 / F7 / F8 / F9 / F10  | Hiragana / katakana / half-width katakana / full-width ASCII / ASCII | same |
 | 半角/全角 or Alt+`, 変換, 無変換 | Toggle / on / off              |                                  |
+| Ctrl+Backspace           | Right after a commit: back to the reading (Windows) |                |
+| Ctrl+F12                 | Right after a commit: report the conversion (Windows) |              |
 
-These are the default bindings. You can change them on the **キー** page of
-the settings app, which saves them to `%APPDATA%\SweetIME\keymap.txt`. A
-binding can apply always, only while composing, or only while not
-composing. For example, 変換 can convert while composing and turn the IME on
-otherwise.
-
+These are the defaults. Change them on the **キー** page of the settings
+app, which saves them to `%APPDATA%\SweetIME\keymap.txt`. A binding can
+apply always, only while composing, or only while not composing; for
+example, 変換 can convert while composing and turn the IME on otherwise.
 When the IME is turned on or off, "あ" or "A" appears briefly next to the
 text cursor.
 
-While the IME is on, start a word with Shift+letter to type it in English.
-Release Shift to continue typing the word. Space commits it with a
-half-width space, and Enter commits the word alone. Both return to Japanese
-input. Escape cancels the word. A known word also ends by itself when
-Japanese follows it: `Googlehakensaku` commits `Google` and goes on with
-`は検索`, and `Googleha` followed by Enter commits `Googleは`
-(`shift_one_word = off` keeps English until Space or Enter). For common
-technical terms, type `ime`,
-`ieee`, or `github` and press Space to convert to `IME`, `IEEE`, or
-`GitHub`. Japanese readings such as `あいえむいー` also work.
+### English in Japanese
 
-Common English words whose keys are not romaji convert inside a sentence
-too: `korehabestdesu` gives `これはベストです`. A word with a common katakana
-loanword shows in katakana first, with the spelling as the next candidate
-(`english_katakana = off` keeps the spelling); others keep their spelling
-(`software`). The words come from a bundled
-list (SCOWL). Words that are not on it, such as one fixed with F10 after a
-typo correction, are learned when committed and convert the same way next
-time. To turn this off, set `english_words = off`.
+- **Shift starts an English word.** Type Shift+letter, release Shift and
+  keep typing. Space commits the word with a half-width space, Enter
+  commits the word alone, and both return to Japanese. Escape cancels it.
+- **A known word ends by itself.** `Googlehakensaku` commits `Google` and
+  goes on with `は検索`; `Googleha` then Enter commits `Googleは`
+  (`shift_one_word = off` keeps English until Space or Enter).
+- **Technical terms.** Type `ime`, `ieee` or `github` and press Space for
+  `IME`, `IEEE` or `GitHub`. Japanese readings such as `あいえむいー` work
+  too.
+- **Common English words inside a sentence.** `korehabestdesu` gives
+  `これはベストです`. A word with a common katakana loanword shows in
+  katakana first, with the spelling next (`english_katakana = off` keeps
+  the spelling); others keep their spelling (`software`). The words come
+  from a bundled SCOWL list, and other words you commit, such as one fixed
+  with F10, are learned. `english_words = off` turns this off.
+
+### Android keyboard
+
+Shift starts an English word as on the desktop, and the globe key switches
+to direct English input. Password, URL, email and number fields start in
+English. Long-press q–p for digits, use **?123** for symbols and a number
+pad, and swipe along the space bar to move the caret. The undo button in
+the candidate bar takes the last commit back to its reading. The app holds
+the conversion and keyboard settings (key height, number row, vibration,
+sound) and the themes: Material 3 and Material 3 Expressive, which take the
+wallpaper colors on Android 12 and later, and the desktop color themes.
 
 ## Settings
 
-Open the settings app, `sweet-settings.exe`, in any of these ways:
+On Windows, open the settings app, `sweet-settings.exe`, from:
 
-- From the Start menu entry **Sweet IME の設定**
-- By right-clicking the "あ" / "A" indicator in the taskbar
-- From Windows language settings: Sweet IME → Keyboard options
+- the Start menu entry **Sweet IME の設定**;
+- a right-click on the "あ" / "A" indicator in the taskbar;
+- Windows language settings: Sweet IME → Keyboard options.
 
-The app saves changes immediately. They apply the next time an app gets
-focus.
+Changes are saved right away and apply the next time an app gets focus. In
+the app you can:
 
-In the app you can:
+- turn live conversion, suggestions and the "あ" / "A" indicator on or off;
+- choose a color theme for the candidate window (on Linux, as an fcitx5
+  theme);
+- change key bindings;
+- turn AI conversion on or off, and download or remove the zenz model;
+- turn learning on or off, review, delete or clear learned words, or forget
+  what was learned in the last hour or day;
+- register, edit, import and export your own words;
+- report conversions that went wrong.
 
-- Turn live conversion, suggestions and the "あ" / "A" indicator on or off
-- Choose a color theme for the candidate window (on Linux, as an fcitx5
-  theme)
-- Change key bindings
-- Turn AI conversion on or off, and download or remove the zenz model
-- Turn learning on or off, and review, delete or clear learned words, or
-  forget what was learned in the last hour or day
-- Register, edit and delete your own words, and import or export them
+### Files
 
-Settings are stored in `%APPDATA%\SweetIME\config.txt`:
+| What | Windows | Linux |
+|---|---|---|
+| Settings (`config.txt`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Key bindings (`keymap.txt`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Learned words (`history.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Your words (`user_dict.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Reports (`reports.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Per-app modes (`apps.txt`) | `%APPDATA%\SweetIME\` | — |
+| zenz model (`zenz.swz`) | `%LOCALAPPDATA%\SweetIME\` | `$XDG_DATA_HOME/sweet-ime/` |
+
+When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is unset, Linux uses
+`~/.config` and `~/.local/share`.
+
+`config.txt` looks like this:
 
 ```
 live_conversion = on   # show converted text while typing
@@ -289,63 +257,127 @@ english_katakana = on  # ... as their katakana loanword first (best -> ベスト
 shift_one_word = on    # a word started with Shift ends when Japanese follows
 ```
 
-Per-application modes are stored in `%APPDATA%\SweetIME\apps.txt`, one
-program per line as `program.exe = normal | english | off` (start in
-hiragana, start in direct input, or leave the program alone). The settings
-app edits them on the アプリ page.
+- **Per-app modes**: `apps.txt` has one program per line as
+  `program.exe = normal | english | off` (start in hiragana, start in
+  direct input, or leave the program alone). The **アプリ** page edits it.
+- **Your words**: `user_dict.tsv` has one word per line as
+  `reading<TAB>word<TAB>part of speech<TAB>comment`. Mozc and Google
+  Japanese Input export the same format, so their files (and Microsoft IME
+  exports) can be imported. The IME picks up changes right away.
+- **Reports**: add a reading and the text you wanted on the **学習** page
+  (on Android, **学習とプライバシー**), or press Ctrl+F12 right after
+  committing a conversion you had to fix. Reports stay on your device. The
+  settings app opens a prefilled GitHub issue only when you press
+  **GitHub に送る**.
 
-Learned words are stored in `%APPDATA%\SweetIME\history.tsv`.
+### Linux themes and keys
 
-Conversions you report are stored in `%APPDATA%\SweetIME\reports.tsv`.
-Add a reading and the text you wanted on the settings app's 学習 page (on
-Android, 学習とプライバシー), or press Ctrl+F12 right after committing a
-conversion you had to fix. The file stays on your device; the settings
-app lists the reports and opens a prefilled GitHub issue only when you
-press GitHub に送る.
+The **テーマ** page writes the chosen colors as an fcitx5 classicui theme
+(`~/.local/share/fcitx5/themes/sweet-ime`) and selects it in
+`~/.config/fcitx5/conf/classicui.conf`, which also styles other input
+methods. **fcitx5 の標準テーマに戻す** selects fcitx5's own theme again. If
+Home Manager manages `classicui.conf`, set `Theme = sweet-ime` there instead
+(`sweet-ime-dark` as `DarkTheme` for the default theme).
 
-Your own words are stored in `%APPDATA%\SweetIME\user_dict.tsv`, one per
-line as `reading<TAB>word<TAB>part of speech<TAB>comment`. Mozc and Google
-Japanese Input export the same format, so their files (and Microsoft IME
-exports) can be imported from the settings app. The IME picks up changes
-to the file right away.
+The key bindings file is shared with Windows. Japanese keyboard keys
+(半角/全角, 変換, 無変換, ひらがな, 英数) work the same way. fcitx5's own
+trigger key (Ctrl+Space by default) switches between Sweet IME and the
+keyboard layout.
 
 ## Development
 
-- `cargo test --workspace`
+### Build on Windows
+
+You need:
+
+- Rust stable with the MSVC toolchain;
+- the `i686-pc-windows-msvc` target, for the 32-bit DLL;
+- the Mozc OSS sources in `third_party/mozc-data`, at the revision pinned
+  in `.github/workflows/windows.yml`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+```
+
+This stages the files in `dist\` and creates the single-file installer
+`out\SweetIME-Setup.exe`. On first use it downloads and verifies the pinned
+SudachiDict lexicons. To build just the dictionary, run
+`./scripts/build-dictionary.ps1 -Output data/system.dict`.
+`scripts\install.ps1 -AddToLanguageList` and `scripts\uninstall.ps1` install
+and remove a development build from an elevated PowerShell.
+
+### Build for Android
+
+`android/build.ps1` builds the APK without Gradle (cargo-ndk, aapt2, javac,
+d8 and apksigner). It needs the Android SDK with `platforms;android-36`,
+`build-tools;36.0.0` and an NDK, JDK 17 or newer, `cargo install cargo-ndk`,
+`rustup target add aarch64-linux-android x86_64-linux-android`, and the Mozc
+sources in `third_party/mozc-data`. It builds the bundled dictionary from
+Mozc and the pinned SudachiDict lexicons:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
+```
+
+The APK is written to `out/SweetIME-Android.apk`.
+
+### Tests and tools
+
+- `cargo test --workspace` runs the unit and integration tests. Copy
+  `dist\system.dict` to `data\system.dict` first for the dictionary-backed
+  tests.
 - `target\release\examples\harness.exe` drives the real TSF core
-  (`sweet_tsf_core.dll`) in-process without registering it, and checks
-  that the entry DLL (`sweet_tsf.dll`) switches cores on focus.
-- Applications load the small entry DLL `sweet_tsf.dll` (`crates/tsf-shim`),
-  which loads the core named in `core.txt` next to it
-  (`sweet_tsf_core-<version>.dll`, from `crates/tsf`). An update installs a
-  new core and `core.txt`; running applications move to it the next time
-  they get focus, without a restart.
+  (`sweet_tsf_core.dll`) in-process without registering it, and checks that
+  the entry DLL (`sweet_tsf.dll`) switches cores on focus.
 - `crates/fcitx5/tests/run-dbus-harness.sh result` drives the fcitx5 addon
   through a private fcitx5 over D-Bus (Linux, after `nix build`).
-- `sweet-cli data\system.dict eval <evaluation.tsv>` measures accuracy.
-  Set `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
+- `sweet-cli data\system.dict eval <evaluation.tsv>` measures accuracy. Set
+  `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
   `crates\cli\data\terms.tsv` checks technical terms, internet slang and
   numbers in context.
 - `sweet-cli data\system.dict audit [readings]` looks for Mozc costs that
-  put the wrong common noun first: it converts each reading in a few short
+  put the wrong common noun first. It converts each reading in a few short
   phrases and lists the ones where `SWEET_ZENZ` clearly prefers another
-  noun, with a suggested offset. Check each suggestion by hand before
-  adding it to `crates\dictc\src\cost_adjustments.tsv`.
+  noun, with a suggested offset. Check each suggestion by hand before adding
+  it to `crates\dictc\src\cost_adjustments.tsv`.
 - `python scripts/make-icon.py` redraws the app icon in `assets/icon/`. It
   needs Pillow and the Zen Maru Gothic Black font (SIL OFL); set
   `SWEET_ICON_FONT` to the font file.
+
+### How updates reach running apps
+
+Applications load the small entry DLL `sweet_tsf.dll` (`crates/tsf-shim`),
+which loads the core named in `core.txt` next to it
+(`sweet_tsf_core-<version>.dll`, from `crates/tsf`). An update installs a
+new core and `core.txt`; running applications move to it the next time
+they get focus, without a restart.
+
+### Branches, CI and releases
+
+- Make changes on `develop`, and open a pull request into `main` for
+  CodeRabbit review and CI.
+- GitHub Actions runs the workspace tests and the Windows TSF harness,
+  checks in an emulator that the Android APK starts with its bundled
+  dictionary, and builds and tests the fcitx5 package on x86-64 and ARM64
+  Linux. The installer and the APK are kept as the `SweetIME-Windows` and
+  `SweetIME-Android` artifacts. Runs can also be started from the Actions
+  tab.
+- To release, raise `version` in `Cargo.toml` and `nix/package.nix`, merge
+  into `main`, and once its `Release eligibility` check passes, push a
+  matching tag such as `v0.1.3` on that commit. The tag build publishes the
+  installer and the APK to GitHub Releases.
 
 ## Licenses
 
 - **Code**: MIT; see `LICENSE`.
 - **Dictionary** (`system.dict`, bundled): derived from the Mozc OSS
-  dictionary. It includes IPAdic and the Okinawa dictionary, which keep
-  their own licenses. See `dist\licenses\dictionary-oss.txt`. Additional
+  dictionary, which includes IPAdic and the Okinawa dictionary under their
+  own licenses; see `dist\licenses\dictionary-oss.txt`. Additional
   vocabulary comes from [SudachiDict](https://github.com/WorksApplications/SudachiDict)
-  by Works Applications Co., Ltd., under the Apache License, Version 2.0.
-  See `assets/licenses/sudachidict.txt` for notices and changes.
+  by Works Applications Co., Ltd., under the Apache License, Version 2.0;
+  see `assets/licenses/sudachidict.txt` for notices and changes.
 - **English word list** (`crates/engine/src/english_words.txt`, bundled):
   generated from SCOWL / ESDB by Kevin Atkinson; see
   `dist\licenses\english-words.txt`.
-- **zenz model** (not bundled): by Miwa Keita, licensed under
-  CC BY-SA 4.0. Users download it themselves with `get-zenz.ps1`.
+- **zenz model** (not bundled): by Miwa Keita, under CC BY-SA 4.0. Users
+  download it themselves.
