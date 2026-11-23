@@ -114,6 +114,7 @@ struct Composing {
     /// lattice and the refined result on every keystroke.
     refined: Option<LiveConversion>,
     suggestions: Vec<String>,
+    typo_suggestion: Option<crate::typo::Correction>,
 }
 
 impl Composing {
@@ -347,6 +348,7 @@ impl Session {
             // Suggestion list: commit the prediction directly.
             match self.comp.suggestions.get(index).cloned() {
                 Some(text) => {
+                    self.learn_selected_typo(conv, &text);
                     self.commit.push_str(&text);
                     self.reset();
                     true
@@ -371,6 +373,17 @@ impl Session {
         self.commit.push_str(text);
         self.reset();
         self.remember_commit(before);
+    }
+
+    fn learn_selected_typo(&self, conv: &Converter, selected: &str) {
+        if let Some(fix) = self
+            .comp
+            .typo_suggestion
+            .as_ref()
+            .filter(|fix| !self.private && fix.surface == selected)
+        {
+            conv.learn(&fix.reading, selected);
+        }
     }
 
     /// Selects candidate `idx` of the focused segment, closes the window and
@@ -495,6 +508,7 @@ impl Session {
     }
 
     fn handle_key(&mut self, conv: &Converter, key: Key) -> bool {
+        let commit_start = self.commit.len();
         let key = if let Key::ShiftedLetter(ch) = key {
             if !self.comp.literal {
                 if self.conv.is_some() {
@@ -513,6 +527,11 @@ impl Session {
         } else {
             self.handle_composing(conv, key)
         };
+        // A single key can commit the previous text and begin a new reading
+        // (for example when Shift-started English gives way to Japanese).
+        if self.is_active() && self.commit.len() > commit_start {
+            self.left_context.push_str(&self.commit[commit_start..]);
+        }
         self.refresh(conv);
         consumed
     }

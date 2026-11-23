@@ -70,6 +70,11 @@ impl Session {
         c.live_english = false;
         c.live_pending = false;
         c.suggestions.clear();
+        // Tab opens the current suggestions as a conversion list. Keep the
+        // corrected reading until that list is confirmed or dismissed.
+        if self.conv.is_none() {
+            c.typo_suggestion = None;
+        }
         if c.is_empty() {
             c.literal = false;
             return;
@@ -127,7 +132,8 @@ impl Session {
             });
             c.live_english = true;
             if let Some(fix) = correction.filter(|_| suggest) {
-                c.suggestions.push(fix.surface);
+                c.suggestions.push(fix.surface.clone());
+                c.typo_suggestion = Some(fix);
             }
             return;
         }
@@ -179,7 +185,8 @@ impl Session {
                 .as_ref()
                 .map_or(settled.as_str(), |live| live.surface.as_str());
             if let Some(fix) = correction.filter(|fix| fix.surface != shown) {
-                c.suggestions.push(fix.surface);
+                c.suggestions.push(fix.surface.clone());
+                c.typo_suggestion = Some(fix);
             }
             let reading = c
                 .live

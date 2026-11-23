@@ -192,7 +192,9 @@ impl Session {
                 let new_word = self.options.english_words
                     && english::typed_word(&s.reading, surface)
                     && !english::is_spelling(&s.reading, surface);
-                if (s.selected != 0 || new_word) && !s.predicted && !self.private {
+                if s.predicted {
+                    self.learn_selected_typo(conv, surface);
+                } else if (s.selected != 0 || new_word) && !self.private {
                     conv.learn(&s.reading, surface);
                 }
                 self.commit.push_str(surface);

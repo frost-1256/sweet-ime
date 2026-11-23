@@ -639,6 +639,41 @@ fn typo_correction_restores_missing_consonants() {
     }
 }
 
+#[test]
+fn corrects_early_typos_even_when_the_wrong_reading_is_all_kana() {
+    let Some(c) = converter() else { return };
+    let fix = sweet_engine::typo::correct(
+        &c,
+        "raigatougozaimasu",
+        1000,
+        std::time::Duration::from_millis(100),
+    )
+    .unwrap();
+    assert_eq!(fix.reading, "ありがとうございます");
+}
+
+#[test]
+fn learns_the_corrected_reading_only_when_the_user_picks_it() {
+    for (use_tab, private) in [(false, false), (true, false), (true, true)] {
+        let Some(c) = converter() else { return };
+        let mut s = Session::new();
+        s.options.live_conversion = false;
+        s.private = private;
+        type_str(&mut s, &c, "konyaku");
+        assert_eq!(c.convert("こんやく", &[], 1)[0].learned_words(), 0);
+        assert_eq!(s.candidates().unwrap().items[0], "婚約");
+        if use_tab {
+            s.handle(&c, Key::Tab);
+            s.handle(&c, Key::Enter);
+        } else {
+            assert!(s.select_candidate(&c, 0));
+        }
+        assert_eq!(s.take_commit(), "婚約");
+        assert_eq!(c.convert("こんやく", &[], 1)[0].learned_words(), usize::from(!private));
+        assert_eq!(c.convert("こにゃく", &[], 1)[0].learned_words(), 0);
+    }
+}
+
 /// Always prefers the last candidate, to make reranking observable.
 struct PickLast;
 
@@ -646,6 +681,33 @@ impl sweet_engine::Reranker for PickLast {
     fn choose(&self, _r: &str, _l: &str, c: &[sweet_engine::Conversion]) -> Option<usize> {
         Some(c.len() - 1)
     }
+}
+
+#[test]
+fn neural_reranking_keeps_learned_words_and_still_picks_other_words() {
+    let Some(c) = converter() else { return };
+    c.learn("きしゃ", "汽車");
+    let reading = "あしたきしゃになります";
+    let lattice_candidates = c.convert(reading, &[], 1);
+    assert_eq!(lattice_candidates[0].learned_words(), 1, "{lattice_candidates:?}");
+    let lattice = lattice_candidates[0].surface();
+    let c = c.with_reranker(Box::new(PickLast));
+    let best = &c.convert_best(reading, &[], "")[0];
+    assert!(best.surface().contains("汽車"), "{}", best.surface());
+    assert_ne!(best.surface(), lattice);
+}
+
+#[test]
+fn live_conversion_uses_the_text_committed_before_the_new_reading() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    s.set_left_context("先に");
+    s.handle(&c, Key::ShiftedLetter('G'));
+    type_str(&mut s, &c, "ooglehakensaku");
+    assert_eq!(s.take_commit(), "Google");
+    let (reading, context) = s.live_request().unwrap();
+    assert_eq!(reading, "はけんさく");
+    assert_eq!(context, "先にGoogle");
 }
 
 #[test]

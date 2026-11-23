@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Condvar, Mutex};
 
-use super::{Conversion, Converter};
+use super::{Conversion, Converter, Word};
 
 /// Picks the best whole-sentence candidate (e.g. with a neural LM).
 pub trait Reranker: Send + Sync {
@@ -22,14 +22,36 @@ pub trait Reranker: Send + Sync {
 const RERANK_POOL: usize = 6;
 
 /// Words of `c` as (reading start, reading end, surface), offsets in bytes.
+fn spans(c: &Conversion) -> impl Iterator<Item = (usize, usize, &Word)> {
+    c.segments
+        .iter()
+        .flat_map(|s| &s.words)
+        .scan(0, |at, word| {
+            let start = *at;
+            *at += word.reading.len();
+            Some((start, *at, word))
+        })
+}
+
 fn word_spans(c: &Conversion) -> Vec<(usize, usize, &str)> {
-    let mut at = 0;
-    let mut out = Vec::new();
-    for w in c.segments.iter().flat_map(|s| &s.words) {
-        out.push((at, at + w.reading.len(), w.surface.as_str()));
-        at += w.reading.len();
+    spans(c)
+        .map(|(start, end, word)| (start, end, word.surface.as_str()))
+        .collect()
+}
+
+fn personal_spans(c: &Conversion) -> Vec<(usize, usize, &str)> {
+    spans(c)
+        .filter(|(_, _, word)| word.learned || word.user)
+        .map(|(start, end, word)| (start, end, word.surface.as_str()))
+        .collect()
+}
+
+fn keeps_personal_words(c: &Conversion, personal: &[(usize, usize, &str)]) -> bool {
+    if personal.is_empty() {
+        return true;
     }
-    out
+    let words = word_spans(c);
+    personal.iter().all(|span| words.contains(span))
 }
 
 /// Alternatives `convert_best` offers the reranker beyond its N-best.
@@ -45,6 +67,7 @@ fn diverse(pool: Vec<Conversion>, n: usize) -> Vec<Conversion> {
         return pool;
     }
     let best = word_spans(&pool[0]);
+    let personal = personal_spans(&pool[0]);
     let region = |c: &Conversion| {
         let diff: Vec<_> = word_spans(c)
             .into_iter()
@@ -52,11 +75,19 @@ fn diverse(pool: Vec<Conversion>, n: usize) -> Vec<Conversion> {
             .collect();
         diff.first().zip(diff.last()).map(|(a, b)| (a.0, b.1))
     };
-    let mut regions: Vec<(usize, usize)> = pool[1..n].iter().filter_map(region).collect();
+    // Only alternatives the model can use should occupy a region.
+    let mut regions: Vec<(usize, usize)> = pool[1..n]
+        .iter()
+        .filter(|candidate| keeps_personal_words(candidate, &personal))
+        .filter_map(region)
+        .collect();
     let mut picked: Vec<usize> = (0..n).collect();
     for (i, c) in pool.iter().enumerate().skip(n) {
         if picked.len() >= n + RERANK_EXTRA {
             break;
+        }
+        if !keeps_personal_words(c, &personal) {
+            continue;
         }
         let Some(r) = region(c) else { continue };
         if !regions.iter().any(|&(a, b)| r.0 < b && a < r.1) {
@@ -126,13 +157,6 @@ impl Converter {
             self.convert(text, boundaries, 1)
         };
         if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
-            // Don't let the model override what the user taught us.
-            if res
-                .first()
-                .is_some_and(|c| c.learned_words() > 0 || c.user_words() > 0)
-            {
-                return res;
-            }
             // After a version number, でたね is usually a release
             // announcement. Keep the lattice's release phrase when present.
             if super::release_phrase::follows_version(text, left_context)
@@ -148,27 +172,61 @@ impl Converter {
             {
                 return res;
             }
-            if res.len() > 1 {
-                let surfaces: Vec<String> = res.iter().map(|c| c.surface()).collect();
-                if let Some(mut i) =
-                    self.rerank
-                        .cached_choice(r.as_ref(), text, left_context, &res, surfaces)
-                {
-                    if i < res.len() {
-                        // The model reads the typed spelling, so it favors
-                        // "best" over ベスト. Keep the lattice's (and the
-                        // user's) choice between a word and its loanword.
-                        if self.katakana_on.load(Relaxed) {
-                            let key = english_key(&res[i]);
-                            i = res.iter().position(|c| english_key(c) == key).unwrap_or(i);
-                        }
-                        let c = res.remove(i);
-                        res.insert(0, c);
-                    }
-                }
+            if let Some(i) = self.rerank_index(r.as_ref(), text, left_context, &res) {
+                let c = res.remove(i);
+                res.insert(0, c);
             }
         }
         res
+    }
+
+    fn rerank_index(
+        &self,
+        reranker: &dyn Reranker,
+        reading: &str,
+        context: &str,
+        candidates: &[Conversion],
+    ) -> Option<usize> {
+        if candidates.len() < 2 {
+            return None;
+        }
+        let protected = personal_spans(&candidates[0]);
+        if protected.is_empty() {
+            return self.choose_ranked(reranker, reading, context, candidates);
+        }
+        // The model can improve the rest of the sentence while the words
+        // learned or registered by the user stay at their original offsets.
+        let (indices, eligible): (Vec<_>, Vec<_>) = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| keeps_personal_words(candidate, &protected))
+            .map(|(index, candidate)| (index, candidate.clone()))
+            .unzip();
+        self.choose_ranked(reranker, reading, context, &eligible)
+            .map(|index| indices[index])
+    }
+
+    fn choose_ranked(
+        &self,
+        reranker: &dyn Reranker,
+        reading: &str,
+        context: &str,
+        candidates: &[Conversion],
+    ) -> Option<usize> {
+        if candidates.len() < 2 {
+            return None;
+        }
+        let surfaces = candidates.iter().map(Conversion::surface).collect();
+        let index = self
+            .rerank
+            .cached_choice(reranker, reading, context, candidates, surfaces)?;
+        let picked = candidates.get(index)?;
+        if self.katakana_on.load(Relaxed) {
+            // Preserve the lattice choice between spellings like best and ベスト.
+            let key = english_key(picked);
+            return candidates.iter().position(|c| english_key(c) == key);
+        }
+        Some(index)
     }
 }
 

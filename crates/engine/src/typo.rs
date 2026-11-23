@@ -80,7 +80,7 @@ fn near_stray_letters(b: &[char]) -> Vec<bool> {
 /// distinct reading. Edits are limited to the keys around letters left
 /// over, if any, or else to the last `window` keys.
 pub fn variants(raw: &str, window: usize) -> Vec<(String, String)> {
-    edits(raw, window)
+    edits(raw, window, false)
         .into_iter()
         .map(|(keys, kana, _)| (keys, kana))
         .collect()
@@ -115,12 +115,16 @@ impl Slip {
     }
 }
 
-fn edits(raw: &str, window: usize) -> Vec<(String, String, Slip)> {
+fn edits(raw: &str, window: usize, earlier: bool) -> Vec<(String, String, Slip)> {
     let b: Vec<char> = raw.chars().collect();
     let mut at = near_stray_letters(&b);
     if !at.contains(&true) {
         let from = b.len().saturating_sub(window);
-        at[from..].fill(true);
+        if earlier {
+            at[..from].fill(true);
+        } else {
+            at[from..].fill(true);
+        }
     }
     let from = at.iter().position(|&x| x).unwrap_or(b.len());
     // Keep the pending romaji as well as the kana before each edit, so a
@@ -228,24 +232,36 @@ pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Op
     if typed.is_empty() {
         return None;
     }
-    let variants = edits(raw, 12);
+    const RECENT_KEYS: usize = 12;
+    let variants = edits(raw, RECENT_KEYS, false);
     let (raw, reading) = conv.score_typos(|cost| {
         let base = cost(&typed);
-        let mut best = None;
-        let mut best_gain = i64::from(margin);
-        for (r, kana, slip) in variants {
-            if t.elapsed() > budget {
-                break;
+        let mut pick = |variants: Vec<(String, String, Slip)>, margin| {
+            let mut best = None;
+            let mut best_gain = i64::from(margin);
+            for (r, kana, slip) in variants {
+                if t.elapsed() > budget {
+                    break;
+                }
+                // Whole costs: scaling them by length favours fixes that add kana.
+                let gain = i64::from(base) - i64::from(cost(&kana)) - i64::from(slip.penalty());
+                if gain > best_gain {
+                    best_gain = gain;
+                    best = Some((r, kana));
+                }
             }
-            // Whole costs: scaling them by length favoured fixes that add a
-            // kana (ねっくが over ねこが for "nekkga").
-            let gain = i64::from(base) - i64::from(cost(&kana)) - i64::from(slip.penalty());
-            if gain > best_gain {
-                best_gain = gain;
-                best = Some((r, kana));
+            best
+        };
+        pick(variants, margin).or_else(|| {
+            if !(RECENT_KEYS + 1..=64).contains(&raw.len())
+                || has_unresolved_romaji(&typed)
+                || t.elapsed() >= budget
+            {
+                return None;
             }
-        }
-        best
+            // Earlier changes need more evidence than edits near the caret.
+            pick(edits(raw, RECENT_KEYS, true), margin.saturating_add(1400))
+        })
     })?;
     let surface = conv.convert(&reading, &[], 1).into_iter().next()?.surface();
     Some(Correction {
