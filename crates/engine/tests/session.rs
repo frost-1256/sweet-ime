@@ -1142,6 +1142,8 @@ fn english_words_stay_intact_before_punctuation() {
         ("anthropic.", "Anthropic。"),
         ("korehaanthropic,", "これはAnthropic、"),
         ("anthropicdesu", "Anthropicです"),
+        ("busy（", "busy（"),
+        ("busy）", "busy）"),
     ] {
         let mut s = Session::new();
         type_str(&mut s, &c, typed);
