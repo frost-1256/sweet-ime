@@ -2281,7 +2281,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "sweet-android"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "jni 0.21.1",
  "sweet-engine",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-cli"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "regex",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-dictc"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "sweet-engine",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-engine"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "fst",
  "memmap2",
@@ -2316,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-fcitx5"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "sweet-engine",
  "sweet-zenz",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-installer"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "embed-resource",
  "miniz_oxide 0.9.1",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-settings"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "embed-resource",
  "serde_json",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-tsf"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "sweet-engine",
  "sweet-zenz",
@@ -2356,7 +2356,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-tsf-shim"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "embed-resource",
  "windows",
@@ -2365,14 +2365,14 @@ dependencies = [
 
 [[package]]
 name = "sweet-ui"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "eframe",
 ]
 
 [[package]]
 name = "sweet-zenz"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "memmap2",
  "rayon",
