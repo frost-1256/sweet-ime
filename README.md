@@ -259,7 +259,8 @@ shift_one_word = on    # a word started with Shift ends when Japanese follows
 
 - **Per-app modes**: `apps.txt` has one program per line as
   `program.exe = normal | english | off` (start in hiragana, start in
-  direct input, or leave the program alone). The **アプリ** page edits it.
+  direct input, or leave the program alone). A `* = english` line makes
+  every other program start in direct input too. The **アプリ** page edits it.
 - **Your words**: `user_dict.tsv` has one word per line as
   `reading<TAB>word<TAB>part of speech<TAB>comment`. Mozc and Google
   Japanese Input export the same format, so their files (and Microsoft IME
