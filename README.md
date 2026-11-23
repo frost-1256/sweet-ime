@@ -30,7 +30,8 @@
   (さんぜんえん → 三千円 / 3000円), bunsetsu resizing and F6–F10
   transliteration.
 - **Private by default.** Learning, reports and settings stay on your
-  device. Nothing is learned in password fields or private windows.
+  device. On Windows and Android, nothing is learned in password fields
+  or private windows (the Linux frontend does not detect them yet).
 
 | Platform | What you get |
 |---|---|
@@ -103,9 +104,13 @@ list, for example in `~/.config/fcitx5/profile` or in the fcitx5 settings.
 Its **設定** entry opens `sweet-settings`.
 
 Without Nix, build with CMake. It runs cargo for the Rust part, so you
-need Rust, CMake and the fcitx5 development files:
+need Rust, CMake and the fcitx5 development files. The dictionary is
+built from the Mozc OSS sources, at the revision CI uses:
 
 ```sh
+git clone --filter=blob:none --no-checkout https://github.com/google/mozc third_party/mozc-data
+git -C third_party/mozc-data sparse-checkout set src/data/dictionary_oss
+git -C third_party/mozc-data checkout 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
 cmake -S crates/fcitx5 -B build -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build && sudo cmake --install build
 cargo build --release -p sweet-dictc
@@ -134,9 +139,10 @@ Without it, Sweet IME converts with the dictionary lattice only.
   It writes `%LOCALAPPDATA%\SweetIME\zenz.swz`, which the IME loads the
   next time it is activated. Pass `-Model Miwa-Keita/zenz-v3.1-small` for
   the larger, more accurate model.
-- **Linux**: download it from **Settings → AI 変換** or with
-  `share/sweet-ime/get-zenz.sh`, then restart fcitx5. The model lives in
-  `~/.local/share/sweet-ime/zenz.swz`.
+- **Linux**: download it from **Settings → AI 変換**, or run
+  `share/sweet-ime/get-zenz.sh` from the Nix package (`scripts/get-zenz.sh`
+  in a checkout; the CMake install does not include it), then restart
+  fcitx5. The model lives in `$XDG_DATA_HOME/sweet-ime/zenz.swz`.
 - **Android**: download it under **AI 変換** in the app (xsmall, about
   100 MB, or small, about 380 MB). The app converts it on the phone. Live
   conversion is refined in the background; with xsmall a sentence takes
@@ -157,8 +163,8 @@ Without it, Sweet IME converts with the dictionary lattice only.
 | 1–9                      | —                                 | Select candidate                 |
 | F6 / F7 / F8 / F9 / F10  | Hiragana / katakana / half-width katakana / full-width ASCII / ASCII | same |
 | 半角/全角 or Alt+`, 変換, 無変換 | Toggle / on / off              |                                  |
-| Ctrl+Backspace           | Right after a commit: back to the reading |                          |
-| Ctrl+F12                 | Right after a commit: report the conversion |                        |
+| Ctrl+Backspace           | Right after a commit: back to the reading (Windows) |                |
+| Ctrl+F12                 | Right after a commit: report the conversion (Windows) |              |
 
 These are the defaults. Change them on the **キー** page of the settings
 app, which saves them to `%APPDATA%\SweetIME\keymap.txt`. A binding can
@@ -221,13 +227,16 @@ the app you can:
 
 | What | Windows | Linux |
 |---|---|---|
-| Settings (`config.txt`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| Key bindings (`keymap.txt`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| Learned words (`history.tsv`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| Your words (`user_dict.tsv`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| Reports (`reports.tsv`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
+| Settings (`config.txt`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Key bindings (`keymap.txt`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Learned words (`history.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Your words (`user_dict.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| Reports (`reports.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
 | Per-app modes (`apps.txt`) | `%APPDATA%\SweetIME\` | — |
-| zenz model (`zenz.swz`) | `%LOCALAPPDATA%\SweetIME\` | `~/.local/share/sweet-ime/` |
+| zenz model (`zenz.swz`) | `%LOCALAPPDATA%\SweetIME\` | `$XDG_DATA_HOME/sweet-ime/` |
+
+When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is unset, Linux uses
+`~/.config` and `~/.local/share`.
 
 `config.txt` looks like this:
 

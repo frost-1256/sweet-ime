@@ -26,8 +26,9 @@
 - **ふだんの入力が楽**:ライブ変換、予測候補(文の途中でも)、ローマ字の打ち間違い
   補正、学習、ユーザー辞書、日本語の中の英単語、かなで読んだ数字
   (さんぜんえん → 三千円 / 3000円)、文節の伸び縮み、F6〜F10 の文字種変換。
-- **データは手元に**:学習・報告・設定は端末の中だけに保存します。パスワード欄や
-  シークレットウィンドウでは何も覚えません。
+- **データは手元に**:学習・報告・設定は端末の中だけに保存します。Windows と
+  Android では、パスワード欄やシークレットウィンドウでは何も覚えません
+  (Linux 版はまだこれらを見分けられません)。
 
 | 環境 | できること |
 |---|---|
@@ -98,9 +99,13 @@ i18n.inputMethod.fcitx5.addons = [ inputs.sweet-ime.packages.${pkgs.system}.defa
 `sweet-settings` が開きます。
 
 Nix を使わない場合は CMake でビルドします。Rust 部分は cargo で
-ビルドするので、Rust、CMake、fcitx5 の開発用ファイルが必要です。
+ビルドするので、Rust、CMake、fcitx5 の開発用ファイルが必要です。辞書は、
+CI と同じリビジョンの Mozc OSS のソースから作ります。
 
 ```sh
+git clone --filter=blob:none --no-checkout https://github.com/google/mozc third_party/mozc-data
+git -C third_party/mozc-data sparse-checkout set src/data/dictionary_oss
+git -C third_party/mozc-data checkout 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
 cmake -S crates/fcitx5 -B build -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build build && sudo cmake --install build
 cargo build --release -p sweet-dictc
@@ -128,9 +133,10 @@ zenz モデルは CC BY-SA 4.0 なので、同梱していません。モデル�
   `%LOCALAPPDATA%\SweetIME\zenz.swz` に保存され、次に IME を使うときに
   読み込まれます。`-Model Miwa-Keita/zenz-v3.1-small` を付けると、大きくて
   より正確なモデルになります。
-- **Linux**:**設定 → AI 変換** か `share/sweet-ime/get-zenz.sh` でダウンロード
-  し、fcitx5 を再起動します。モデルは `~/.local/share/sweet-ime/zenz.swz`
-  に置かれます。
+- **Linux**:**設定 → AI 変換** でダウンロードするか、Nix のパッケージの
+  `share/sweet-ime/get-zenz.sh`(チェックアウトでは `scripts/get-zenz.sh`。
+  CMake のインストールには入りません)を実行し、fcitx5 を再起動します。
+  モデルは `$XDG_DATA_HOME/sweet-ime/zenz.swz` に置かれます。
 - **Android**:アプリの **AI 変換** からダウンロードします(xsmall は約 100 MB、
   small は約 380 MB)。モデルはスマホの中で変換されます。ライブ変換は裏で
   手直しされ、xsmall なら最近のスマホで 1 文あたり約 0.2 秒です。
@@ -150,8 +156,8 @@ zenz モデルは CC BY-SA 4.0 なので、同梱していません。モデル�
 | 1〜9                     | —                                 | 候補を選ぶ                       |
 | F6 / F7 / F8 / F9 / F10  | ひらがな / カタカナ / 半角カタカナ / 全角英数 / 半角英数 | 同じ |
 | 半角/全角 か Alt+`、変換、無変換 | 切り替え / オン / オフ    |                                  |
-| Ctrl+Backspace           | 確定の直後:読みに戻す            |                                  |
-| Ctrl+F12                 | 確定の直後:その変換を報告する    |                                  |
+| Ctrl+Backspace           | 確定の直後:読みに戻す(Windows) |                                  |
+| Ctrl+F12                 | 確定の直後:その変換を報告する(Windows) |                          |
 
 これは既定の割り当てです。設定アプリの **キー** ページで変えられ、
 `%APPDATA%\SweetIME\keymap.txt` に保存されます。割り当てごとに「いつでも」
@@ -208,13 +214,16 @@ Windows では、設定アプリ `sweet-settings.exe` を次のどれかで開�
 
 | 内容 | Windows | Linux |
 |---|---|---|
-| 設定(`config.txt`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| キーの割り当て(`keymap.txt`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| 学習した単語(`history.tsv`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| ユーザー辞書(`user_dict.tsv`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
-| 変換の報告(`reports.tsv`) | `%APPDATA%\SweetIME\` | `~/.config/sweet-ime/` |
+| 設定(`config.txt`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| キーの割り当て(`keymap.txt`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| 学習した単語(`history.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| ユーザー辞書(`user_dict.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
+| 変換の報告(`reports.tsv`) | `%APPDATA%\SweetIME\` | `$XDG_CONFIG_HOME/sweet-ime/` |
 | アプリごとのモード(`apps.txt`) | `%APPDATA%\SweetIME\` | — |
-| zenz モデル(`zenz.swz`) | `%LOCALAPPDATA%\SweetIME\` | `~/.local/share/sweet-ime/` |
+| zenz モデル(`zenz.swz`) | `%LOCALAPPDATA%\SweetIME\` | `$XDG_DATA_HOME/sweet-ime/` |
+
+Linux で `XDG_CONFIG_HOME` や `XDG_DATA_HOME` が設定されていないときは、
+`~/.config` と `~/.local/share` を使います。
 
 `config.txt` はこんな形です。
 
