@@ -66,6 +66,10 @@ The Windows installer and Android APK are available as the
 such as `v0.1.0` publishes both packages after all checks pass.
 Runs can also be started manually from the Actions tab.
 
+Make development changes on `develop` and open a pull request into
+`main` for CodeRabbit review and CI. Cut release tags from commits on
+`main` after merging.
+
 ## Install
 
 Run `SweetIME-Setup.exe`. It asks for administrator rights, then:

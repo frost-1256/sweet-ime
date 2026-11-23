@@ -1,0 +1,5 @@
+reviews:
+  auto_review:
+    enabled: true
+    # The default branch is main. Other base branches can be added here.
+    base_branches: []

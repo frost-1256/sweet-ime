@@ -2,9 +2,10 @@ name: Build, test and release
 
 on:
   push:
-    branches: ['**']
+    branches: [main, develop]
     tags: ['v[0-9]*']
   pull_request:
+    branches: [main, develop]
   workflow_dispatch:
 
 permissions:
@@ -193,6 +194,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the tagged commit to be on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
       - uses: actions/download-artifact@v8
         with:
           name: SweetIME-Windows
