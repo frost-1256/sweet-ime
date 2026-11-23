@@ -67,6 +67,23 @@ fn is_kana(c: char) -> bool {
     matches!(c, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー' | 'ゝ' | 'ゞ' | 'ｦ'..='ﾟ')
 }
 
+/// Prefer common homophones where the reading already supplies context.
+fn context_bonus(before: &str, reading: &str, surface: &str) -> i32 {
+    if surface == "円"
+        && reading == "えん"
+        && before.ends_with(|ch: char| ch.is_ascii_digit() || ('０'..='９').contains(&ch))
+    {
+        1200
+    } else if surface.starts_with('降')
+        && reading.starts_with('ふ')
+        && (before.ends_with("あめが") || before.ends_with("ゆきが"))
+    {
+        200
+    } else {
+        0
+    }
+}
+
 impl Converter {
     fn build_lattice<'a>(
         &'a self,
@@ -171,7 +188,8 @@ impl Converter {
                         end: pos + l,
                         lid: e.lid,
                         rid: e.rid,
-                        wcost: e.cost as i32,
+                        wcost: i32::from(e.cost)
+                            - context_bonus(&text[..pos], &rest[..l], e.surface),
                         surface: e.surface,
                         best: i32::MAX,
                         origin: None,

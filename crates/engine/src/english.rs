@@ -105,6 +105,23 @@ fn in_word_list(word: &str) -> bool {
     false
 }
 
+/// Keep a full listed spelling intact. Otherwise let the lattice handle
+/// a listed word next to kana ("busydesu" reads ぶsyです).
+pub(crate) fn has_listed_part(raw: &str, reading: &str) -> bool {
+    if in_word_list(&raw.to_ascii_lowercase()) {
+        return false;
+    }
+    let kana = |ch| ('ぁ'..='ゖ').contains(&ch);
+    let index = word_index();
+    reading.char_indices().skip(1).any(|(at, _)| {
+        let (before, after) = reading.split_at(at);
+        (before.len() <= index.max_len && after.chars().all(kana) && index.get(before).is_some())
+            || (after.len() <= index.max_len
+                && before.chars().all(kana)
+                && index.get(after).is_some())
+    })
+}
+
 /// Whether `raw` types `spelling`, including its punctuation when present.
 /// Spaces, dots, hyphens and underscores may be left out ("vscode" types
 /// "VS Code"), while symbols like the # in C# identify the entry.
