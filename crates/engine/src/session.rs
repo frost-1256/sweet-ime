@@ -416,6 +416,15 @@ impl Session {
         true
     }
 
+    /// Opens conversion candidates from a touch keyboard's prediction bar.
+    pub fn expand_predictions(&mut self, conv: &Converter) -> bool {
+        if self.conv.is_some() || self.comp.is_empty() || self.comp.literal {
+            return false;
+        }
+        self.handle(conv, Key::Space);
+        self.open_candidates(conv)
+    }
+
     /// Whether [`Key::UndoCommit`] would restore the last commit now.
     pub fn can_undo(&self) -> bool {
         self.options.undo_commit && self.last_commit.is_some() && !self.is_active()

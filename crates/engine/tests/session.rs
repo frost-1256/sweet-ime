@@ -43,6 +43,12 @@ fn exposes_exact_homophones_beyond_the_ranked_candidates() {
     let index = list.items.iter().position(|item| item == omitted.surface).unwrap();
     assert!(s.select_candidate(&c, index));
     assert_eq!(s.take_commit(), omitted.surface);
+
+    type_str(&mut s, &c, "kou");
+    assert!(s.expand_predictions(&c));
+    let list = s.candidates().unwrap();
+    assert_eq!(list.kind, ListKind::Conversion);
+    assert!(exact.iter().all(|word| list.items.iter().any(|item| item == word.surface)));
 }
 
 #[test]

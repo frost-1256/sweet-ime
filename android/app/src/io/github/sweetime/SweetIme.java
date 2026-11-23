@@ -110,6 +110,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         private final java.util.concurrent.atomic.AtomicBoolean started =
                 new java.util.concurrent.atomic.AtomicBoolean();
         boolean finished;
+        String surface;
 
         LiveJob(String request) {
             this.request = request;
@@ -142,7 +143,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     }
 
     private void requestLive() {
-        String request = ctx != 0 && composing && refiner != null ? Native.liveRequest(ctx) : null;
+        String request = null;
+        if (ctx != 0 && composing && refiner != null) {
+            // A pending final n becomes ん on Enter. Warm that reading
+            // without replacing the still-incomplete preview.
+            request = Native.liveCommitRequest(ctx);
+            if (request == null) request = Native.liveRequest(ctx);
+        }
         if (request == null) {
             cancelLive();
         } else if (liveJob == null || !liveJob.request.equals(request)) {
@@ -153,6 +160,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private void onRefined(LiveJob job, String surface) {
         if (job != liveJob || ctx == 0 || !composing) return;
         job.finished = true;
+        job.surface = surface;
         if (job == pendingEnter) {
             finishEnter(job, surface);
         } else if (surface != null && job.request.equals(Native.liveRequest(ctx))) {
@@ -166,7 +174,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         String request = Native.liveCommitRequest(ctx);
         if (request == null) return false;
         LiveJob job = jobFor(request);
-        if (job.finished) return false;
+        if (job.finished) {
+            if (job.surface == null) return false;
+            String snapshot = Native.commitRefinedLive(ctx, job.reading, job.left, job.surface);
+            if (snapshot == null) return false;
+            apply(snapshot);
+            return true;
+        }
         pendingEnter = job;
         refiner.removeCallbacks(job);
         refiner.post(job);
@@ -276,6 +290,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 "候補を展開", () -> {
                     candidatesExpanded = !candidatesExpanded;
                     if (candidatesExpanded) {
+                        if (ctx != 0 && composing && pendingEnter == null) {
+                            String snapshot = Native.key(ctx, Native.KEY_EXPAND);
+                            if (snapshot != null) {
+                                apply(snapshot);
+                                return;
+                            }
+                        }
                         renderExpandedCandidates();
                         expandedScroll.scrollTo(0, 0);
                     }
