@@ -187,6 +187,41 @@ fn soundcloud_vocabulary_is_available_from_kana_and_romaji() {
 }
 
 #[test]
+fn converts_ai_avatar_and_pc_vocabulary() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("kuensantenroku", "Qwen3.6"),
+        ("ジーエルエムゴテンサン", "GLM-5.3"),
+        ("ji-ji-yu-efu", "GGUF"),
+        ("けーぶいきゃっしゅ", "KVキャッシュ"),
+        ("エヌディーエムエフ", "NDMF"),
+        ("ma-jia-machua", "Merge Armature"),
+        ("きせかえぎみっく", "着せ替えギミック"),
+        ("えーえむでぃーえきすぽ", "AMD EXPO"),
+        ("enubuiemui-", "NVMe"),
+        ("かんいすいれい", "簡易水冷"),
+    ] {
+        let mut s = plain();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+    }
+
+    let mut s = plain();
+    type_str(&mut s, &c, "ragu");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "ラグ");
+    assert!(s.open_candidates(&c));
+    assert!(
+        s.candidates()
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item == "RAG")
+    );
+}
+
+#[test]
 fn lowercase_technical_terms_convert_to_their_canonical_spelling() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();

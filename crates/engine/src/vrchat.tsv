@@ -1,4 +1,4 @@
-# Reading	Surface	Cost
+# Reading	Surface	Cost	Kana candidate for ASCII input (optional)
 ぶいちゃ	ぶいちゃ	2500
 ぶいちゃ	VRChat	3200
 ぶいちゃっと	VRChat	2800
@@ -35,3 +35,39 @@
 りくいん	リクイン	3600
 でじめ	デジメ	3500
 ふにゃおす	ふにゃオス	2800
+
+# Avatar authoring and tools
+あばたーずすりー	Avatars 3.0	2600	アバターズスリー
+えーぶいすりー	AV3	2600	エーブイスリー
+えぬでぃーえむえふ	NDMF	2600	エヌディーエムエフ
+まーじあーまちゅあ	Merge Armature	2600	マージアーマチュア
+まーじあーまちゃー	Merge Armature	2800	マージアーマチャー
+まーじあにめーたー	Merge Animator	2600	マージアニメーター
+ぶいあーるしーくえすとつーるず	VRCQuestTools	2600	ブイアールシークエストツールズ
+くえすとつーるず	VRCQuestTools	2800	クエストツールズ
+ぶいあーるしーふぇいすとらっきんぐ	VRCFaceTracking	2600	ブイアールシーフェイストラッキング
+ぶいあーるしーらいとぼりゅーむず	VRC Light Volumes	2600	ブイアールシーライトボリュームズ
+おーでぃおりんく	AudioLink	2600	オーディオリンク
+じぇすちゃーまねーじゃー	Gesture Manager	2600	ジェスチャーマネージャー
+しぇいぷきー	シェイプキー	2600
+ぶれんどしぇいぷ	BlendShape	2800	ブレンドシェイプ
+うぇいとぺいんと	ウェイトペイント	2600
+すきんどめっしゅれんだらー	Skinned Mesh Renderer	2600	スキンドメッシュレンダラー
+さんかくけいすう	三角形数	2600
+てくすちゃめもり	テクスチャメモリ	2600
+めっしゅけつごう	メッシュ結合	2600
+むだぼーん	無駄ボーン	3300
+ひょうじょうかいへん	表情改変	2600
+きせかえぎみっく	着せ替えギミック	2600
+かいへんそたい	改変素体	2600
+くえすとたいおう	Quest対応	3400
+
+# Avatar dynamics and animation
+あばたーだいなみくす	Avatar Dynamics	2600	アバターダイナミクス
+ぱらめーたーどらいばー	Parameter Driver	2600	パラメータードライバー
+らいとでふぉると	Write Defaults	3100	ライトデフォルト
+らいとでふぉるつ	Write Defaults	2600	ライトデフォルツ
+こんたくとせんだー	Contact Sender	2600	コンタクトセンダー
+こんたくとれしーばー	Contact Receiver	2600	コンタクトレシーバー
+えくすぷれっしょんめにゅー	Expressions Menu	2600	エクスプレッションメニュー
+えくすぷれっしょんぱらめーたー	Expression Parameters	2600	エクスプレッションパラメーター
