@@ -58,10 +58,13 @@ SudachiDict lexicons on first use. To build just the dictionary, run
 
 ### CI and releases
 
-GitHub Actions builds and verifies the Windows installer and runs the
-workspace tests on pushes and pull requests. Each successful run provides
-the installer as the `SweetIME-Windows` artifact. Pushing a version tag
-such as `v0.1.0` publishes the verified installer to GitHub Releases.
+GitHub Actions runs the workspace tests and Windows TSF harness, checks
+that the Android APK starts with its bundled dictionary in an emulator,
+and builds and tests the fcitx5 package on x86-64 and ARM64 Linux.
+The Windows installer and Android APK are available as the
+`SweetIME-Windows` and `SweetIME-Android` artifacts. Pushing a version tag
+such as `v0.1.0` publishes both packages after all checks pass.
+Runs can also be started manually from the Actions tab.
 
 ## Install
 

@@ -1,4 +1,4 @@
-name: Windows build and release
+name: Build, test and release
 
 on:
   push:
@@ -14,8 +14,6 @@ env:
   RUSTUP_TOOLCHAIN: stable
   MOZC_REF: 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
 
-# The installer, the tests and the APK build in parallel, each with its
-# own Rust build cache.
 jobs:
   windows:
     name: Build the installer
@@ -42,6 +40,11 @@ jobs:
 
       - name: Build and verify the installer
         run: ./scripts/build.ps1
+
+      - name: Run the Windows TSF harness
+        run: |
+          $env:SWEET_IME_DICT = (Resolve-Path dist/system.dict).Path
+          cargo run --locked --release -p sweet-tsf --example harness
 
       - name: Store the installer
         uses: actions/upload-artifact@v7
@@ -127,10 +130,65 @@ jobs:
           path: out/SweetIME-Android.apk
           if-no-files-found: error
 
+  android-smoke:
+    name: Test the APK on Android
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: SweetIME-Android
+          path: out
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-android-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install and start Sweet IME
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          script: bash android/tests/smoke.sh out/SweetIME-Android.apk
+
+  linux:
+    name: Test fcitx5 (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9 # v32.0.0
+
+      - name: Build the Linux package
+        run: nix build -L
+
+      - name: Run the fcitx5 D-Bus harness
+        run: nix develop --command sh crates/fcitx5/tests/run-dbus-harness.sh result
+
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, test, android]
+    needs: [windows, test, android-smoke, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write

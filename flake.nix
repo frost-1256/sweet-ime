@@ -29,6 +29,11 @@
             pkgs.rust-analyzer
             pkgs.clippy
             pkgs.rustfmt
+            pkgs.dbus
+            (pkgs.python3.withPackages (p: [
+              p.dbus-python
+              p.pygobject3
+            ]))
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (import ./nix/gui-libs.nix pkgs);
         };
