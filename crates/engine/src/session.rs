@@ -169,7 +169,12 @@ impl Composing {
         // is Japanese followed by a word being typed, not one word.
         let tail = reading.chars().rev().take_while(|c| !c.is_ascii_alphabetic()).count();
         let lead = reading.chars().take_while(|c| !c.is_ascii_alphabetic()).count();
-        (!corrected && tail <= 2 && lead <= 2 && self.raw_spells(reading)).then(|| self.raw.clone())
+        (!corrected
+            && tail <= 2
+            && lead <= 2
+            && self.raw_spells(reading)
+            && !english::has_bundled_part(reading))
+        .then(|| self.raw.clone())
     }
 
     fn typo_input(&self, reading: &str) -> Option<&str> {

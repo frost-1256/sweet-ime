@@ -140,7 +140,24 @@ impl Converter {
                         origin: None,
                     },
                 );
-                pos = e;
+                // Keep the literal run as a fallback, but also allow a
+                // recognized spelling to connect to punctuation inside it
+                // (the c and 、 of "anthropic," share a non-kana run).
+                pos = extras
+                    .iter()
+                    .filter(|x| {
+                        x.origin == Origin::Spelling
+                            && pos < x.end
+                            && x.end < e
+                            && !crosses(x.start, x.end)
+                            && text[x.end..].starts_with([
+                                '、', '。', '！', '？', '「', '」', '・', '…', '～', ',', '.', '!',
+                                '?', ':', ';', '(', ')',
+                            ])
+                    })
+                    .map(|x| x.end)
+                    .min()
+                    .unwrap_or(e);
                 continue;
             }
             self.dict.common_prefix(rest, |l, e| {

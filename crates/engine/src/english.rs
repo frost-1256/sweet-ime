@@ -158,6 +158,18 @@ pub fn romaji_readings() -> &'static [(String, &'static str)] {
     READINGS.get_or_init(|| word_keys::bundled_readings(spellings()))
 }
 
+/// A registered spelling adjacent to kana should be converted as part of
+/// the sentence, even if the entire sequence could be an unlisted word.
+pub(crate) fn has_bundled_part(text: &str) -> bool {
+    let kana = |ch: char| ('ぁ'..='ゖ').contains(&ch);
+    let adjoins_kana =
+        |start: usize, end: usize| text[..start].ends_with(kana) || text[end..].starts_with(kana);
+    romaji_readings().iter().any(|(reading, _)| {
+        text.match_indices(reading.as_str())
+            .any(|(start, found)| adjoins_kana(start, start + found.len()))
+    }) || marked_spelling_matches(text).any(|(start, end, _)| adjoins_kana(start, end))
+}
+
 fn marked_spellings() -> &'static [(String, &'static str)] {
     static READINGS: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
     READINGS.get_or_init(|| {

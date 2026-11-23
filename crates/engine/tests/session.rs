@@ -1075,6 +1075,28 @@ fn english_words_typed_by_spelling_show_as_words() {
 }
 
 #[test]
+fn english_words_stay_intact_before_punctuation() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("anthropic,", "Anthropic、"),
+        ("anthropic.", "Anthropic。"),
+        ("korehaanthropic,", "これはAnthropic、"),
+        ("anthropicdesu", "Anthropicです"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert_eq!(s.preedit().text, expected, "{typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
+
+        let mut s = plain();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+    }
+}
+
+#[test]
 fn listed_english_words_convert_inside_sentences() {
     let Some(c) = converter() else { return };
     let convert = |c: &Converter, typed: &str, on: bool| {
