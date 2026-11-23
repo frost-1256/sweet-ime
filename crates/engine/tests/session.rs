@@ -107,6 +107,44 @@ fn japanese_readings_convert_to_case_sensitive_technical_terms() {
 }
 
 #[test]
+fn japanese_readings_convert_to_game_names_and_music_genres() {
+    let Some(c) = converter() else { return };
+    for (romaji, katakana, expected) in [
+        ("purojekutomu-n", "プロジェクトムーン", "ProjectMoon"),
+        (
+            "robotomi-ko-pore-syon",
+            "ロボトミーコーポレーション",
+            "LobotomyCorporation",
+        ),
+        (
+            "raiburari-oburuina",
+            "ライブラリーオブルイナ",
+            "LibraryOfRuina",
+        ),
+        (
+            "raiburarioburuina",
+            "ライブラリオブルイナ",
+            "LibraryOfRuina",
+        ),
+        ("rinbasukanpani-", "リンバスカンパニー", "LimbusCompany"),
+        ("haipa-furippu", "ハイパーフリップ", "hyperflip"),
+        ("dariakoa", "ダリアコア", "dariacore"),
+        ("ji-zasukurabu", "ジーザスクラブ", "jesusclub"),
+        ("ja-ji-kurabu", "ジャージークラブ", "jerseyclub"),
+        ("ja-jikurabu", "ジャージクラブ", "jerseyclub"),
+    ] {
+        for typed in [romaji, katakana] {
+            let mut s = plain();
+            type_str(&mut s, &c, typed);
+            assert!(s.handle(&c, Key::Space));
+            assert_eq!(s.preedit().text, expected, "{typed}");
+            assert!(s.handle(&c, Key::Enter));
+            assert_eq!(s.take_commit(), expected);
+        }
+    }
+}
+
+#[test]
 fn lowercase_technical_terms_convert_to_their_canonical_spelling() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
