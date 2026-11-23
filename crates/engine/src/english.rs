@@ -100,18 +100,48 @@ fn in_word_list(word: &str) -> bool {
     false
 }
 
-/// Whether the keys `raw` type `spelling`: the same letters and digits in
-/// any case, ignoring spaces, dots and hyphens ("vscode" types "VS Code").
+/// Whether `raw` types `spelling`, including its punctuation when present.
+/// Spaces, dots, hyphens and underscores may be left out ("vscode" types
+/// "VS Code"), while symbols like the # in C# identify the entry.
 pub fn spells(spelling: &str, raw: &str) -> bool {
-    let mut s = spelling.chars().filter(|c| !matches!(c, ' ' | '.' | '-'));
-    let mut r = raw.chars();
-    loop {
-        match (s.next(), r.next()) {
-            (None, None) => return true,
-            (Some(a), Some(b)) if a.is_ascii_alphanumeric() && a.eq_ignore_ascii_case(&b) => {}
-            _ => return false,
+    matches_spelling(spelling, raw, false)
+}
+
+fn typed_spelling_char(ch: char) -> char {
+    match crate::width::half_ascii_char(ch) {
+        '。' | '｡' => '.',
+        'ー' | '−' => '-',
+        ch => ch,
+    }
+}
+
+fn matches_spelling(spelling: &str, raw: &str, prefix: bool) -> bool {
+    if !spelling.is_ascii() || !spelling.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+    let mut keys = raw.chars().map(typed_spelling_char).peekable();
+    for ch in spelling.chars() {
+        if prefix && keys.peek().is_none() {
+            return true;
+        }
+        if keys.next_if(|key| key.eq_ignore_ascii_case(&ch)).is_none()
+            && !matches!(ch, ' ' | '.' | '-' | '_')
+        {
+            return false;
         }
     }
+    keys.next().is_none()
+}
+
+/// A dedicated symbol key can stay in the composition if it is at a
+/// punctuation position in a bundled spelling, even before it is complete.
+pub(crate) fn accepts_spelling_symbol(raw: &str, symbol: char) -> bool {
+    if raw.is_empty() || !typed_spelling_char(symbol).is_ascii_punctuation() {
+        return false;
+    }
+    let mut keys = raw.to_owned();
+    keys.push(symbol);
+    spellings().any(|(spelling, _)| matches_spelling(spelling, &keys, true))
 }
 
 /// (reading, spelling) for each bundled spelling whose keys are not romaji:
@@ -447,10 +477,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn spelling_ignores_case_and_separators() {
+    fn spellings_accept_optional_separators_and_normalize_width() {
         assert!(spells("GitHub", "github"));
         assert!(spells("VS Code", "vscode"));
         assert!(spells("Node.js", "nodejs"));
+        assert!(spells("M.2", "ｍ。２"));
+        assert!(spells("GLM-5.3", "glm5。3"));
+        assert!(spells("Q4_K_M", "q4km"));
+        assert!(spells("C#", "c＃"));
+        assert!(!spells("M.2", "m-2"));
+        assert!(!spells("GGUF", "gg.uf"));
         assert!(!spells("GitHub", "githu"));
         assert!(!spells("C#", "c"));
     }

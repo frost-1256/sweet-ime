@@ -112,13 +112,19 @@ impl Session {
                 conv.note_typed_word(&reading, &word);
             }
         }
-        let english = if live && typo::has_unresolved_romaji(&kana) {
-            let bundled = c.bundled_candidates(&kana).map(|b| b[0].clone());
+        let unresolved_kana = typo::has_unresolved_romaji(&kana);
+        let english = if live {
+            let bundled = (unresolved_kana || c.raw.bytes().any(|b| !b.is_ascii_alphabetic()))
+                .then(|| c.bundled_candidates(&kana))
+                .flatten()
+                .and_then(|candidates| candidates.into_iter().next());
             let typo_possible =
                 c.typo_input(&settled).is_some() && !c.composer.pending().is_empty();
             bundled.or_else(|| {
+                if !unresolved_kana || !unresolved || typo_possible {
+                    return None;
+                }
                 c.english(&kana, correction.is_some())
-                    .filter(|_| unresolved && !typo_possible)
                     .map(|word| conv.loanword_for(&word).unwrap_or(word))
             })
         } else {

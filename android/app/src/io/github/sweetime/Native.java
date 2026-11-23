@@ -27,7 +27,7 @@ final class Native {
     /** Handles a key; null when the app should get it. Returns a snapshot. */
     static native String key(long ctx, int code);
 
-    static native String urlSymbol(long ctx, int code);
+    static native String symbol(long ctx, int code);
 
     static native String select(long ctx, int index);
 

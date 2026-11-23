@@ -46,11 +46,13 @@ pub fn to_full_ascii(s: &str) -> String {
 
 /// Full-width ASCII forms -> ASCII.
 pub fn to_half_ascii(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '\u{3000}' => ' ',
-            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFF01 + 0x21).unwrap(),
-            _ => c,
-        })
-        .collect()
+    s.chars().map(half_ascii_char).collect()
+}
+
+pub(crate) fn half_ascii_char(c: char) -> char {
+    match c {
+        '\u{3000}' => ' ',
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFF01 + 0x21).unwrap(),
+        _ => c,
+    }
 }

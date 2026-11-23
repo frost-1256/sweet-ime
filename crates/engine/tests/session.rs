@@ -222,6 +222,66 @@ fn converts_ai_avatar_and_pc_vocabulary() {
 }
 
 #[test]
+fn bundled_spellings_convert_live_from_letters_digits_and_symbols() {
+    let Some(c) = converter() else { return };
+    for (typed, expected) in [
+        ("m。2", "M.2"),
+        ("m.2", "M.2"),
+        ("m2", "M.2"),
+        ("ｍ．２", "M.2"),
+        ("glm-5.3", "GLM-5.3"),
+        ("qwen3。6", "Qwen3.6"),
+        ("gemma4", "Gemma 4"),
+        ("q4_k_m", "Q4_K_M"),
+        ("node。js", "Node.js"),
+        ("miniーitx", "Mini-ITX"),
+        ("c++", "C++"),
+        ("ci/cd", "CI/CD"),
+        ("ndmf", "NDMF"),
+        ("vrcquesttools", "VRCQuestTools"),
+        ("mergearmature", "Merge Armature"),
+        ("gguf", "GGUF"),
+        ("vllm", "vLLM"),
+        ("comfyui", "ComfyUI"),
+        ("nvme", "NVMe"),
+        ("amdexpo", "AMD EXPO"),
+        ("projectmoon", "ProjectMoon"),
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert_eq!(s.preedit().text, expected, "{typed}");
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected, "{typed}");
+
+        let mut s = plain();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected, "{typed}");
+    }
+}
+
+#[test]
+fn dedicated_symbol_keys_stay_in_a_bundled_spelling() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "m");
+    assert!(s.handle_symbol(&c, '。'));
+    assert_eq!(s.take_commit(), "");
+    type_str(&mut s, &c, "2");
+    assert_eq!(s.preedit().text, "M.2");
+    assert!(s.handle(&c, Key::Backspace));
+    assert_ne!(s.preedit().text, "M.2");
+    type_str(&mut s, &c, "2");
+    assert_eq!(s.preedit().text, "M.2");
+
+    for typed in ["arigatou", "m2", "gg"] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert!(!s.handle_symbol(&c, '。'), "{typed}");
+    }
+}
+
+#[test]
 fn lowercase_technical_terms_convert_to_their_canonical_spelling() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
@@ -664,9 +724,9 @@ fn url_keys_stay_ascii_in_japanese_mode() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
     type_str(&mut s, &c, "https");
-    assert!(s.handle_url_symbol(&c, ':'));
-    assert!(s.handle_url_symbol(&c, '/'));
-    assert!(s.handle_url_symbol(&c, '/'));
+    assert!(s.handle_symbol(&c, ':'));
+    assert!(s.handle_symbol(&c, '/'));
+    assert!(s.handle_symbol(&c, '/'));
     type_str(&mut s, &c, "example.com/");
     s.handle(&c, Key::ShiftedLetter('A'));
     type_str(&mut s, &c, "Pi?x=5.3&y=foo-bar#Part");
@@ -691,7 +751,7 @@ fn bare_domains_keep_their_typed_spelling() {
         assert_eq!(s.take_commit(), url);
     }
     type_str(&mut s, &c, "arigatou.");
-    assert!(!s.handle_url_symbol(&c, '/'));
+    assert!(!s.handle_symbol(&c, '/'));
     s.handle(&c, Key::Enter);
     assert_eq!(s.take_commit(), "ありがとう。");
 }

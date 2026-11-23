@@ -213,10 +213,10 @@ impl Context {
         Some(self.snapshot())
     }
 
-    pub fn url_symbol(&mut self, ch: char) -> Option<String> {
+    pub fn symbol(&mut self, ch: char) -> Option<String> {
         let conv = converter()?;
         self.session
-            .handle_url_symbol(&conv, ch)
+            .handle_symbol(&conv, ch)
             .then(|| self.snapshot())
     }
 

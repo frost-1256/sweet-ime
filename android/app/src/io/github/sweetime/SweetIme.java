@@ -530,7 +530,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     public void onSymbol(String text) {
         finishEnter(pendingEnter, null);
         if (!english && composing && ctx != 0 && text.length() == 1) {
-            String snapshot = Native.urlSymbol(ctx, text.charAt(0));
+            String snapshot = Native.symbol(ctx, text.charAt(0));
             if (snapshot != null) {
                 apply(snapshot);
                 return;
