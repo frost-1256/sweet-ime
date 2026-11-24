@@ -1,15 +1,24 @@
-//! Recognizes URL input early enough to preserve the literal keys.
+//! Recognizes URLs and email addresses early enough to preserve literal keys.
 
 pub(super) fn scheme(text: &str) -> bool {
     text.eq_ignore_ascii_case("http") || text.eq_ignore_ascii_case("https")
 }
 
 pub(super) fn recognizes(text: &str) -> bool {
-    if text
-        .split_once(':')
-        .is_some_and(|(prefix, _)| scheme(prefix))
-    {
+    if text.split_once(':').is_some_and(|(host, port)| {
+        scheme(host)
+            || (host.eq_ignore_ascii_case("localhost")
+                && port.starts_with(|c: char| c.is_ascii_digit()))
+    }) {
         return true;
+    }
+    if let Some((local, domain)) = text.split_once('@') {
+        return local.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_+-'%".contains(&b))
+        }) && bare_domain(domain);
     }
     let host = text.split(['/', ':', '?', '#']).next().unwrap_or("");
     if host
@@ -19,7 +28,11 @@ pub(super) fn recognizes(text: &str) -> bool {
     {
         return true;
     }
-    let Some((name, suffix)) = host.rsplit_once('.') else {
+    bare_domain(host)
+}
+
+fn bare_domain(text: &str) -> bool {
+    let Some((name, suffix)) = text.rsplit_once('.') else {
         return false;
     };
     // A bare domain needs stronger evidence than a single period, which

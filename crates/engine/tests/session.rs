@@ -871,6 +871,32 @@ fn bare_domains_keep_their_typed_spelling() {
 }
 
 #[test]
+fn email_addresses_and_localhost_ports_stay_ascii_in_japanese_mode() {
+    let Some(c) = converter() else { return };
+    for input in [
+        "dev@example.com",
+        "test.user+dev@example.co.jp",
+        "localhost:3000/test?lang=ja",
+    ] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, input);
+        assert_eq!(s.preedit().text, input);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), input);
+    }
+}
+
+#[test]
+fn a_comma_can_precede_japanese_after_a_shift_started_word() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    assert!(s.handle(&c, Key::ShiftedLetter('A')));
+    type_str(&mut s, &c, "nthropic,kyouhadousuru");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "Anthropic、今日はどうする");
+}
+
+#[test]
 fn typo_early_in_a_long_reading_is_fixed() {
     let Some(c) = converter() else { return };
     let mut s = plain();
