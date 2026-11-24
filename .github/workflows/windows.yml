@@ -250,7 +250,7 @@ jobs:
           if assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); then
             if [[ -n "$notes" ]]; then
               body=$(gh release view "$RELEASE_TAG" --json body --jq '.body // ""')
-              if [[ "$body" != *"$notes"* ]]; then
+              if [[ "$body" != "$notes" && "$body" != "$notes"$'\n'* ]]; then
                 body="$notes${body:+$'\n\n'$body}"
                 gh release edit "$RELEASE_TAG" --notes "$body"
               fi
