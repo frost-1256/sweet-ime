@@ -256,6 +256,10 @@ impl App {
         card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
             changed |= toggle(ui, &mut self.opts.suggestions).changed();
         });
+        #[cfg(windows)]
+        card(ui, "入力した文字を表示", "「こんにちは」の近くに、打ったローマ字（konnnitiha）を表示します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.show_typed_input).changed();
+        });
         card(ui, "英単語の判定", "「korehabestdesu」→「これはベストです」、「softwarewo」→「softwareを」のように、ローマ字にならない英単語を文の途中でも変換します。F10 で英字に直した単語も覚えます。", |ui| {
             changed |= toggle(ui, &mut self.opts.english_words).changed();
         });

@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_WRAP,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_WRAP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory,
@@ -25,6 +25,7 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS,
+    DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
@@ -66,6 +67,9 @@ const ROW_H: f32 = 32.0;
 const INDEX_W: f32 = 28.0;
 const TEXT_PAD_R: f32 = 16.0;
 const FOOTER_H: f32 = 24.0;
+const INPUT_H: f32 = 22.0;
+const INPUT_PAD: f32 = 12.0;
+const INPUT_MAX_W: f32 = 360.0;
 const FONT_SIZE: f32 = 16.0;
 const MIN_W: f32 = 140.0;
 const FADE_MS: f32 = 90.0;
@@ -156,6 +160,7 @@ struct State {
     rainbow_border: Option<RainbowBorder>,
     items: Vec<String>,
     rows: Vec<Option<(IDWriteTextLayout, f32)>>,
+    input: Option<(IDWriteTextLayout, DWRITE_TEXT_METRICS)>,
     selected: usize,
     page_start: usize,
     page_len: usize,
@@ -209,7 +214,14 @@ impl State {
     }
 
     fn window_width(&self) -> f32 {
-        self.width + 2.0 * (self.padding() - PAD)
+        let input_width = self.input.as_ref().map_or(0.0, |(_, m)| {
+            (m.widthIncludingTrailingWhitespace.min(INPUT_MAX_W) + 2.0 * (PAD + INPUT_PAD)).ceil()
+        });
+        self.width.max(input_width) + 2.0 * (self.padding() - PAD)
+    }
+
+    fn rows_top(&self) -> f32 {
+        self.padding() + if self.input.is_some() { INPUT_H } else { 0.0 }
     }
 
     fn highlight_row(&self) -> f32 {
@@ -314,6 +326,7 @@ impl CandidateWindow {
                 rainbow_border: None,
                 items: Vec::new(),
                 rows: Vec::new(),
+                input: None,
                 selected: 0,
                 page_start: 0,
                 page_len: 0,
@@ -348,8 +361,15 @@ impl CandidateWindow {
         }
     }
 
-    /// Shows `list` next to `anchor` (screen coordinates of the focused text).
-    pub fn show(&self, list: &CandidateList, anchor: RECT, gaming_mode: bool) {
+    /// Shows the candidate list and/or typed input next to the focused text.
+    pub fn show(
+        &self,
+        list: Option<&CandidateList>,
+        input: Option<&str>,
+        anchor: RECT,
+        gaming_mode: bool,
+    ) {
+        let gaming_mode = gaming_mode && list.is_some();
         let hwnd = self.hwnd;
         unsafe {
             let _ = KillTimer(Some(hwnd), RELAYOUT_TIMER_ID);
@@ -358,8 +378,18 @@ impl CandidateWindow {
             st.last_anchor = Some(anchor);
             let dpi = GetDpiForWindow(hwnd);
             st.scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
-            let page_start = list.page_start();
-            let page_end = (page_start + list.page_size).min(list.items.len());
+            let (page_start, items, selected, total, suggest) =
+                list.map_or((0, &[][..], 0, 0, false), |list| {
+                    let start = list.page_start();
+                    let end = (start + list.page_size).min(list.items.len());
+                    (
+                        start,
+                        &list.items[start..end],
+                        list.selected,
+                        list.items.len(),
+                        list.kind == ListKind::Suggestion,
+                    )
+                });
             let was_visible = st.visible;
             if !was_visible || st.gaming_mode != gaming_mode {
                 if gaming_mode {
@@ -370,13 +400,11 @@ impl CandidateWindow {
                 }
                 st.gaming_mode = gaming_mode;
             }
-            let prev_row = if was_visible && st.page_start == page_start {
+            let prev_row = if was_visible && st.page_len > 0 && st.page_start == page_start {
                 st.highlight_row()
             } else {
-                (list.selected - page_start) as f32
+                (selected - page_start) as f32
             };
-            let items = &list.items[page_start..page_end];
-            let suggest = list.kind == ListKind::Suggestion;
             if st.items != items || st.rows.iter().any(Option::is_none) {
                 let prev_width = st.width;
                 st.items = items.to_vec();
@@ -403,10 +431,26 @@ impl CandidateWindow {
                     st.width = st.width.max(prev_width);
                 }
             }
+            st.input = input.and_then(|text| {
+                let layout = st
+                    .dwrite
+                    .CreateTextLayout(&wide(text), &st.small, INPUT_MAX_W, INPUT_H)
+                    .ok()?;
+                layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
+                let ellipsis = st.dwrite.CreateEllipsisTrimmingSign(&st.small).ok()?;
+                let trim = DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    ..Default::default()
+                };
+                layout.SetTrimming(&trim, &ellipsis).ok()?;
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                layout.GetMetrics(&mut metrics).ok()?;
+                Some((layout, metrics))
+            });
             st.page_start = page_start;
-            st.page_len = page_end - page_start;
-            st.selected = list.selected;
-            st.total = list.items.len();
+            st.page_len = items.len();
+            st.selected = selected;
+            st.total = total;
             st.suggest = suggest;
             st.anim_from = prev_row;
             st.anim_start = Instant::now();
@@ -428,12 +472,19 @@ impl CandidateWindow {
                 );
             }
             let padding = st.padding();
-            let height = padding * 2.0 + ROW_H * st.page_len as f32 + FOOTER_H;
+            let height = st.rows_top()
+                + padding
+                + if st.page_len > 0 {
+                    ROW_H * st.page_len as f32 + FOOTER_H
+                } else {
+                    0.0
+                };
+            let text_offset = if st.page_len > 0 { INDEX_W } else { INPUT_PAD };
             st.visible = true;
             (
                 (st.window_width() * st.scale) as i32,
                 (height * st.scale) as i32,
-                (padding + INDEX_W) * st.scale,
+                (padding + text_offset) * st.scale,
                 was_visible,
                 fade,
             )
@@ -509,6 +560,10 @@ impl CandidateWindow {
 
     /// Hides after a short delay unless shown again first (while typing).
     pub fn hide_soon(&self) {
+        if with_state(self.hwnd, |st| st.input.is_some()) == Some(true) {
+            self.hide();
+            return;
+        }
         if with_state(self.hwnd, |st| st.visible) == Some(true) {
             unsafe {
                 SetTimer(Some(self.hwnd), HIDE_TIMER_ID, HIDE_DELAY_MS, None);
@@ -520,6 +575,7 @@ impl CandidateWindow {
 fn hide_now(hwnd: HWND) {
     let was_visible = with_state(hwnd, |st| {
         let v = std::mem::replace(&mut st.visible, false);
+        st.input = None;
         if v {
             st.hidden_at = Some(Instant::now());
         }
@@ -670,27 +726,45 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         let accent = rt.CreateSolidColorBrush(&st.pal.accent, None)?;
         let pad = st.padding();
         let width = st.window_width();
+        let rows_top = st.rows_top();
+
+        if let Some((layout, metrics)) = &st.input {
+            let origin = windows_numerics::Vector2 {
+                X: pad + INPUT_PAD,
+                Y: pad + (INPUT_H - metrics.height) / 2.0,
+            };
+            rt.DrawTextLayout(origin, layout, &sub, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
 
         // Selection pill + accent bar (animated).
-        let row = st.highlight_row();
-        if !st.suggest {
-        let top = pad + row * ROW_H;
-        let pill = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F { left: pad, top: top + 2.0, right: width - pad, bottom: top + ROW_H - 2.0 },
-            radiusX: 4.0,
-            radiusY: 4.0,
-        };
-        rt.FillRoundedRectangle(&pill, &hover);
-        let bar = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F { left: pad, top: top + 9.0, right: pad + 3.0, bottom: top + ROW_H - 9.0 },
-            radiusX: 1.5,
-            radiusY: 1.5,
-        };
-        rt.FillRoundedRectangle(&bar, &accent);
+        if st.page_len > 0 && !st.suggest {
+            let top = rows_top + st.highlight_row() * ROW_H;
+            let pill = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: pad,
+                    top: top + 2.0,
+                    right: width - pad,
+                    bottom: top + ROW_H - 2.0,
+                },
+                radiusX: 4.0,
+                radiusY: 4.0,
+            };
+            rt.FillRoundedRectangle(&pill, &hover);
+            let bar = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: pad,
+                    top: top + 9.0,
+                    right: pad + 3.0,
+                    bottom: top + ROW_H - 9.0,
+                },
+                radiusX: 1.5,
+                radiusY: 1.5,
+            };
+            rt.FillRoundedRectangle(&bar, &accent);
         }
 
         for (i, row) in st.rows.iter().enumerate() {
-            let y = pad + i as f32 * ROW_H;
+            let y = rows_top + i as f32 * ROW_H;
             // Digits are typed as text while composing, so suggestions
             // are not numbered.
             if !st.suggest
@@ -725,10 +799,12 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         } else {
             format!("{} / {}", st.selected + 1, st.total)
         });
-        if let Ok(l) = st.dwrite.CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H) {
+        if st.page_len > 0
+            && let Ok(l) = st.dwrite.CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H)
+        {
             let mut m = DWRITE_TEXT_METRICS::default();
             let _ = l.GetMetrics(&mut m);
-            let y = pad + st.page_len as f32 * ROW_H;
+            let y = rows_top + st.page_len as f32 * ROW_H;
             let origin = windows_numerics::Vector2 {
                 X: width - pad - 10.0 - m.width,
                 Y: y + (FOOTER_H - m.height) / 2.0 - 2.0,
@@ -785,7 +861,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 // Look up the row and handler, then release the state borrow
                 // before calling out (the handler updates this window).
                 let hit = with_state(hwnd, |st| {
-                    let row = ((y / st.scale - st.padding()) / ROW_H).floor();
+                    let row = ((y / st.scale - st.rows_top()) / ROW_H).floor();
                     if st.visible && row >= 0.0 && (row as usize) < st.page_len {
                         st.on_click.clone().map(|f| (f, st.page_start + row as usize))
                     } else {
