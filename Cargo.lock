@@ -2337,10 +2337,12 @@ name = "sweet-settings"
 version = "0.3.1"
 dependencies = [
  "embed-resource",
+ "raw-window-handle",
  "serde_json",
  "sha2",
  "sweet-engine",
  "sweet-ui",
+ "windows",
 ]
 
 [[package]]
