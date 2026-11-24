@@ -13,6 +13,8 @@ mod keys_page;
 mod learning_page;
 mod neural_page;
 mod reports_page;
+#[cfg(windows)]
+mod single_instance;
 mod theme_page;
 mod update;
 mod update_ui;
@@ -36,6 +38,14 @@ fn main() -> eframe::Result<()> {
             .expect("cannot write the fcitx5 themes");
         return Ok(());
     }
+    let page = args
+        .iter()
+        .position(|a| a == "--page")
+        .map(|i| Page::from_arg(args.get(i + 1).map(String::as_str)));
+    #[cfg(windows)]
+    let Some(_instance) = single_instance::Instance::start(page).map_err(eframe::Error::AppCreation)? else {
+        return Ok(());
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sweet IME の設定")
@@ -46,7 +56,11 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([560.0, 400.0]),
         ..Default::default()
     };
-    eframe::run_native("Sweet IME の設定", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native(
+        "Sweet IME の設定",
+        options,
+        Box::new(move |cc| Ok(Box::new(App::new(cc, page.unwrap_or(Page::Input))?))),
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +83,19 @@ impl Page {
     #[cfg(not(windows))]
     const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
 
+    fn from_arg(page: Option<&str>) -> Self {
+        match page {
+            Some("neural") => Self::Neural,
+            Some("keys") => Self::Keys,
+            Some("apps") => Self::Apps,
+            Some("theme") => Self::Theme,
+            Some("learning") => Self::Learning,
+            Some("dictionary") => Self::Dictionary,
+            Some("about") => Self::About,
+            _ => Self::Input,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Page::Input => "入力",
@@ -85,6 +112,8 @@ impl Page {
 
 struct App {
     page: Page,
+    #[cfg(windows)]
+    activation: single_instance::Activation,
     opts: Options,
     status: Option<(String, bool)>,
     history: Option<UserHistory>,
@@ -101,19 +130,12 @@ struct App {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        page: Page,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         sweet_ui::setup(&cc.egui_ctx);
         let history = paths::history_file().map(UserHistory::with_file);
-        let page = match std::env::args().skip_while(|a| a != "--page").nth(1).as_deref() {
-            Some("neural") => Page::Neural,
-            Some("keys") => Page::Keys,
-            Some("apps") => Page::Apps,
-            Some("theme") => Page::Theme,
-            Some("learning") => Page::Learning,
-            Some("dictionary") => Page::Dictionary,
-            Some("about") => Page::About,
-            _ => Page::Input,
-        };
         let opts = paths::load_options();
         let mut updater = update::Updater::new();
         if opts.update_check {
@@ -121,6 +143,8 @@ impl App {
         }
         let mut app = Self {
             page,
+            #[cfg(windows)]
+            activation: single_instance::Activation::register(cc)?,
             opts,
             status: None,
             history,
@@ -136,12 +160,19 @@ impl App {
             updater,
         };
         app.reload_history();
-        app
+        Ok(app)
     }
 
     fn reload_history(&mut self) {
         if let Some(h) = &mut self.history {
             self.learned = h.all();
+        }
+    }
+
+    fn select_page(&mut self, page: Page) {
+        self.page = page;
+        if page == Page::Learning {
+            self.reload_history();
         }
     }
 
@@ -164,6 +195,10 @@ fn open_folder(dir: &std::path::Path) {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        if let Some(page) = self.activation.take_page() {
+            self.select_page(page);
+        }
         self.updater.poll(ui.ctx());
         if matches!(self.updater.state, update::State::Launched) {
             // Let the installer replace this program.
@@ -182,10 +217,7 @@ impl eframe::App for App {
                 let text = RichText::new(p.label()).size(15.5);
                 let b = egui::Button::selectable(selected, text).min_size(Vec2::new(ui.available_width(), 34.0));
                 if ui.add(b).clicked() {
-                    self.page = p;
-                    if p == Page::Learning {
-                        self.reload_history();
-                    }
+                    self.select_page(p);
                 }
             }
         });

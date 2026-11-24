@@ -712,6 +712,16 @@ impl Session {
         let particle = |kana: &str| PARTICLES.iter().chain(ENDINGS).any(|p| kana.starts_with(p));
         let romaji_after = |end: usize| {
             let rest = &text[end..];
+            // A comma can introduce Japanese after a known English word.
+            // Exclude it when deciding whether there is enough kana below.
+            let rest = if let Some(after_comma) = rest.strip_prefix(',') {
+                if !english::is_known_word(&text[..end]) {
+                    return None;
+                }
+                after_comma
+            } else {
+                rest
+            };
             if !rest.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') {
                 return None;
             }
@@ -800,7 +810,8 @@ impl Session {
                 self.comp.raw.push(c);
                 if self.comp.before.is_empty()
                     && self.comp.after.is_empty()
-                    && matches!(c, ':' | '.' | 'a'..='z')
+                    && (matches!(c, ':' | '.' | 'a'..='z')
+                        || (c.is_ascii_digit() && self.comp.raw.contains(':')))
                     && url::recognizes(&self.comp.raw)
                 {
                     self.comp.before = std::mem::take(&mut self.comp.raw);
