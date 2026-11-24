@@ -12,12 +12,15 @@ use sweet_engine::theme::Rgb;
 use sweet_engine::{CandidateList, ListKind};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_GRADIENT_STOP,
+    D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_WRAP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory,
+    ID2D1HwndRenderTarget, ID2D1LinearGradientBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -51,11 +54,14 @@ const HIDE_TIMER_ID: usize = 2;
 const HIDE_DELAY_MS: u32 = 160;
 /// Another look for the composition's position (see [`relayout_after`]).
 const RELAYOUT_TIMER_ID: usize = 3;
+const RAINBOW_TIMER_ID: usize = 4;
+const RAINBOW_FRAME_MS: u32 = 33;
 /// Showing again this soon after hiding skips the fade-in.
 const REFADE_AFTER_MS: u128 = 600;
 
 // Layout in DIPs.
 const PAD: f32 = 4.0;
+const GAMING_PAD: f32 = 6.0;
 const ROW_H: f32 = 32.0;
 const INDEX_W: f32 = 28.0;
 const TEXT_PAD_R: f32 = 16.0;
@@ -146,6 +152,8 @@ struct State {
     format: IDWriteTextFormat,
     small: IDWriteTextFormat,
     pal: Palette,
+    gaming_mode: bool,
+    rainbow_border: Option<RainbowBorder>,
     items: Vec<String>,
     rows: Vec<Option<(IDWriteTextLayout, f32)>>,
     selected: usize,
@@ -196,6 +204,14 @@ pub fn post_live(hwnd: isize, reading: String, surface: String) {
 }
 
 impl State {
+    fn padding(&self) -> f32 {
+        PAD + if self.gaming_mode { GAMING_PAD } else { 0.0 }
+    }
+
+    fn window_width(&self) -> f32 {
+        self.width + 2.0 * (self.padding() - PAD)
+    }
+
     fn highlight_row(&self) -> f32 {
         let target = (self.selected - self.page_start) as f32;
         let t = (self.anim_start.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS).min(1.0);
@@ -294,6 +310,8 @@ impl CandidateWindow {
                 format,
                 small,
                 pal: palette(),
+                gaming_mode: false,
+                rainbow_border: None,
                 items: Vec::new(),
                 rows: Vec::new(),
                 selected: 0,
@@ -331,7 +349,7 @@ impl CandidateWindow {
     }
 
     /// Shows `list` next to `anchor` (screen coordinates of the focused text).
-    pub fn show(&self, list: &CandidateList, anchor: RECT) {
+    pub fn show(&self, list: &CandidateList, anchor: RECT, gaming_mode: bool) {
         let hwnd = self.hwnd;
         unsafe {
             let _ = KillTimer(Some(hwnd), RELAYOUT_TIMER_ID);
@@ -343,6 +361,15 @@ impl CandidateWindow {
             let page_start = list.page_start();
             let page_end = (page_start + list.page_size).min(list.items.len());
             let was_visible = st.visible;
+            if !was_visible || st.gaming_mode != gaming_mode {
+                if gaming_mode {
+                    SetTimer(Some(hwnd), RAINBOW_TIMER_ID, RAINBOW_FRAME_MS, None);
+                } else {
+                    let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
+                    st.rainbow_border = None;
+                }
+                st.gaming_mode = gaming_mode;
+            }
             let prev_row = if was_visible && st.page_start == page_start {
                 st.highlight_row()
             } else {
@@ -400,9 +427,16 @@ impl CandidateWindow {
                     4,
                 );
             }
-            let height = PAD * 2.0 + ROW_H * st.page_len as f32 + FOOTER_H;
+            let padding = st.padding();
+            let height = padding * 2.0 + ROW_H * st.page_len as f32 + FOOTER_H;
             st.visible = true;
-            ((st.width * st.scale) as i32, (height * st.scale) as i32, (PAD + INDEX_W) * st.scale, was_visible, fade)
+            (
+                (st.window_width() * st.scale) as i32,
+                (height * st.scale) as i32,
+                (padding + INDEX_W) * st.scale,
+                was_visible,
+                fade,
+            )
         });
         let Some((w, h, text_x, was_visible, fade)) = geom else { return };
         unsafe {
@@ -495,6 +529,7 @@ fn hide_now(hwnd: HWND) {
         let _ = KillTimer(Some(hwnd), HIDE_TIMER_ID);
         if was_visible == Some(true) {
             let _ = KillTimer(Some(hwnd), TIMER_ID);
+            let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
     }
@@ -506,6 +541,104 @@ impl Drop for CandidateWindow {
         unsafe {
             let _ = DestroyWindow(self.hwnd);
         }
+    }
+}
+
+struct RainbowBorder {
+    colors: ID2D1LinearGradientBrush,
+    glint: ID2D1LinearGradientBrush,
+}
+
+fn make_rainbow_border(rt: &ID2D1HwndRenderTarget) -> Result<RainbowBorder> {
+    // Match the first and last color so the repeating gradient has no seam.
+    let colors = [
+        (255, 20, 103),
+        (255, 154, 0),
+        (209, 255, 0),
+        (0, 255, 150),
+        (0, 190, 255),
+        (156, 29, 255),
+        (255, 20, 103),
+    ];
+    let stops: [_; 7] = std::array::from_fn(|i| {
+        let (r, g, b) = colors[i];
+        D2D1_GRADIENT_STOP {
+            position: i as f32 / 6.0,
+            color: rgb(r, g, b, 1.0),
+        }
+    });
+    let glint = [
+        (0.0, 0.0),
+        (0.38, 0.0),
+        (0.46, 0.3),
+        (0.5, 1.0),
+        (0.58, 0.0),
+        (1.0, 0.0),
+    ]
+    .map(|(position, alpha)| D2D1_GRADIENT_STOP {
+        position,
+        color: rgb(255, 255, 255, alpha),
+    });
+    let gradient = |stops: &[D2D1_GRADIENT_STOP]| unsafe {
+        let stops =
+            rt.CreateGradientStopCollection(stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_WRAP)?;
+        let properties = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+            endPoint: windows_numerics::Vector2 { X: 1.0, Y: 0.0 },
+            ..Default::default()
+        };
+        rt.CreateLinearGradientBrush(&properties, None, &stops)
+    };
+    Ok(RainbowBorder {
+        colors: gradient(&stops)?,
+        glint: gradient(&glint)?,
+    })
+}
+
+fn draw_rainbow_border(
+    rt: &ID2D1HwndRenderTarget,
+    brushes: &RainbowBorder,
+    width: f32,
+    height: f32,
+    elapsed: f32,
+) {
+    use windows_numerics::Vector2;
+
+    let inset = 2.5;
+    let border = D2D1_ROUNDED_RECT {
+        rect: D2D_RECT_F {
+            left: inset,
+            top: inset,
+            right: width - inset,
+            bottom: height - inset,
+        },
+        radiusX: 8.0,
+        radiusY: 8.0,
+    };
+    let slide = |brush: &ID2D1LinearGradientBrush, travel: f32| unsafe {
+        let phase = travel.fract();
+        brush.SetStartPoint(Vector2 {
+            X: width * phase,
+            Y: height * phase,
+        });
+        brush.SetEndPoint(Vector2 {
+            X: width * (1.0 + phase),
+            Y: height * (1.0 + phase),
+        });
+    };
+    slide(&brushes.colors, elapsed / 1.2);
+    slide(&brushes.glint, -elapsed / 0.9);
+    unsafe {
+        let edge_width = 2.3;
+        for (thickness, opacity) in [(14.0, 0.14), (9.0, 0.23), (5.0, 0.53), (edge_width, 1.0)] {
+            brushes.colors.SetOpacity(opacity);
+            rt.DrawRoundedRectangle(
+                &border,
+                &brushes.colors,
+                thickness,
+                None::<&ID2D1StrokeStyle>,
+            );
+        }
+        rt.DrawRoundedRectangle(&border, &brushes.glint, edge_width, None::<&ID2D1StrokeStyle>);
     }
 }
 
@@ -523,6 +656,9 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             st.target = Some(st.d2d.CreateHwndRenderTarget(&props, &hprops)?);
         }
         let rt = st.target.clone().unwrap();
+        if st.gaming_mode && st.rainbow_border.is_none() {
+            st.rainbow_border = make_rainbow_border(&rt).ok();
+        }
         rt.Resize(&size)?;
         let dpi = 96.0 * st.scale;
         rt.SetDpi(dpi, dpi);
@@ -532,19 +668,21 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         let sub = rt.CreateSolidColorBrush(&st.pal.sub, None)?;
         let hover = rt.CreateSolidColorBrush(&st.pal.hover, None)?;
         let accent = rt.CreateSolidColorBrush(&st.pal.accent, None)?;
+        let pad = st.padding();
+        let width = st.window_width();
 
         // Selection pill + accent bar (animated).
         let row = st.highlight_row();
         if !st.suggest {
-        let top = PAD + row * ROW_H;
+        let top = pad + row * ROW_H;
         let pill = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F { left: PAD, top: top + 2.0, right: st.width - PAD, bottom: top + ROW_H - 2.0 },
+            rect: D2D_RECT_F { left: pad, top: top + 2.0, right: width - pad, bottom: top + ROW_H - 2.0 },
             radiusX: 4.0,
             radiusY: 4.0,
         };
         rt.FillRoundedRectangle(&pill, &hover);
         let bar = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F { left: PAD, top: top + 9.0, right: PAD + 3.0, bottom: top + ROW_H - 9.0 },
+            rect: D2D_RECT_F { left: pad, top: top + 9.0, right: pad + 3.0, bottom: top + ROW_H - 9.0 },
             radiusX: 1.5,
             radiusY: 1.5,
         };
@@ -552,7 +690,7 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         }
 
         for (i, row) in st.rows.iter().enumerate() {
-            let y = PAD + i as f32 * ROW_H;
+            let y = pad + i as f32 * ROW_H;
             // Digits are typed as text while composing, so suggestions
             // are not numbered.
             if !st.suggest
@@ -565,12 +703,12 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             {
                 let mut m = DWRITE_TEXT_METRICS::default();
                 let _ = l.GetMetrics(&mut m);
-                let origin = windows_numerics::Vector2 { X: PAD + 12.0, Y: y + (ROW_H - m.height) / 2.0 };
+                let origin = windows_numerics::Vector2 { X: pad + 12.0, Y: y + (ROW_H - m.height) / 2.0 };
                 rt.DrawTextLayout(origin, &l, &sub, Default::default());
             }
             if let Some((layout, height)) = row {
                 let origin = windows_numerics::Vector2 {
-                    X: PAD + INDEX_W,
+                    X: pad + INDEX_W,
                     Y: y + (ROW_H - height) / 2.0,
                 };
                 rt.DrawTextLayout(
@@ -590,16 +728,26 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         if let Ok(l) = st.dwrite.CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H) {
             let mut m = DWRITE_TEXT_METRICS::default();
             let _ = l.GetMetrics(&mut m);
-            let y = PAD + st.page_len as f32 * ROW_H;
+            let y = pad + st.page_len as f32 * ROW_H;
             let origin = windows_numerics::Vector2 {
-                X: st.width - PAD - 10.0 - m.width,
+                X: width - pad - 10.0 - m.width,
                 Y: y + (FOOTER_H - m.height) / 2.0 - 2.0,
             };
             rt.DrawTextLayout(origin, &l, &sub, Default::default());
         }
+        if let Some(brushes) = &st.rainbow_border {
+            draw_rainbow_border(
+                &rt,
+                brushes,
+                size.width as f32 / st.scale,
+                size.height as f32 / st.scale,
+                st.shown_at.elapsed().as_secs_f32(),
+            );
+        }
         if let Err(e) = rt.EndDraw(None, None) {
             // Device lost: recreate next time.
             st.target = None;
+            st.rainbow_border = None;
             return Err(e);
         }
         // Fade-in.
@@ -637,7 +785,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 // Look up the row and handler, then release the state borrow
                 // before calling out (the handler updates this window).
                 let hit = with_state(hwnd, |st| {
-                    let row = ((y / st.scale - PAD) / ROW_H).floor();
+                    let row = ((y / st.scale - st.padding()) / ROW_H).floor();
                     if st.visible && row >= 0.0 && (row as usize) < st.page_len {
                         st.on_click.clone().map(|f| (f, st.page_start + row as usize))
                     } else {
@@ -681,6 +829,14 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             }
             WM_TIMER if wparam.0 == HIDE_TIMER_ID => {
                 hide_now(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == RAINBOW_TIMER_ID => {
+                if with_state(hwnd, |st| st.visible && st.gaming_mode && !st.animating())
+                    == Some(true)
+                {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == TIMER_ID => {

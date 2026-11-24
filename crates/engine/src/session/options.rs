@@ -15,6 +15,8 @@ pub struct Options {
     pub mode_indicator: bool,
     /// Colors of the candidate window and the mode badge.
     pub theme: crate::Theme,
+    /// Animate a rainbow border on the Windows candidate window.
+    pub gaming_mode: bool,
     /// Look for a newer release on GitHub (settings app and sign-in).
     pub update_check: bool,
     /// Offer dates and times for readings such as きょう and いま.
@@ -47,6 +49,7 @@ impl Default for Options {
             learning: true,
             mode_indicator: true,
             theme: crate::Theme::Default,
+            gaming_mode: false,
             update_check: true,
             dates: true,
             emoji: true,
@@ -80,6 +83,7 @@ impl Options {
                 "learning" => o.learning = on,
                 "mode_indicator" => o.mode_indicator = on,
                 "theme" => o.theme = crate::Theme::from_id(v).unwrap_or_default(),
+                "gaming_mode" => o.gaming_mode = on,
                 "update_check" => o.update_check = on,
                 "dates" => o.dates = on,
                 "emoji" => o.emoji = on,
@@ -106,6 +110,7 @@ impl Options {
              learning = {}
              mode_indicator = {}
              theme = {}
+             gaming_mode = {}
              update_check = {}
              dates = {}
              emoji = {}
@@ -122,6 +127,7 @@ impl Options {
             b(self.learning),
             b(self.mode_indicator),
             self.theme.id(),
+            b(self.gaming_mode),
             b(self.update_check),
             b(self.dates),
             b(self.emoji),
@@ -159,6 +165,7 @@ mod tests {
             learning: true,
             mode_indicator: false,
             theme: crate::Theme::Sakura,
+            gaming_mode: true,
             update_check: false,
             dates: false,
             emoji: true,

@@ -414,14 +414,13 @@ fn main() -> Result<()> {
     // Keep learning history out of the real profile.
     let appdata = std::env::temp_dir().join(format!("sweet-ime-harness-{}", std::process::id()));
     unsafe { std::env::set_var("APPDATA", &appdata) };
-    // Optional theme for screenshots (SWEET_HARNESS_THEME=sakura).
+    // Optional appearance for screenshots.
+    let mut options = sweet_engine::Options::default();
     if let Ok(theme) = std::env::var("SWEET_HARNESS_THEME") {
-        let o = sweet_engine::Options {
-            theme: sweet_engine::Theme::from_id(&theme).expect("unknown SWEET_HARNESS_THEME"),
-            ..Default::default()
-        };
-        sweet_engine::paths::save_options(&o).expect("write config.txt");
+        options.theme = sweet_engine::Theme::from_id(&theme).expect("unknown SWEET_HARNESS_THEME");
     }
+    options.gaming_mode = std::env::var_os("SWEET_HARNESS_GAMING_MODE").is_some();
+    sweet_engine::paths::save_options(&options).expect("write config.txt");
     // Custom key bindings: Ctrl+Space toggles, 変換 converts while composing.
     let preserved = {
         use sweet_engine::keymap::{Action, Binding, Chord, When};
@@ -581,6 +580,14 @@ fn main() -> Result<()> {
         }
         if let Ok(path) = std::env::var("SWEET_SHOT") {
             screenshot(&path);
+            if options.gaming_mode {
+                for _ in 0..35 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    pump();
+                }
+                let next = std::path::Path::new(&path).with_extension("next.bmp");
+                screenshot(&next.to_string_lossy());
+            }
         }
         h.key(0x0D);
         check("candidate", h.text(), &shown, &mut fails);
