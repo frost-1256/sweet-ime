@@ -83,7 +83,9 @@ jobs:
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
 
       - name: Test the workspace with the system dictionary
-        run: cargo test --locked --workspace --all-targets
+        # Typo correction uses a short wall-clock budget. Avoid CPU contention
+        # between dictionary-backed tests on hosted runners.
+        run: cargo test --locked --workspace --all-targets -- --test-threads=1
 
   android:
     name: Build the APK
