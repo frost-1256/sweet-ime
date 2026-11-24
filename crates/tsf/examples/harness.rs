@@ -29,6 +29,8 @@ struct TextStore {
     sink: RefCell<Option<ITextStoreACPSink>>,
     reject_sync: Cell<bool>,
     layout_missing: Cell<bool>,
+    input_scope: Cell<InputScope>,
+    scope_requested: Cell<bool>,
     /// The "application" window the document lives in.
     hwnd: HWND,
 }
@@ -155,11 +157,16 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     fn InsertEmbeddedAtSelection(&self, _f: u32, _d: Ref<IDataObject>, _s: *mut i32, _e: *mut i32, _c: *mut TS_TEXTCHANGE) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn RequestSupportedAttrs(&self, _f: u32, _c: u32, _a: *const GUID) -> Result<()> {
+    fn RequestSupportedAttrs(&self, _flags: u32, count: u32, attrs: *const GUID) -> Result<()> {
+        self.scope_requested.set(
+            count != 0
+                && unsafe { std::slice::from_raw_parts(attrs, count as usize) }
+                    .contains(&GUID_PROP_INPUTSCOPE),
+        );
         Ok(())
     }
-    fn RequestAttrsAtPosition(&self, _p: i32, _c: u32, _a: *const GUID, _f: u32) -> Result<()> {
-        Ok(())
+    fn RequestAttrsAtPosition(&self, _p: i32, count: u32, attrs: *const GUID, flags: u32) -> Result<()> {
+        self.RequestSupportedAttrs(flags, count, attrs)
     }
     fn RequestAttrsTransitioningAtPosition(&self, _p: i32, _c: u32, _a: *const GUID, _f: u32) -> Result<()> {
         Ok(())
@@ -174,8 +181,21 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         Ok(())
     }
-    fn RetrieveRequestedAttrs(&self, _c: u32, _v: *mut TS_ATTRVAL, fetched: *mut u32) -> Result<()> {
-        unsafe { *fetched = 0 };
+    fn RetrieveRequestedAttrs(&self, count: u32, values: *mut TS_ATTRVAL, fetched: *mut u32) -> Result<()> {
+        unsafe {
+            *fetched = 0;
+            if count > 0 && self.scope_requested.replace(false) {
+                let scope: IUnknown =
+                    windows_core::ComObject::new(HarnessInputScope(self.input_scope.get()))
+                        .to_interface();
+                values.write(TS_ATTRVAL {
+                    idAttr: GUID_PROP_INPUTSCOPE,
+                    dwOverlapId: 0,
+                    varValue: scope.into(),
+                });
+                *fetched = 1;
+            }
+        }
         Ok(())
     }
     fn GetEndACP(&self) -> Result<i32> {
@@ -202,6 +222,42 @@ impl ITextStoreACP_Impl for TextStore_Impl {
     }
     fn GetWnd(&self, _v: u32) -> Result<HWND> {
         Ok(self.hwnd)
+    }
+}
+
+#[implement(ITfInputScope)]
+struct HarnessInputScope(InputScope);
+
+impl ITfInputScope_Impl for HarnessInputScope_Impl {
+    fn GetInputScopes(&self, scopes: *mut *mut InputScope, count: *mut u32) -> Result<()> {
+        unsafe {
+            let scope =
+                windows::Win32::System::Com::CoTaskMemAlloc(std::mem::size_of::<InputScope>())
+                    .cast::<InputScope>();
+            if scope.is_null() {
+                return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+            }
+            scope.write(self.0);
+            *scopes = scope;
+            *count = 1;
+        }
+        Ok(())
+    }
+
+    fn GetPhrase(&self, _phrases: *mut *mut windows_core::BSTR, _count: *mut u32) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+
+    fn GetRegularExpression(&self) -> Result<windows_core::BSTR> {
+        Err(E_NOTIMPL.into())
+    }
+
+    fn GetSRGS(&self) -> Result<windows_core::BSTR> {
+        Err(E_NOTIMPL.into())
+    }
+
+    fn GetXML(&self) -> Result<windows_core::BSTR> {
+        Err(E_NOTIMPL.into())
     }
 }
 
@@ -465,6 +521,8 @@ fn main() -> Result<()> {
             sink: RefCell::new(None),
             reject_sync: Cell::new(false),
             layout_missing: Cell::new(false),
+            input_scope: Cell::new(IS_DEFAULT),
+            scope_requested: Cell::new(false),
             hwnd: app_hwnd,
         });
         let store_unk: IUnknown = store.to_interface();
@@ -537,6 +595,41 @@ fn main() -> Result<()> {
                 h.key(0x0D);
                 check("typed input hidden after commit", visible().to_string(), "false", &mut fails);
                 check("typed input is not committed", h.text(), "こんにちは", &mut fails);
+                h.clear();
+                h.store.input_scope.set(IS_PASSWORD);
+                h.type_str("k");
+                check("typed input hidden in password field", visible().to_string(), "false", &mut fails);
+                h.key(0x1B);
+                h.store.input_scope.set(IS_DEFAULT);
+            } else {
+                use windows::Win32::UI::TextServices::ITfThreadFocusSink;
+
+                let focus: ITfThreadFocusSink = tip.cast()?;
+                let mut changed = sweet_engine::Options {
+                    private_fields: false,
+                    ..options
+                };
+                sweet_engine::paths::save_options(&changed).expect("disable privacy scope check");
+                focus.OnSetThreadFocus()?;
+                h.type_str("k");
+
+                focus.OnKillThreadFocus()?;
+                changed.show_typed_input = true;
+                sweet_engine::paths::save_options(&changed).expect("enable typed input");
+                focus.OnSetThreadFocus()?;
+                h.key(0x25); // Redraw the ongoing composition without predictions.
+                check(
+                    "typed input stays hidden for an unchecked composition",
+                    visible().to_string(),
+                    "false",
+                    &mut fails,
+                );
+                h.key(0x1B);
+                h.type_str("k");
+                check("typed input enabled for new composition", visible().to_string(), "true", &mut fails);
+                h.key(0x1B);
+                sweet_engine::paths::save_options(&options).expect("restore harness options");
+                focus.OnSetThreadFocus()?;
             }
         }
 

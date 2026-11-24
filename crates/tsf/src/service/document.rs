@@ -126,29 +126,30 @@ fn delete_before_caret(ctx: &ITfContext, ec: u32, text: &str) -> Result<bool> {
 
 /// Whether the field at the selection is a password or a private browser
 /// window (input scopes IS_PASSWORD, IS_PRIVATE).
-fn private_field(ctx: &ITfContext, ec: u32) -> bool {
-    let scopes = || -> Result<bool> {
-        unsafe {
-            let ins: ITfInsertAtSelection = ctx.cast()?;
-            let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
-            let value = ctx
-                .GetProperty(&GUID_PROP_INPUTSCOPE)?
-                .GetValue(ec, &range)?;
-            let scope: ITfInputScope = IUnknown::try_from(&value)?.cast()?;
-            let mut list: *mut InputScope = std::ptr::null_mut();
-            let mut n = 0u32;
-            scope.GetInputScopes(&mut list, &mut n)?;
-            if list.is_null() {
-                return Ok(false);
-            }
-            let private = std::slice::from_raw_parts(list, n as usize)
-                .iter()
-                .any(|s| *s == IS_PASSWORD || *s == IS_PRIVATE);
-            windows::Win32::System::Com::CoTaskMemFree(Some(list as *const std::ffi::c_void));
-            Ok(private)
+fn private_field(ctx: &ITfContext, ec: u32) -> Result<bool> {
+    unsafe {
+        let ins: ITfInsertAtSelection = ctx.cast()?;
+        let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
+        let value = ctx
+            .GetAppProperty(&GUID_PROP_INPUTSCOPE)?
+            .GetValue(ec, &range)?;
+        // Ordinary editors often have no input scope set on the range.
+        if value.is_empty() {
+            return Ok(false);
         }
-    };
-    scopes().unwrap_or(false)
+        let scope: ITfInputScope = IUnknown::try_from(&value)?.cast()?;
+        let mut list: *mut InputScope = std::ptr::null_mut();
+        let mut n = 0u32;
+        scope.GetInputScopes(&mut list, &mut n)?;
+        if list.is_null() {
+            return Ok(false);
+        }
+        let private = std::slice::from_raw_parts(list, n as usize)
+            .iter()
+            .any(|s| *s == IS_PASSWORD || *s == IS_PRIVATE);
+        windows::Win32::System::Com::CoTaskMemFree(Some(list as *const std::ffi::c_void));
+        Ok(private)
+    }
 }
 
 fn update_document_inner(
@@ -160,8 +161,13 @@ fn update_document_inner(
     // A new composition: is this field private?
     if st.composition.is_none() {
         let opts = st.session.options;
-        st.private_input = (opts.private_fields || opts.show_typed_input) && private_field(ctx, ec);
-        st.session.private = opts.private_fields && st.private_input;
+        let private = (opts.private_fields || opts.show_typed_input)
+            .then(|| private_field(ctx, ec).ok())
+            .flatten();
+        st.session.private = opts.private_fields && private == Some(true);
+        // A settings reload can enable the preview during an existing
+        // composition. Only allow it if we checked at composition start.
+        st.typed_input_allowed = opts.show_typed_input && private == Some(false);
     }
     if let Some(undo) = st.session.take_undo() {
         // The caret moved or the text changed since: keep the document.
@@ -235,8 +241,8 @@ pub(super) fn refresh_candidates(
         st.relayout_tries = 0;
     }
     let list = st.session.candidates();
-    let input =
-        (st.session.options.show_typed_input && !st.private_input).then(|| st.session.typed_input());
+    let input = (st.session.options.show_typed_input && st.typed_input_allowed)
+        .then(|| st.session.typed_input());
     let input = input.as_deref().filter(|text| !text.is_empty());
     let Some(comp) = st.composition.as_ref().filter(|_| list.is_some() || input.is_some()) else {
         if let Some(w) = &st.window {

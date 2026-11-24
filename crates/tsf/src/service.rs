@@ -41,7 +41,8 @@ struct State {
     thread_focused: bool,
     composition: Option<ITfComposition>,
     session: Session,
-    private_input: bool,
+    /// The current composition started with the preview on in a public field.
+    typed_input_allowed: bool,
     window: Option<CandidateWindow>,
     /// GUID atoms for [input, converted, focused] display attributes.
     atoms: [i32; 3],
@@ -370,7 +371,7 @@ impl TextService_Impl {
             let Ok(st) = self.st.try_borrow() else { return Ok(()) };
             if !st.thread_focused
                 || st.composition.is_none()
-                || ((!st.session.options.show_typed_input || st.private_input)
+                || ((!st.session.options.show_typed_input || !st.typed_input_allowed)
                     && st.session.candidates().is_none())
             {
                 return Ok(());
