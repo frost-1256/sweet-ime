@@ -83,11 +83,29 @@ with the keyboard switcher. The dictionary is bundled.
 ### Linux (fcitx5)
 
 The flake builds the fcitx5 addon, the system dictionary, the settings app
-and the model packer. To use the public binary cache, run
-`cachix use sweet-ime` before building.
+and the model packer. The public Cachix cache at
+`https://sweet-ime.cachix.org` serves CI-tested builds for `x86_64-linux`
+and `aarch64-linux`. Nix uses a cached build when it matches the requested
+revision and dependencies, and builds locally on a cache miss.
+
+On Linux distributions other than NixOS, enable the cache with the
+[Cachix CLI](https://docs.cachix.org/using-a-cache) before building.
 
 ```sh
+cachix use sweet-ime
 nix build github:frost-1256/sweet-ime
+```
+
+On NixOS, add the cache URL and its public signing key to your system
+configuration and apply it with `sudo nixos-rebuild switch`.
+
+```nix
+nix.settings = {
+  extra-substituters = [ "https://sweet-ime.cachix.org" ];
+  extra-trusted-public-keys = [
+    "sweet-ime.cachix.org-1:KrnImhtgcdSD1qlYusdBprFJWl/AsgL24H+QUwDZbIY="
+  ];
+};
 ```
 
 On NixOS or Home Manager, add the package to the fcitx5 addons:
@@ -367,8 +385,7 @@ they get focus, without a restart.
 - To cache Linux builds, set the repository Actions variable
   `CACHIX_CACHE_NAME` to a public Cachix cache. Pull requests can read the
   cache. Set `CACHIX_AUTH_TOKEN` as an Actions secret with write access to
-  let push workflows publish the tested x86-64 and ARM64 packages. To use
-  the cache locally, run `cachix use CACHE_NAME` before `nix build`.
+  let push workflows publish the tested x86-64 and ARM64 packages.
 - To release, raise `version` in `Cargo.toml` and `nix/package.nix`, merge
   into `main`, and once its `Release eligibility` check passes, push a
   matching tag such as `v0.1.3` on that commit. The tag build publishes the

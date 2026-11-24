@@ -79,10 +79,28 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 ### Linux(fcitx5)
 
 flake で fcitx5 アドオン、システム辞書、設定アプリ、モデル変換ツールをビルドします。
-公開バイナリキャッシュを使う場合は、ビルド前に `cachix use sweet-ime` を実行します。
+公開キャッシュ `https://sweet-ime.cachix.org` では、CI でテスト済みの
+`x86_64-linux` と `aarch64-linux` のビルドを配布しています。指定したリビジョンと
+依存関係に一致するビルドがあれば Nix が取得し、なければローカルでビルドします。
+
+NixOS 以外では、ビルド前に [Cachix CLI](https://docs.cachix.org/using-a-cache) で
+キャッシュを有効にします。
 
 ```sh
+cachix use sweet-ime
 nix build github:frost-1256/sweet-ime
+```
+
+NixOS では、キャッシュの URL と署名用の公開鍵をシステム設定に追加し、
+`sudo nixos-rebuild switch` で反映します。
+
+```nix
+nix.settings = {
+  extra-substituters = [ "https://sweet-ime.cachix.org" ];
+  extra-trusted-public-keys = [
+    "sweet-ime.cachix.org-1:KrnImhtgcdSD1qlYusdBprFJWl/AsgL24H+QUwDZbIY="
+  ];
+};
 ```
 
 NixOS や Home Manager では、fcitx5 のアドオンに追加します。
@@ -351,8 +369,7 @@ APK は `out/SweetIME-Android.apk` にできます。
   `CACHIX_CACHE_NAME` に公開 Cachix キャッシュ名を設定します。PR でも
   キャッシュを読み込めます。書き込み権限のある `CACHIX_AUTH_TOKEN` を
   Actions シークレットに設定すると、push 時の CI がテスト済みの
-  x86-64・ARM64 パッケージを登録します。手元では `nix build` の前に
-  `cachix use CACHE_NAME` を実行します。
+  x86-64・ARM64 パッケージを登録します。
 - リリースするときは、`Cargo.toml` と `nix/package.nix` の `version` を上げて
   `main` にマージし、そのコミットの `Release eligibility` が通ったら、
   `v0.1.3` のようなタグを打って push します。タグのビルドが、インストーラーと
