@@ -213,6 +213,17 @@ impl eframe::App for App {
                                 });
                             }
                         }
+                        #[cfg(windows)]
+                        card(
+                            ui,
+                            "ゲーミングモード",
+                            "候補ウィンドウの縁を流れる虹色で光らせます。",
+                            |ui| {
+                                if toggle(ui, &mut self.opts.gaming_mode).changed() {
+                                    self.save();
+                                }
+                            },
+                        );
                         #[cfg(not(windows))]
                         if ui.button("fcitx5 の標準テーマに戻す").clicked() {
                             self.status = Some(match fcitx_theme::restore() {

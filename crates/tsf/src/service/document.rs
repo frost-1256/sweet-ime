@@ -277,10 +277,10 @@ pub(super) fn refresh_candidates(
         if let Some(w) = &st.window {
             st.relayout_tries += 1;
             if let Some(rc) = w.visible_anchor() {
-                w.show(&list, rc);
+                w.show(&list, rc, st.session.options.gaming_mode);
             } else if st.relayout_tries > RELAYOUT_TRIES {
                 if let Some(rc) = w.last_anchor() {
-                    w.show(&list, rc);
+                    w.show(&list, rc, st.session.options.gaming_mode);
                 }
             }
             if st.relayout_tries <= RELAYOUT_TRIES {
@@ -298,7 +298,7 @@ pub(super) fn refresh_candidates(
         if let Some(owner) = owner {
             w.set_owner(owner);
         }
-        w.show(&list, rc);
+        w.show(&list, rc, st.session.options.gaming_mode);
     }
     Ok(())
 }
