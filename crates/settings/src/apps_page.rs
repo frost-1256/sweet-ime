@@ -1,5 +1,5 @@
-//! Per-application input modes: start in direct input or turn the IME off
-//! in chosen programs.
+//! Per-application input modes: the mode for most programs, and direct
+//! input or no IME in chosen programs.
 
 use eframe::egui::{self, RichText};
 use sweet_engine::app_modes::{AppMode, AppModes};
@@ -45,13 +45,31 @@ impl AppsPage {
     pub fn ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
         ui.label(
             RichText::new(
-                "アプリごとに、IME を英字で始めるか、まったく使わないかを決められます。\
-                 一覧にないアプリはいつもどおりひらがなで始まります。",
+                "IME に切り替えたときにひらがなと英字のどちらで始めるかを決められます。\
+                 アプリごとに別のモードにしたり、まったく使わないようにもできます。",
             )
             .weak(),
         );
         ui.add_space(6.0);
         let mut changed = false;
+
+        card_frame(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let size = egui::vec2(ui.available_width(), 34.0);
+            ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.label(RichText::new("一覧にないアプリ").size(15.5));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let before = self.modes.default;
+                    egui::ComboBox::from_id_salt("default_mode").selected_text(before.label()).show_ui(ui, |ui| {
+                        for m in [AppMode::Normal, AppMode::English] {
+                            ui.selectable_value(&mut self.modes.default, m, m.label());
+                        }
+                    });
+                    changed |= self.modes.default != before;
+                });
+            });
+        });
+        ui.add_space(6.0);
 
         card_frame(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
