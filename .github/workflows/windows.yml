@@ -241,7 +241,20 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           files=(out/SweetIME-Setup.exe out/SweetIME-Android.apk)
+          tag_ref="refs/tags/$RELEASE_TAG"
+          notes=""
+          if [[ "$(git cat-file -t "$tag_ref")" == tag ]]; then
+            notes=$(git for-each-ref --format='%(contents:body)' "$tag_ref")
+          fi
+
           if assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); then
+            if [[ -n "$notes" ]]; then
+              body=$(gh release view "$RELEASE_TAG" --json body --jq '.body // ""')
+              if [[ "$body" != *"$notes"* ]]; then
+                body="$notes${body:+$'\n\n'$body}"
+                gh release edit "$RELEASE_TAG" --notes "$body"
+              fi
+            fi
             for f in "${files[@]}"; do
               if ! grep -Fxq "$(basename "$f")" <<< "$assets"; then
                 gh release upload "$RELEASE_TAG" "$f"
@@ -249,12 +262,8 @@ jobs:
             done
           else
             args=(--verify-tag --generate-notes)
-            tag_ref="refs/tags/$RELEASE_TAG"
-            if [[ "$(git cat-file -t "$tag_ref")" == tag ]]; then
-              notes=$(git for-each-ref --format='%(contents:body)' "$tag_ref")
-              if [[ -n "$notes" ]]; then
-                args+=(--notes "$notes")
-              fi
+            if [[ -n "$notes" ]]; then
+              args+=(--notes "$notes")
             fi
             if [[ "$RELEASE_TAG" == *-* ]]; then
               args+=(--prerelease)
