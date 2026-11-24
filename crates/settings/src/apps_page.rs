@@ -35,7 +35,8 @@ impl AppsPage {
     fn add(&mut self, exe: &str, mode: AppMode) {
         let exe = exe.trim().trim_matches('"');
         let name = exe.rsplit(['\\', '/']).next().unwrap_or(exe).to_string();
-        if name.is_empty() {
+        // `*` is the line for unlisted programs, set by the picker above.
+        if name.is_empty() || name == "*" {
             return;
         }
         self.modes.entries.retain(|(e, _)| !e.eq_ignore_ascii_case(&name));
