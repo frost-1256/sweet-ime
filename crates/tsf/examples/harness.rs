@@ -420,6 +420,7 @@ fn main() -> Result<()> {
         options.theme = sweet_engine::Theme::from_id(&theme).expect("unknown SWEET_HARNESS_THEME");
     }
     options.gaming_mode = std::env::var_os("SWEET_HARNESS_GAMING_MODE").is_some();
+    options.show_typed_input = std::env::var_os("SWEET_HARNESS_TYPED_INPUT").is_some();
     sweet_engine::paths::save_options(&options).expect("write config.txt");
     // Custom key bindings: Ctrl+Space toggles, 変換 converts while composing.
     let preserved = {
@@ -506,6 +507,37 @@ fn main() -> Result<()> {
             h.key(0x0D); // enter
             check("committed", h.text(), "今日はいい天気ですね", &mut fails);
             println!("     round trip #{run} {:.2?}", t.elapsed());
+        }
+
+        {
+            use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+            let visible = || {
+                own_candidate_window().is_some_and(|hwnd| IsWindowVisible(hwnd).as_bool())
+            };
+            h.clear();
+            h.type_str("k"); // A pending consonant has no prediction list.
+            check(
+                "typed input visibility without candidates",
+                visible().to_string(),
+                &options.show_typed_input.to_string(),
+                &mut fails,
+            );
+            h.key(0x08);
+            check("typed input hidden when cleared", visible().to_string(), "false", &mut fails);
+            if options.show_typed_input {
+                h.type_str("konnnitiha");
+                check("typed input stays outside the document", h.text(), "こんにちは", &mut fails);
+                check("typed input visible while composing", visible().to_string(), "true", &mut fails);
+                if let Ok(path) = std::env::var("SWEET_SHOT_TYPED_INPUT") {
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                    pump();
+                    screenshot(&path);
+                }
+                h.key(0x0D);
+                check("typed input hidden after commit", visible().to_string(), "false", &mut fails);
+                check("typed input is not committed", h.text(), "こんにちは", &mut fails);
+            }
         }
 
         // 1a. live conversion is refined in the background by the reranker
@@ -618,8 +650,10 @@ fn main() -> Result<()> {
                 .unwrap_or_default();
             check("candidate window owner", format!("{:?}", owner.0), &format!("{:?}", app_hwnd.0), &mut fails);
             let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
-            // Rows start at PAD=4 and are ROW_H=32 tall (logical px).
-            let y = ((4.0 + 2.5 * 32.0) * scale) as isize;
+            // Rows start after the padding and optional input line.
+            let padding = if options.gaming_mode { 10.0 } else { 4.0 };
+            let input = if options.show_typed_input { 22.0 } else { 0.0 };
+            let y = ((padding + input + 2.5 * 32.0) * scale) as isize;
             let x = (40.0 * scale) as isize;
             let before = h.text();
             SendMessageW(hwnd, WM_LBUTTONUP, Some(windows::Win32::Foundation::WPARAM(0)),

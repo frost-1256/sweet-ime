@@ -159,7 +159,9 @@ fn update_document_inner(
 ) -> Result<()> {
     // A new composition: is this field private?
     if st.composition.is_none() {
-        st.session.private = st.session.options.private_fields && private_field(ctx, ec);
+        let opts = st.session.options;
+        st.private_input = (opts.private_fields || opts.show_typed_input) && private_field(ctx, ec);
+        st.session.private = opts.private_fields && st.private_input;
     }
     if let Some(undo) = st.session.take_undo() {
         // The caret moved or the text changed since: keep the document.
@@ -232,7 +234,11 @@ pub(super) fn refresh_candidates(
     if !retry {
         st.relayout_tries = 0;
     }
-    let (Some(list), Some(comp)) = (st.session.candidates(), &st.composition) else {
+    let list = st.session.candidates();
+    let input =
+        (st.session.options.show_typed_input && !st.private_input).then(|| st.session.typed_input());
+    let input = input.as_deref().filter(|text| !text.is_empty());
+    let Some(comp) = st.composition.as_ref().filter(|_| list.is_some() || input.is_some()) else {
         if let Some(w) = &st.window {
             // While typing, predictions may come back on the next key.
             if st.session.is_converting() {
@@ -242,6 +248,9 @@ pub(super) fn refresh_candidates(
             }
         }
         return Ok(());
+    };
+    let show = |w: &crate::candidate_window::CandidateWindow, rc| {
+        w.show(list.as_ref(), input, rc, st.session.options.gaming_mode);
     };
     let range = unsafe { comp.GetRange()? };
     let pre = st.session.preedit();
@@ -277,10 +286,10 @@ pub(super) fn refresh_candidates(
         if let Some(w) = &st.window {
             st.relayout_tries += 1;
             if let Some(rc) = w.visible_anchor() {
-                w.show(&list, rc, st.session.options.gaming_mode);
+                show(w, rc);
             } else if st.relayout_tries > RELAYOUT_TRIES {
                 if let Some(rc) = w.last_anchor() {
-                    w.show(&list, rc, st.session.options.gaming_mode);
+                    show(w, rc);
                 }
             }
             if st.relayout_tries <= RELAYOUT_TRIES {
@@ -298,7 +307,7 @@ pub(super) fn refresh_candidates(
         if let Some(owner) = owner {
             w.set_owner(owner);
         }
-        w.show(&list, rc, st.session.options.gaming_mode);
+        show(w, rc);
     }
     Ok(())
 }

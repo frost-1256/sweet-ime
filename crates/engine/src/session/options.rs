@@ -7,6 +7,8 @@ pub struct Options {
     pub live_conversion: bool,
     /// Show predictions while typing.
     pub suggestions: bool,
+    /// Show the original input alongside the Windows composition.
+    pub show_typed_input: bool,
     /// Rerank conversions with the neural model when it is installed.
     pub neural: bool,
     /// Learn from chosen candidates and prefer them later.
@@ -45,6 +47,7 @@ impl Default for Options {
         Self {
             live_conversion: true,
             suggestions: true,
+            show_typed_input: false,
             neural: true,
             learning: true,
             mode_indicator: true,
@@ -79,6 +82,7 @@ impl Options {
             match k.trim() {
                 "live_conversion" => o.live_conversion = on,
                 "suggestions" => o.suggestions = on,
+                "show_typed_input" => o.show_typed_input = on,
                 "neural" => o.neural = on,
                 "learning" => o.learning = on,
                 "mode_indicator" => o.mode_indicator = on,
@@ -106,6 +110,7 @@ impl Options {
             "# Sweet IME settings (applied when the IME is next activated)
              live_conversion = {}
              suggestions = {}
+             show_typed_input = {}
              neural = {}
              learning = {}
              mode_indicator = {}
@@ -123,6 +128,7 @@ impl Options {
 ",
             b(self.live_conversion),
             b(self.suggestions),
+            b(self.show_typed_input),
             b(self.neural),
             b(self.learning),
             b(self.mode_indicator),
@@ -161,6 +167,7 @@ mod tests {
         let o = Options {
             live_conversion: false,
             suggestions: true,
+            show_typed_input: true,
             neural: false,
             learning: true,
             mode_indicator: false,

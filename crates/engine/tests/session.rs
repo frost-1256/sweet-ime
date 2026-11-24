@@ -22,6 +22,34 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
+fn typed_input_stays_original_until_committed() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "konnnitihk");
+    assert_eq!(s.typed_input(), "konnnitihk");
+    assert!(s.handle(&c, Key::Backspace));
+    assert_eq!(s.typed_input(), "konnnitih");
+    type_str(&mut s, &c, "a");
+    assert_eq!(s.preedit().text, "こんにちは");
+    assert_eq!(s.typed_input(), "konnnitiha");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.typed_input(), "konnnitiha");
+    assert!(s.handle(&c, Key::Enter));
+    assert!(s.typed_input().is_empty());
+}
+
+#[test]
+fn typed_input_shows_current_reading_if_original_keys_are_stale() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "nihongo");
+    assert!(s.handle(&c, Key::Left));
+    assert_eq!(s.typed_input(), "nihongo");
+    assert!(s.handle(&c, Key::Delete));
+    assert_eq!(s.typed_input(), s.preedit().text);
+}
+
+#[test]
 fn backspace_reopens_romaji_after_a_mistyped_key() {
     let Some(c) = converter() else { return };
     for (mistyped, deletes, rest, expected) in [

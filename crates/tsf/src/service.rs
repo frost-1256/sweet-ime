@@ -41,6 +41,7 @@ struct State {
     thread_focused: bool,
     composition: Option<ITfComposition>,
     session: Session,
+    private_input: bool,
     window: Option<CandidateWindow>,
     /// GUID atoms for [input, converted, focused] display attributes.
     atoms: [i32; 3],
@@ -367,7 +368,11 @@ impl TextService_Impl {
     fn relayout(&self, retry: bool) {
         let _ = crate::guard(|| {
             let Ok(st) = self.st.try_borrow() else { return Ok(()) };
-            if !st.thread_focused || st.session.candidates().is_none() {
+            if !st.thread_focused
+                || st.composition.is_none()
+                || ((!st.session.options.show_typed_input || st.private_input)
+                    && st.session.candidates().is_none())
+            {
                 return Ok(());
             }
             let (Some(target), tid) = (st.ctx.clone(), st.tid) else { return Ok(()) };
