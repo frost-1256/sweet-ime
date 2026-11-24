@@ -32,15 +32,18 @@ impl AppsPage {
         });
     }
 
-    fn add(&mut self, exe: &str, mode: AppMode) {
-        let exe = exe.trim().trim_matches('"');
-        let name = exe.rsplit(['\\', '/']).next().unwrap_or(exe).to_string();
-        // `*` is the line for unlisted programs, set by the picker above.
+    /// Adds or replaces the entry for `exe`; false if the name is empty or
+    /// the reserved `*` (the line for unlisted programs, set by the picker
+    /// above).
+    fn add(&mut self, exe: &str, mode: AppMode) -> bool {
+        let exe = exe.trim().trim_matches('"').trim();
+        let name = exe.rsplit(['\\', '/']).next().unwrap_or(exe).trim().to_string();
         if name.is_empty() || name == "*" {
-            return;
+            return false;
         }
         self.modes.entries.retain(|(e, _)| !e.eq_ignore_ascii_case(&name));
         self.modes.entries.push((name, mode));
+        true
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
@@ -108,9 +111,18 @@ impl AppsPage {
                 );
                 mode_combo(ui, "new_mode", &mut self.mode);
                 if ui.add_enabled(!self.exe.trim().is_empty(), egui::Button::new("追加")).clicked() {
-                    let exe = std::mem::take(&mut self.exe);
-                    self.add(&exe, self.mode);
-                    changed = true;
+                    let exe = self.exe.clone();
+                    if self.add(&exe, self.mode) {
+                        self.exe.clear();
+                        changed = true;
+                    } else {
+                        let msg = if exe.contains('*') {
+                            "「*」は上の「一覧にないアプリ」で設定してください。"
+                        } else {
+                            "プログラム名を入力してください。"
+                        };
+                        *status = Some((msg.into(), false));
+                    }
                 }
             });
             ui.label(
@@ -122,8 +134,7 @@ impl AppsPage {
                     let present = self.modes.entries.iter().any(|(e, _)| e.eq_ignore_ascii_case(exe));
                     let text = format!("{label}:{}", mode.label());
                     if ui.add_enabled(!present, egui::Button::new(text)).clicked() {
-                        self.add(exe, mode);
-                        changed = true;
+                        changed |= self.add(exe, mode);
                     }
                 }
             });
