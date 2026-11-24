@@ -79,6 +79,7 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 ### Linux(fcitx5)
 
 flake で fcitx5 アドオン、システム辞書、設定アプリ、モデル変換ツールをビルドします。
+公開バイナリキャッシュを使う場合は、ビルド前に `cachix use sweet-ime` を実行します。
 
 ```sh
 nix build github:frost-1256/sweet-ime
@@ -346,6 +347,12 @@ APK は `out/SweetIME-Android.apk` にできます。
   ARM64 の Linux での fcitx5 パッケージのビルドとテストを行います。
   インストーラーと APK は `SweetIME-Windows` と `SweetIME-Android` の
   アーティファクトとして残ります。Actions タブから手動でも実行できます。
+- Linux のビルドをキャッシュするには、Actions のリポジトリ変数
+  `CACHIX_CACHE_NAME` に公開 Cachix キャッシュ名を設定します。PR でも
+  キャッシュを読み込めます。書き込み権限のある `CACHIX_AUTH_TOKEN` を
+  Actions シークレットに設定すると、push 時の CI がテスト済みの
+  x86-64・ARM64 パッケージを登録します。手元では `nix build` の前に
+  `cachix use CACHE_NAME` を実行します。
 - リリースするときは、`Cargo.toml` と `nix/package.nix` の `version` を上げて
   `main` にマージし、そのコミットの `Release eligibility` が通ったら、
   `v0.1.3` のようなタグを打って push します。タグのビルドが、インストーラーと
