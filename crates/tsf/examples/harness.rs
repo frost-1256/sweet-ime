@@ -605,17 +605,31 @@ fn main() -> Result<()> {
                 use windows::Win32::UI::TextServices::ITfThreadFocusSink;
 
                 let focus: ITfThreadFocusSink = tip.cast()?;
+                let config = sweet_engine::paths::config_file().expect("harness config path");
+                let mut modified = std::fs::metadata(&config).unwrap().modified().unwrap();
+                let mut save = |options: &sweet_engine::Options| {
+                    sweet_engine::paths::save_options(options).expect("write harness options");
+                    // Focus reloads settings by mtime. Consecutive writes can have the
+                    // same timestamp on CI runners, so give each save a distinct one.
+                    modified += std::time::Duration::from_secs(2);
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&config)
+                        .unwrap()
+                        .set_modified(modified)
+                        .expect("set harness config timestamp");
+                };
                 let mut changed = sweet_engine::Options {
                     private_fields: false,
                     ..options
                 };
-                sweet_engine::paths::save_options(&changed).expect("disable privacy scope check");
+                save(&changed);
                 focus.OnSetThreadFocus()?;
                 h.type_str("k");
 
                 focus.OnKillThreadFocus()?;
                 changed.show_typed_input = true;
-                sweet_engine::paths::save_options(&changed).expect("enable typed input");
+                save(&changed);
                 focus.OnSetThreadFocus()?;
                 h.key(0x25); // Redraw the ongoing composition without predictions.
                 check(
@@ -628,7 +642,7 @@ fn main() -> Result<()> {
                 h.type_str("k");
                 check("typed input enabled for new composition", visible().to_string(), "true", &mut fails);
                 h.key(0x1B);
-                sweet_engine::paths::save_options(&options).expect("restore harness options");
+                save(&options);
                 focus.OnSetThreadFocus()?;
             }
         }
