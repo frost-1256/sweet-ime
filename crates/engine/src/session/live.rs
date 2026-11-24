@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::romaji::Composer;
 use crate::{Conversion, Converter, english, special, typo};
 
-use super::Session;
+use super::{Session, explicit_spelling_overrides};
 
 const SUGGESTION_LIMIT: usize = 5;
 const TYPO_SUGGESTION_BUDGET: Duration = Duration::from_millis(4);
@@ -140,6 +140,7 @@ impl Session {
                 .then(|| c.bundled_candidates(&kana))
                 .flatten()
                 .and_then(|candidates| candidates.into_iter().next());
+            let mut explicit_spelling = false;
             if bundled.is_none()
                 && unresolved
                 && !words
@@ -147,27 +148,21 @@ impl Session {
                 && c.raw_spells(&kana)
             {
                 let previous = previous_typo.filter(|fix| c.raw.len() >= fix.prefix_len);
-                // A spelling the user explicitly selected must take priority
-                // over an automatic repair of the same keys.
-                let learned_spelling = conv.convert(&kana, &[], 1).first().is_some_and(|best| {
-                    best.segments
-                        .iter()
-                        .flat_map(|segment| &segment.words)
-                        .any(|word| {
-                            (word.learned || word.user)
-                                && english::typed_word(&word.reading, &word.surface)
-                        })
-                });
-                if learned_spelling {
-                    correction = None;
-                } else {
-                    c.live_typo = continue_typo(conv, &c.raw, previous, correction.take());
-                }
+                let fix = continue_typo(conv, &c.raw, previous, correction.take());
+                explicit_spelling = fix
+                    .as_ref()
+                    .is_some_and(|fix| explicit_spelling_overrides(conv, &kana, &fix.kana()));
+                c.live_typo = fix.filter(|_| !explicit_spelling);
             }
             let typo_possible =
                 c.typo_input(&settled).is_some() && !c.composer.pending().is_empty();
             bundled.or_else(|| {
-                if !unresolved_kana || !unresolved || typo_possible || c.live_typo.is_some() {
+                if !unresolved_kana
+                    || !unresolved
+                    || typo_possible
+                    || c.live_typo.is_some()
+                    || explicit_spelling
+                {
                     return None;
                 }
                 c.english(&kana, correction.is_some(), listed)

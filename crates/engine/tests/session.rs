@@ -937,6 +937,32 @@ fn editing_or_dismissing_a_live_typo_preserves_the_original_keys() {
 }
 
 #[test]
+fn explicit_spellings_only_block_repairs_that_change_them() {
+    let Some(c) = converter() else { return };
+    let dir = std::env::temp_dir().join(format!("sweet-ime-typo-spelling-{}", std::process::id()));
+    let path = dir.join("user_dict.tsv");
+    let mut d = sweet_engine::UserDictionary::with_file(&path);
+    d.add("じgべえ", "Zigbee", "名詞", "").unwrap();
+    let c = c.with_user_dict(d);
+
+    for live in [false, true] {
+        let mut s = if live { Session::new() } else { plain() };
+        type_str(&mut s, &c, "kyouhazigbeewotsukau");
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, "今日はZigbeeを使う");
+    }
+
+    let c = converter().unwrap();
+    c.learn("じgべえ", "zigbee");
+    let mut s = Session::new();
+    type_str(&mut s, &c, "saisiylo,zigbee");
+    assert_eq!(s.preedit().text, "最初、zigbee");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "最初、zigbee");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn valid_kana_typo_is_offered_as_a_suggestion() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();

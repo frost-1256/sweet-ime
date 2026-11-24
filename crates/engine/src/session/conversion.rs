@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::{Composing, Key, Session, transliterate};
+use super::{Composing, Key, Session, explicit_spelling_overrides, transliterate};
 use crate::{Conversion, Converter, english, romaji, special, typo, width};
 
 const TYPO_CONVERSION_BUDGET: Duration = Duration::from_millis(12);
@@ -82,8 +82,12 @@ impl Session {
         } else {
             None
         };
+        let explicit_spelling = correction
+            .as_ref()
+            .is_some_and(|fix| explicit_spelling_overrides(conv, &kana, &fix.reading));
+        let correction = correction.filter(|_| !explicit_spelling);
         let corrected = live_reading.is_some() || correction.is_some();
-        if typo::has_unresolved_romaji(&kana) {
+        if !explicit_spelling && typo::has_unresolved_romaji(&kana) {
             if let Some(word) = self.comp.english(&kana, corrected, listed) {
                 // Keys that are not romaji: the word as typed, capitalized,
                 // then the kana reading's conversion.

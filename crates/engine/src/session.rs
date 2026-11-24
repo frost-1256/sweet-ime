@@ -251,6 +251,43 @@ impl Composing {
     }
 }
 
+/// Whether a repair would overwrite a spelling selected or registered by
+/// the user. Find the affected span in the original reading so a spelling
+/// elsewhere in the sentence does not block the repair.
+fn explicit_spelling_overrides(conv: &Converter, original: &str, repaired: &str) -> bool {
+    if original == repaired {
+        return false;
+    }
+    let start: usize = original
+        .chars()
+        .zip(repaired.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let tail: usize = original[start..]
+        .chars()
+        .rev()
+        .zip(repaired[start..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let end = original.len() - tail;
+    conv.convert(original, &[], 1).first().is_some_and(|best| {
+        let mut offset = 0;
+        best.segments
+            .iter()
+            .flat_map(|segment| &segment.words)
+            .any(|word| {
+                let word_start = offset;
+                offset += word.reading.len();
+                word_start < end
+                    && start < offset
+                    && (word.learned || word.user)
+                    && english::typed_word(&word.reading, &word.surface)
+            })
+    })
+}
+
 /// Particles that end a word typed after Shift at Space or Enter
 /// ("Googleha" -> Google + は).
 const PARTICLES: &[&str] = &[
