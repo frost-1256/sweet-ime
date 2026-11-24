@@ -83,7 +83,8 @@ with the keyboard switcher. The dictionary is bundled.
 ### Linux (fcitx5)
 
 The flake builds the fcitx5 addon, the system dictionary, the settings app
-and the model packer:
+and the model packer. To use the public binary cache, run
+`cachix use sweet-ime` before building.
 
 ```sh
 nix build github:frost-1256/sweet-ime
@@ -363,6 +364,11 @@ they get focus, without a restart.
   Linux. The installer and the APK are kept as the `SweetIME-Windows` and
   `SweetIME-Android` artifacts. Runs can also be started from the Actions
   tab.
+- To cache Linux builds, set the repository Actions variable
+  `CACHIX_CACHE_NAME` to a public Cachix cache. Pull requests can read the
+  cache. Set `CACHIX_AUTH_TOKEN` as an Actions secret with write access to
+  let push workflows publish the tested x86-64 and ARM64 packages. To use
+  the cache locally, run `cachix use CACHE_NAME` before `nix build`.
 - To release, raise `version` in `Cargo.toml` and `nix/package.nix`, merge
   into `main`, and once its `Release eligibility` check passes, push a
   matching tag such as `v0.1.3` on that commit. The tag build publishes the
