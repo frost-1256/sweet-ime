@@ -21,4 +21,8 @@ Use Rust's built-in test framework. Dictionary-backed session tests skip without
 
 ## Commits and Pull Requests
 
-Use short, imperative commit subjects such as `Fix delayed candidate layout`. In pull requests, describe the behavior change, link related issues when available, and list the checks you ran. Include screenshots for visual changes and benchmark results for performance work. GitHub Actions runs Windows checks on pushes and pull requests. Version tags such as `v0.1.0` trigger release packaging.
+Use short, imperative commit subjects such as `Fix delayed candidate layout`. In pull requests, describe the behavior change, link related issues when available, and list the checks you ran. Include screenshots for visual changes and benchmark results for performance work. GitHub Actions runs Windows checks on pushes and pull requests.
+
+## Releases
+
+Use an annotated version tag such as `v0.1.0` to trigger release packaging. In the tag message, put the release title on the first line, then a blank line and Markdown bullets describing the user-visible changes since the previous release. Name the affected platforms when a change applies to only some of them. The workflow puts this summary above GitHub's generated changelog. After publishing, verify that the release shows the summary and both installers.

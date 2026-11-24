@@ -387,9 +387,11 @@ they get focus, without a restart.
   cache. Set `CACHIX_AUTH_TOKEN` as an Actions secret with write access to
   let push workflows publish the tested x86-64 and ARM64 packages.
 - To release, raise `version` in `Cargo.toml` and `nix/package.nix`, merge
-  into `main`, and once its `Release eligibility` check passes, push a
-  matching tag such as `v0.1.3` on that commit. The tag build publishes the
-  installer and the APK to GitHub Releases.
+  into `main`, and wait for the `Release eligibility` check on that commit.
+  Create an annotated tag with `git tag -a vX.Y.Z <main-commit>`. Enter a
+  release title, a blank line, and Markdown bullets describing what users
+  will notice since the previous release. Push the tag to publish the
+  installer and APK with the summary above GitHub's generated changelog.
 
 ## Licenses
 
