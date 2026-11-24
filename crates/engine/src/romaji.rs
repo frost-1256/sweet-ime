@@ -227,6 +227,74 @@ pub fn to_hiragana(romaji: &str) -> String {
     c.kana
 }
 
+/// Reconstructs a readable spelling when the original keystrokes are unavailable.
+pub(crate) fn display_romaji(reading: &str) -> String {
+    static REVERSE: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    let table = REVERSE.get_or_init(|| {
+        let mut table = HashMap::new();
+        for &(keys, kana) in BASE {
+            table.entry(kana).or_insert(keys);
+        }
+        table.extend([
+            ("し", "shi"), ("ち", "chi"), ("つ", "tsu"), ("ふ", "fu"), ("じ", "ji"),
+            ("しゃ", "sha"), ("しゅ", "shu"), ("しょ", "sho"), ("しぇ", "she"),
+            ("ちゃ", "cha"), ("ちゅ", "chu"), ("ちょ", "cho"), ("ちぇ", "che"),
+            ("じゃ", "ja"), ("じゅ", "ju"), ("じょ", "jo"), ("じぇ", "je"),
+            ("ゐ", "wi"), ("ゑ", "we"),
+        ]);
+        table
+    });
+    let kana: String = reading
+        .chars()
+        .map(|ch| match ch {
+            'ァ'..='ヶ' => char::from_u32(ch as u32 - 0x60).unwrap(),
+            _ => ch,
+        })
+        .collect();
+    let syllable = |text: &str| {
+        let mut ends = text.char_indices().skip(1).map(|(i, _)| i).chain([text.len()]);
+        let first = ends.next()?;
+        ends.next()
+            .and_then(|second| table.get(&text[..second]).map(|&keys| (keys, second)))
+            .or_else(|| table.get(&text[..first]).map(|&keys| (keys, first)))
+    };
+    let mut rest = kana.as_str();
+    let mut out = String::with_capacity(kana.len());
+    while let Some(ch) = rest.chars().next() {
+        let tail = &rest[ch.len_utf8()..];
+        match ch {
+            'ん' => {
+                let next = syllable(tail).map_or(tail, |(keys, _)| keys);
+                out.push_str(if next.starts_with(['a', 'i', 'u', 'e', 'o', 'n', 'y']) {
+                    "n'"
+                } else {
+                    "n"
+                });
+                rest = tail;
+            }
+            'っ' => {
+                let next = syllable(tail).and_then(|(keys, _)| keys.chars().next());
+                if let Some(c) = next.filter(|&c| "bcdfghjklmpqrstvwxyz".contains(c)) {
+                    out.push(c);
+                } else {
+                    out.push_str("xtsu");
+                }
+                rest = tail;
+            }
+            _ => {
+                if let Some((keys, len)) = syllable(rest) {
+                    out.push_str(keys);
+                    rest = &rest[len..];
+                } else {
+                    out.push(ch);
+                    rest = tail;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Hiragana -> katakana (other characters pass through).
 pub fn to_katakana(s: &str) -> String {
     s.chars()
@@ -288,5 +356,14 @@ mod tests {
     #[test]
     fn katakana() {
         assert_eq!(to_katakana("こーひー"), "コーヒー");
+    }
+
+    #[test]
+    fn display_romaji_handles_combined_kana_and_preserves_literal_input() {
+        assert_eq!(
+            display_romaji("こんにちは、がっこう！コーヒー Qwen3.6"),
+            "kon'nichiha,gakkou!ko-hi- Qwen3.6"
+        );
+        assert_eq!(display_romaji("しゃちょっ"), "shachoxtsu");
     }
 }

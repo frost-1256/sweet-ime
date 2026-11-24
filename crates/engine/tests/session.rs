@@ -39,14 +39,15 @@ fn typed_input_stays_original_until_committed() {
 }
 
 #[test]
-fn typed_input_shows_current_reading_if_original_keys_are_stale() {
+fn typed_input_keeps_romaji_after_editing_the_reading() {
     let Some(c) = converter() else { return };
     let mut s = plain();
     type_str(&mut s, &c, "nihongo");
     assert!(s.handle(&c, Key::Left));
     assert_eq!(s.typed_input(), "nihongo");
     assert!(s.handle(&c, Key::Delete));
-    assert_eq!(s.typed_input(), s.preedit().text);
+    assert_eq!(s.preedit().text, "にほん");
+    assert_eq!(s.typed_input(), "nihon");
 }
 
 #[test]
