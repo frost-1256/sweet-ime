@@ -360,15 +360,15 @@ impl Session {
         self.conv.is_some()
     }
 
-    /// Original keystrokes, or the current reading if a mid-composition
-    /// edit invalidated their mapping to the text.
+    /// Original keystrokes, or a romaji rendering of the current reading
+    /// if a mid-composition edit invalidated their mapping to the text.
     pub fn typed_input(&self) -> std::borrow::Cow<'_, str> {
         let c = &self.comp;
         let reading = c.kana();
-        if !c.raw.is_empty() && romaji::to_hiragana(&c.raw) == reading {
+        if !c.raw.is_empty() && c.raw.is_ascii() && romaji::to_hiragana(&c.raw) == reading {
             std::borrow::Cow::Borrowed(&c.raw)
         } else {
-            std::borrow::Cow::Owned(reading)
+            std::borrow::Cow::Owned(romaji::display_romaji(&reading))
         }
     }
 
