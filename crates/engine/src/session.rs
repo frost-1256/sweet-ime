@@ -13,7 +13,7 @@ mod options;
 mod url;
 
 use conversion::{Converting, SegState};
-use live::LiveConversion;
+use live::{LiveConversion, LiveTypo};
 pub use options::Options;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +113,7 @@ struct Composing {
     /// grows, its text is kept so the display doesn't flip between the
     /// lattice and the refined result on every keystroke.
     refined: Option<LiveConversion>,
+    live_typo: Option<LiveTypo>,
     suggestions: Vec<String>,
     typo_suggestion: Option<crate::typo::Correction>,
 }
@@ -124,12 +125,38 @@ impl Composing {
         format!("{}{}{}", self.before, c.kana(), self.after)
     }
     fn settle(&mut self) {
+        self.live_typo = None;
         self.composer.flush();
         self.before.push_str(self.composer.kana());
         self.composer.clear();
     }
+
+    fn resume_romaji(&mut self) {
+        if self.composer.is_empty() {
+            // Moving the caret flushed the composer. Let a stranded key
+            // immediately before the caret combine with the next letter.
+            let start = self
+                .before
+                .trim_end_matches(|ch: char| ch.is_ascii_alphabetic())
+                .len();
+            self.composer.push_str(&self.before[start..]);
+            self.before.truncate(start);
+        }
+    }
     fn is_empty(&self) -> bool {
         self.before.is_empty() && self.composer.is_empty() && self.after.is_empty()
+    }
+
+    fn live_composer(&self) -> &Composer {
+        self.live_typo
+            .as_ref()
+            .map_or(&self.composer, |fix| &fix.composer)
+    }
+
+    fn live_kana(&self) -> String {
+        self.live_typo
+            .as_ref()
+            .map_or_else(|| self.kana(), LiveTypo::kana)
     }
 
     /// Whether `raw` holds the keys of the whole composition, in order.
@@ -179,6 +206,15 @@ impl Composing {
     }
 
     fn backspace(&mut self) {
+        if let Some(fix) = &self.live_typo {
+            if self.raw.len() > fix.prefix_len {
+                self.raw.pop();
+                self.composer.clear();
+                self.composer.push_str(&self.raw);
+                return;
+            }
+            self.live_typo = None;
+        }
         // Delete a key from a mixed spelling. Replaying the remainder can
         // reopen a consonant that the deleted key made the composer emit.
         let mixed = self.composer.kana().bytes().any(|b| b.is_ascii_alphabetic())
@@ -213,6 +249,43 @@ impl Composing {
         let letters = reading.bytes().filter(u8::is_ascii_alphabetic).count();
         (kana >= 2 && letters <= 3).then_some(&self.raw)
     }
+}
+
+/// Whether a repair would overwrite a spelling selected or registered by
+/// the user. Find the affected span in the original reading so a spelling
+/// elsewhere in the sentence does not block the repair.
+fn explicit_spelling_overrides(conv: &Converter, original: &str, repaired: &str) -> bool {
+    if original == repaired {
+        return false;
+    }
+    let start: usize = original
+        .chars()
+        .zip(repaired.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let tail: usize = original[start..]
+        .chars()
+        .rev()
+        .zip(repaired[start..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let end = original.len() - tail;
+    conv.convert(original, &[], 1).first().is_some_and(|best| {
+        let mut offset = 0;
+        best.segments
+            .iter()
+            .flat_map(|segment| &segment.words)
+            .any(|word| {
+                let word_start = offset;
+                offset += word.reading.len();
+                word_start < end
+                    && start < offset
+                    && (word.learned || word.user)
+                    && english::typed_word(&word.reading, &word.surface)
+            })
+    })
 }
 
 /// Particles that end a word typed after Shift at Space or Enter
@@ -328,7 +401,11 @@ impl Session {
         let c = &self.comp;
         if let Some(live) = &c.live {
             // An English word already includes the pending keys.
-            let pending = if c.live_english || c.live_pending { "" } else { c.composer.pending() };
+            let pending = if c.live_english || c.live_pending {
+                ""
+            } else {
+                c.live_composer().pending()
+            };
             let text = format!("{}{}", live.surface, pending);
             let spans = if text.is_empty() { vec![] } else { vec![(0, text.len(), SpanAttr::Input)] };
             return Preedit { caret: text.len(), text, spans };
@@ -704,6 +781,9 @@ impl Session {
                 true
             }
             Key::Char(c) if !c.is_control() => {
+                if c.is_ascii_alphabetic() {
+                    self.comp.resume_romaji();
+                }
                 self.comp.composer.push(c);
                 self.comp.raw.push(c);
                 if self.comp.before.is_empty()
@@ -738,13 +818,13 @@ impl Session {
                 true
             }
             Key::Enter => {
-                let kana = self.comp.kana();
+                let kana = self.comp.live_kana();
                 let text = match &self.comp.live {
                     // Commit exactly what is shown.
                     Some(live)
                         if self.comp.live_english
                             || self.comp.live_pending
-                            || self.comp.composer.pending().is_empty() =>
+                            || self.comp.live_composer().pending().is_empty() =>
                     {
                         live.surface.clone()
                     }
@@ -757,13 +837,13 @@ impl Session {
                 true
             }
             Key::Tab if !self.comp.suggestions.is_empty() => {
-                let kana = self.comp.kana();
+                let kana = self.comp.live_kana();
                 let cands = std::mem::take(&mut self.comp.suggestions);
                 self.conv = Some(Converting {
                     segs: vec![SegState { reading: kana, cands, expanded: true, selected: 0, predicted: true }],
                     focus: 0,
                     window: true,
-                    corrected: false,
+                    corrected: self.comp.live_typo.is_some(),
                 });
                 true
             }

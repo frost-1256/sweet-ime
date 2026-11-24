@@ -2,17 +2,40 @@
 
 use std::time::Duration;
 
+use crate::romaji::Composer;
 use crate::{Conversion, Converter, english, special, typo};
 
-use super::Session;
+use super::{Session, explicit_spelling_overrides};
 
 const SUGGESTION_LIMIT: usize = 5;
 const TYPO_SUGGESTION_BUDGET: Duration = Duration::from_millis(4);
+const TYPO_REPLACEMENT_MARGIN: i32 = 1000;
 
 #[derive(Clone)]
 pub(super) struct LiveConversion {
     pub(super) reading: String,
     pub(super) surface: String,
+}
+
+/// A repair shown in live conversion. The original keys remain editable.
+pub(super) struct LiveTypo {
+    pub(super) prefix_len: usize,
+    keys: String,
+    pub(super) composer: Composer,
+}
+
+impl LiveTypo {
+    fn rebuild(&mut self, raw: &str) {
+        self.composer.clear();
+        self.composer.push_str(&self.keys);
+        self.composer.push_str(&raw[self.prefix_len..]);
+    }
+
+    pub(super) fn kana(&self) -> String {
+        let mut composer = self.composer.clone();
+        composer.flush();
+        composer.kana().to_owned()
+    }
 }
 
 impl Session {
@@ -34,10 +57,10 @@ impl Session {
         if self.conv.is_some() || self.comp.live_english || !self.options.live_conversion {
             return None;
         }
-        let reading = match self.comp.composer.pending() {
+        let reading = match self.comp.live_composer().pending() {
             _ if self.comp.live_pending => live.reading.clone(),
             "" => live.reading.clone(),
-            "n" => self.comp.kana(),
+            "n" => self.comp.live_kana(),
             _ => return None,
         };
         Some((reading, self.left_context.clone()))
@@ -66,6 +89,7 @@ impl Session {
     /// Recomputes live conversion and suggestions after a composing edit.
     pub(super) fn refresh(&mut self, conv: &Converter) {
         let c = &mut self.comp;
+        let previous_typo = c.live_typo.take();
         c.live = None;
         c.live_english = false;
         c.live_pending = false;
@@ -116,10 +140,29 @@ impl Session {
                 .then(|| c.bundled_candidates(&kana))
                 .flatten()
                 .and_then(|candidates| candidates.into_iter().next());
+            let mut explicit_spelling = false;
+            if bundled.is_none()
+                && unresolved
+                && !words
+                && (previous_typo.is_some() || correction.is_some())
+                && c.raw_spells(&kana)
+            {
+                let previous = previous_typo.filter(|fix| c.raw.len() >= fix.prefix_len);
+                let fix = continue_typo(conv, &c.raw, previous, correction.take());
+                explicit_spelling = fix
+                    .as_ref()
+                    .is_some_and(|fix| explicit_spelling_overrides(conv, &kana, &fix.kana()));
+                c.live_typo = fix.filter(|_| !explicit_spelling);
+            }
             let typo_possible =
                 c.typo_input(&settled).is_some() && !c.composer.pending().is_empty();
             bundled.or_else(|| {
-                if !unresolved_kana || !unresolved || typo_possible {
+                if !unresolved_kana
+                    || !unresolved
+                    || typo_possible
+                    || c.live_typo.is_some()
+                    || explicit_spelling
+                {
                     return None;
                 }
                 c.english(&kana, correction.is_some(), listed)
@@ -143,40 +186,36 @@ impl Session {
         }
         if live {
             // Lattice only: this runs on every keystroke.
-            c.live = match correction.take_if(|_| unresolved) {
-                Some(fix) => Some(LiveConversion {
-                    reading: fix.reading,
-                    surface: fix.surface,
-                }),
-                None => {
-                    // Pending keys that end an English word ("linux" keeps
-                    // its x pending) convert with it.
-                    let with_pending = (!c.composer.pending().is_empty() && kana != settled)
-                        .then(|| conv.convert(&kana, &[], 1).into_iter().next())
-                        .flatten()
-                        .filter(|r| {
-                            r.segments
-                                .last()
-                                .and_then(|s| s.words.last())
-                                .is_some_and(|w| {
-                                    w.reading.bytes().any(|b| b.is_ascii_alphabetic())
-                                        && english::is_spelling(&w.reading, &w.surface)
-                                })
-                        });
-                    let reading = if with_pending.is_some() {
-                        kana.clone()
-                    } else {
-                        settled.clone()
-                    };
-                    c.live_pending = with_pending.is_some();
-                    live_best =
-                        with_pending.or_else(|| conv.convert(&settled, &[], 1).into_iter().next());
-                    live_best.as_ref().map(|r| LiveConversion {
-                        surface: stable_live(c.refined.as_ref(), &reading, r),
-                        reading,
-                    })
-                }
+            let (live_settled, live_kana) = match &c.live_typo {
+                Some(fix) => (fix.composer.kana(), fix.kana()),
+                None => (settled.as_str(), kana),
             };
+            // Pending keys that end an English word ("linux" keeps
+            // its x pending) convert with it.
+            let with_pending = (live_kana != live_settled)
+                .then(|| conv.convert(&live_kana, &[], 1).into_iter().next())
+                .flatten()
+                .filter(|r| {
+                    r.segments
+                        .last()
+                        .and_then(|s| s.words.last())
+                        .is_some_and(|w| {
+                            w.reading.bytes().any(|b| b.is_ascii_alphabetic())
+                                && english::is_spelling(&w.reading, &w.surface)
+                        })
+                });
+            c.live_pending = with_pending.is_some();
+            live_best =
+                with_pending.or_else(|| conv.convert(live_settled, &[], 1).into_iter().next());
+            let reading = if c.live_pending {
+                live_kana
+            } else {
+                live_settled.to_owned()
+            };
+            c.live = live_best.as_ref().map(|r| LiveConversion {
+                surface: stable_live(c.refined.as_ref(), &reading, r),
+                reading,
+            });
         }
         if suggest && self.options.calculator {
             if let Some(value) = special::calculator_candidates(&settled).into_iter().next() {
@@ -207,6 +246,41 @@ impl Session {
                 }
             }
         }
+    }
+}
+
+fn continue_typo(
+    conv: &Converter,
+    raw: &str,
+    previous: Option<LiveTypo>,
+    challenger: Option<typo::Correction>,
+) -> Option<LiveTypo> {
+    let previous = previous.map(|mut fix| {
+        fix.rebuild(raw);
+        fix
+    });
+    let challenger = challenger.filter(|next| {
+        previous.as_ref().is_none_or(|fix| {
+            let reading = fix.kana();
+            // More text can clarify an ambiguous repair. Keep the displayed
+            // repair unless the new reading is materially better.
+            next.reading != reading
+                && conv.score_typos(|cost| {
+                    cost(&next.reading) + TYPO_REPLACEMENT_MARGIN < cost(&reading)
+                })
+        })
+    });
+    match challenger {
+        Some(next) => {
+            let mut fix = LiveTypo {
+                prefix_len: raw.len(),
+                keys: next.raw,
+                composer: Composer::new(),
+            };
+            fix.rebuild(raw);
+            Some(fix)
+        }
+        None => previous,
     }
 }
 
