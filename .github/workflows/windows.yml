@@ -249,6 +249,13 @@ jobs:
             done
           else
             args=(--verify-tag --generate-notes)
+            tag_ref="refs/tags/$RELEASE_TAG"
+            if [[ "$(git cat-file -t "$tag_ref")" == tag ]]; then
+              notes=$(git for-each-ref --format='%(contents:body)' "$tag_ref")
+              if [[ -n "$notes" ]]; then
+                args+=(--notes "$notes")
+              fi
+            fi
             if [[ "$RELEASE_TAG" == *-* ]]; then
               args+=(--prerelease)
             fi

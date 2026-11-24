@@ -371,9 +371,11 @@ APK は `out/SweetIME-Android.apk` にできます。
   Actions シークレットに設定すると、push 時の CI がテスト済みの
   x86-64・ARM64 パッケージを登録します。
 - リリースするときは、`Cargo.toml` と `nix/package.nix` の `version` を上げて
-  `main` にマージし、そのコミットの `Release eligibility` が通ったら、
-  `v0.1.3` のようなタグを打って push します。タグのビルドが、インストーラーと
-  APK を GitHub Releases に公開します。
+  `main` にマージし、そのコミットの `Release eligibility` が通るのを待ちます。
+  `git tag -a vX.Y.Z <main-commit>` で注釈付きタグを作り、タイトルの次に空行を
+  入れて、前のリリースから利用者が気づく変更点を Markdown の箇条書きで書きます。
+  タグを push すると、インストーラーと APK が公開され、GitHub が自動生成する
+  変更履歴の上にこの要約が表示されます。
 
 ## ライセンス
 
