@@ -614,6 +614,25 @@ fn caret_editing_and_escape() {
 }
 
 #[test]
+fn an_unfinished_consonant_can_be_completed_after_moving_the_caret() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "zuttopattidakda");
+    assert!(s.handle(&c, Key::Left));
+    let preedit = s.preedit();
+    assert_eq!(&preedit.text[..preedit.caret], "ずっとぱっちだk");
+    assert_eq!(&preedit.text[preedit.caret..], "だ");
+
+    type_str(&mut s, &c, "e");
+    let preedit = s.preedit();
+    assert_eq!(&preedit.text[..preedit.caret], "ずっとぱっちだけ");
+    assert_eq!(&preedit.text[preedit.caret..], "だ");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "ずっとパッチだけだ");
+}
+
+#[test]
 fn transliterate_keys() {
     let Some(c) = converter() else { return };
     let mut s = plain();
@@ -861,6 +880,60 @@ fn live_typo_correction_uses_the_corrected_reading() {
     type_str(&mut s, &c, "saisiylo");
     s.handle(&c, Key::Escape);
     assert_eq!(s.preedit().text, "さいしyぉ");
+}
+
+#[test]
+fn live_typo_correction_survives_more_keys_and_punctuation() {
+    let Some(c) = converter() else { return };
+    for convert_first in [false, true] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, "saisiylo");
+        assert_eq!(s.preedit().text, "最初");
+        type_str(&mut s, &c, "n");
+        assert_eq!(s.preedit().text, "最初n");
+        assert_eq!(s.live_commit_request().unwrap().0, "さいしょん");
+        type_str(&mut s, &c, "o,");
+        assert_eq!(s.preedit().text, "最初の、");
+        assert_eq!(s.live_request().unwrap().0, "さいしょの、");
+        assert!(!s.apply_live("さいしょ", "最初"));
+        if convert_first {
+            assert!(s.handle(&c, Key::Space));
+            assert_eq!(s.preedit().text, "最初の、");
+        }
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), "最初の、");
+    }
+
+    let mut s = Session::new();
+    type_str(&mut s, &c, "kakuyninn");
+    assert_eq!(s.preedit().text, "確認");
+    for ch in "shiteokimasu.".chars() {
+        assert!(s.handle(&c, Key::Char(ch)));
+        assert!(s.preedit().text.starts_with("確認"), "{}", s.preedit().text);
+    }
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "確認しておきます。");
+}
+
+#[test]
+fn editing_or_dismissing_a_live_typo_preserves_the_original_keys() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "saisiylono,");
+    assert!(s.handle(&c, Key::Backspace));
+    assert_eq!(s.preedit().text, "最初の");
+    assert!(s.handle(&c, Key::Backspace));
+    assert_eq!(s.preedit().text, "最初n");
+    assert!(s.handle(&c, Key::Backspace));
+    assert_eq!(s.preedit().text, "最初");
+    assert!(s.handle(&c, Key::Backspace));
+    assert!(s.preedit().text.ends_with("yl"), "{}", s.preedit().text);
+
+    s.reset();
+    type_str(&mut s, &c, "saisiylono,");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Escape));
+    assert_eq!(s.preedit().text, "さいしyぉの、");
 }
 
 #[test]

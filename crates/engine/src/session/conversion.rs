@@ -74,15 +74,17 @@ impl Session {
         }
         let listed = self.options.english_words && conv.english_words_enabled();
         let words = english::covers_letters(&kana, listed);
-        let correction = if typo::has_unresolved_romaji(&kana) && !words {
+        let live_reading = self.comp.live_typo.as_ref().map(super::LiveTypo::kana);
+        let correction = if live_reading.is_none() && typo::has_unresolved_romaji(&kana) && !words {
             self.comp
                 .typo_input(&kana)
                 .and_then(|raw| typo::correct(conv, raw, 0, TYPO_CONVERSION_BUDGET))
         } else {
             None
         };
+        let corrected = live_reading.is_some() || correction.is_some();
         if typo::has_unresolved_romaji(&kana) {
-            if let Some(word) = self.comp.english(&kana, correction.is_some(), listed) {
+            if let Some(word) = self.comp.english(&kana, corrected, listed) {
                 // Keys that are not romaji: the word as typed, capitalized,
                 // then the kana reading's conversion.
                 let mut cands: Vec<String> = conv
@@ -121,9 +123,10 @@ impl Session {
                 return;
             }
         }
-        let reading = correction
-            .as_ref()
-            .map_or(kana.as_str(), |fix| fix.reading.as_str());
+        let reading = live_reading
+            .as_deref()
+            .or(correction.as_ref().map(|fix| fix.reading.as_str()))
+            .unwrap_or(&kana);
         let result = conv.convert_best(reading, &[], &self.left_context);
         let mut segs = segs_from(result.first(), reading);
         // A special reading (えがお) stays one segment so its candidates show.
@@ -145,7 +148,7 @@ impl Session {
             segs,
             focus: 0,
             window: false,
-            corrected: correction.is_some(),
+            corrected,
         });
     }
 

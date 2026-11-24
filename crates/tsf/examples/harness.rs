@@ -541,6 +541,33 @@ fn main() -> Result<()> {
         h.key(0x1B);
         check("cancel after 2nd esc", h.text(), "", &mut fails);
 
+        // Complete a stranded romaji consonant in the middle of the preedit.
+        h.clear();
+        h.type_str("zuttopattidakda");
+        h.key(0x25); // left, between k and the final だ
+        let caret = "ずっとぱっちだk".encode_utf16().count() as i32;
+        check(
+            "caret after stranded romaji",
+            format!("{:?}", h.store.sel.get()),
+            &format!("{:?}", (caret, caret)),
+            &mut fails,
+        );
+        h.type_str("e");
+        check(
+            "repair at the caret",
+            h.text(),
+            "ずっとぱっちだけだ",
+            &mut fails,
+        );
+        h.key(0x20);
+        h.key(0x0D);
+        check(
+            "commit after caret repair",
+            h.text(),
+            "ずっとパッチだけだ",
+            &mut fails,
+        );
+
         // 2. candidate window + selection by digit
         h.clear();
         h.type_str("kisha");
