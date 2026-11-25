@@ -157,11 +157,6 @@ impl Converter {
             self.convert(text, boundaries, 1)
         };
         if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
-            if let Some((reading, _)) = super::extras::casual_phrase(text)
-                && res.first().is_some_and(|candidate| candidate.surface().starts_with(reading))
-            {
-                return res;
-            }
             // After a version number, でたね is usually a release
             // announcement. Keep the lattice's release phrase when present.
             if super::release_phrase::follows_version(text, left_context)
@@ -195,12 +190,19 @@ impl Converter {
         if candidates.len() < 2 {
             return None;
         }
-        let protected = personal_spans(&candidates[0]);
+        let mut protected = personal_spans(&candidates[0]);
+        if let Some((phrase, _)) = super::extras::casual_phrase(reading)
+            && spans(&candidates[0]).next().is_some_and(|(start, end, word)| {
+                start == 0 && end == phrase.len() && word.surface == phrase
+            })
+        {
+            protected.push((0, phrase.len(), phrase));
+        }
         if protected.is_empty() {
             return self.choose_ranked(reranker, reading, context, candidates);
         }
         // The model can improve the rest of the sentence while the words
-        // learned or registered by the user stay at their original offsets.
+        // learned or registered by the user and casual phrases stay at their original offsets.
         let (indices, eligible): (Vec<_>, Vec<_>) = candidates
             .iter()
             .enumerate()

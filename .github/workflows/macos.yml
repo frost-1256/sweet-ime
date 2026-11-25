@@ -103,6 +103,10 @@ jobs:
           test ! -e "$work"
           bash macos/install.sh --archive SweetIME-macOS.zip
           codesign --verify --deep --strict "$target"
+          mkdir -p "$work/previous.app/Contents"
+          bash macos/install.sh --archive SweetIME-macOS.zip
+          test ! -e "$work"
+          codesign --verify --deep --strict "$target"
       - uses: actions/upload-artifact@v7
         if: matrix.runner == 'macos-15'
         with:

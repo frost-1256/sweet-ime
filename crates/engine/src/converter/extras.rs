@@ -106,7 +106,7 @@ pub(super) fn casual_phrase(text: &str) -> Option<(&'static str, &'static str)> 
         .into_iter()
         .find(|(reading, _)| {
             text.strip_prefix(reading).is_some_and(|tail| {
-                tail.chars().all(|ch| matches!(ch, '、' | '。' | '！' | '？' | '…' | '!' | '?'))
+                tail.is_empty() || tail.starts_with(['、', '。', '！', '？', '…', '!', '?'])
             })
         })
 }

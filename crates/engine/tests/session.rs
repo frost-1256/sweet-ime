@@ -1763,6 +1763,10 @@ fn casual_reactions_keep_their_hiragana_spelling() {
         assert_eq!(c.convert_best(reading, &[], "")[0].surface(), reading);
         let with_punctuation = format!("{reading}。");
         assert_eq!(c.convert_best(&with_punctuation, &[], "")[0].surface(), with_punctuation);
+        let prefix = format!("{reading}、");
+        let sentence = format!("{prefix}いこう");
+        assert!(c.convert(&sentence, &[], 1)[0].surface().starts_with(&prefix));
+        assert!(c.convert_best(&sentence, &[], "")[0].surface().starts_with(&prefix));
         let mut s = Session::new();
         type_str(&mut s, &c, romaji);
         assert_eq!(s.preedit().text, reading, "{romaji}");
@@ -1770,4 +1774,5 @@ fn casual_reactions_keep_their_hiragana_spelling() {
         assert_eq!(s.preedit().text, reading, "{romaji}");
         assert!(c.convert(reading, &[], 12).iter().any(|item| item.surface() == katakana));
     }
+    assert_eq!(c.convert("りょうかい", &[], 1)[0].surface(), "了解");
 }

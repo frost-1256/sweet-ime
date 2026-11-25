@@ -63,12 +63,10 @@ if [[ -e $target || -L $target ]]; then
 fi
 if [[ -e $work || -L $work ]]; then
     [[ -d $work && ! -L $work ]] || fail "一時フォルダーを確認できません: $work"
-    if [[ -e $backup || -L $backup ]]; then
+    if [[ ! -e $target && ( -e $backup || -L $backup ) ]]; then
         check_existing_app "$backup"
-        if [[ ! -e $target ]]; then
-            /bin/mv "$backup" "$target"
-            printf '%s\n' '中断された更新から以前の Sweet IME を復元しました。'
-        fi
+        /bin/mv "$backup" "$target"
+        printf '%s\n' '中断された更新から以前の Sweet IME を復元しました。'
     fi
     /bin/rm -rf "$work"
 fi
