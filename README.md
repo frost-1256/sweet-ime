@@ -76,13 +76,26 @@ use **Settings → 情報**, or set `update_check = off`.
 
 ### macOS
 
-Download `SweetIME-macOS.zip` from the
-[latest release](https://github.com/frost-1256/sweet-ime/releases/latest)
-and extract it.
-Copy `Sweet IME.app` into `~/Library/Input Methods`, then log out and back in.
-In **System Settings → Keyboard → Text Input → Edit**, add **Sweet IME**
-under Japanese and select it from the input menu. The same menu opens
-**設定…** (Settings).
+Download and extract `SweetIME-macOS.zip` from the
+[latest release](https://github.com/frost-1256/sweet-ime/releases/latest).
+Open **Install Sweet IME.command** beside the app to install or replace it for
+your account. If the ZIP has no installer, copy `Sweet IME.app` into
+`~/Library/Input Methods`, replacing the previous copy if present.
+
+Log out and back in to load the installed version. On the first install,
+add **Sweet IME** under Japanese in **System Settings → Keyboard → Text Input
+→ Edit** and select it from the input menu. The same menu opens **設定…**
+(Settings). For future updates, go to **情報 → アップデート** and select **更新する**
+when a new version is available. Your settings, history and models stay in
+their existing locations.
+
+You can also install or update from Terminal:
+
+```sh
+installer=$(mktemp -t sweet-ime-install) &&
+  /usr/bin/curl -qfsSL https://raw.githubusercontent.com/frost-1256/sweet-ime/main/macos/install.sh -o "$installer" &&
+  /bin/bash "$installer"
+```
 
 When updating from `v0.5.0-alpha.1`, replace the previous `Sweet IME.app`
 before logging back in. If the source is missing, run this in Terminal to

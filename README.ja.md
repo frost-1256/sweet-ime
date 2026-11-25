@@ -72,12 +72,24 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 
 ### macOS
 
-[最新リリース](https://github.com/frost-1256/sweet-ime/releases/latest)から
-`SweetIME-macOS.zip` をダウンロードし、展開します。
-`Sweet IME.app` を `~/Library/Input Methods` に入れて、ログインし直します。
-**システム設定 → キーボード → テキスト入力 → 編集** で「日本語」から
-**Sweet IME** を追加し、入力メニューから選びます。同じメニューの
-「設定…」から設定アプリを開けます。
+[最新リリース](https://github.com/frost-1256/sweet-ime/releases/latest)の
+`SweetIME-macOS.zip` を展開し、**Install Sweet IME.command** を開くと新規インストール・
+上書き更新ができます。ZIP 内にインストーラーがない場合は、`Sweet IME.app` を
+`~/Library/Input Methods` に入れ、既存のファイルがあれば差し替えてください。
+
+ログインし直すとインストールしたバージョンが読み込まれます。初回のみ
+**システム設定 → キーボード → テキスト入力 → 編集** の「日本語」から
+**Sweet IME** を追加し、入力メニューから選びます。同じメニューの「設定…」から
+設定アプリを開けます。次回からは **情報 → アップデート** で **更新する** を
+選べます。設定・学習履歴・モデルは引き継がれます。
+
+ターミナルから最新版をインストール・更新することもできます。
+
+```sh
+installer=$(mktemp -t sweet-ime-install) &&
+  /usr/bin/curl -qfsSL https://raw.githubusercontent.com/frost-1256/sweet-ime/main/macos/install.sh -o "$installer" &&
+  /bin/bash "$installer"
+```
 
 `v0.5.0-alpha.1` から更新する場合は、以前の `Sweet IME.app` を
 差し替えてからログインし直してください。入力ソース名が見つからない場合は、

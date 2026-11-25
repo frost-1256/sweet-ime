@@ -20,9 +20,7 @@ mod reports_page;
 mod single_instance;
 #[cfg(not(target_os = "macos"))]
 mod theme_page;
-#[cfg(not(target_os = "macos"))]
 mod update;
-#[cfg(not(target_os = "macos"))]
 mod update_ui;
 
 use eframe::egui::{self, RichText, Vec2};
@@ -141,7 +139,6 @@ struct App {
     apps: apps_page::AppsPage,
     dict: dict_page::DictPage,
     reports: reports_page::ReportsSection,
-    #[cfg(not(target_os = "macos"))]
     updater: update::Updater,
 }
 
@@ -153,7 +150,6 @@ impl App {
         sweet_ui::setup(&cc.egui_ctx);
         let history = paths::history_file().map(UserHistory::with_file);
         let opts = paths::load_options();
-        #[cfg(not(target_os = "macos"))]
         let updater = {
             let mut updater = update::Updater::new();
             if opts.update_check {
@@ -179,7 +175,6 @@ impl App {
             apps: apps_page::AppsPage::new(),
             dict: dict_page::DictPage::new(),
             reports: reports_page::ReportsSection::new(),
-            #[cfg(not(target_os = "macos"))]
             updater,
         };
         app.reload_history();
@@ -224,13 +219,11 @@ impl eframe::App for App {
         if let Some(page) = self.activation.take_page() {
             self.select_page(page);
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.updater.poll(ui.ctx());
-            if matches!(self.updater.state, update::State::Launched) {
-                // Let the installer replace this program.
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+        self.updater.poll(ui.ctx());
+        #[cfg(windows)]
+        if matches!(self.updater.state, update::State::Launched) {
+            // Let the installer replace this program.
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(download) = &mut self.download {
             download.poll();
@@ -253,7 +246,6 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(14.0);
-                #[cfg(not(target_os = "macos"))]
                 if self.page != Page::About {
                     update_ui::banner(ui, &mut self.updater);
                 }
@@ -363,7 +355,6 @@ impl App {
 impl App {
 fn about_page(&mut self, ui: &mut egui::Ui) {
     card(ui, "Sweet IME", concat!("バージョン ", env!("CARGO_PKG_VERSION")), |_| {});
-    #[cfg(not(target_os = "macos"))]
     if update_ui::section(ui, &mut self.updater, &mut self.opts.update_check) {
         self.save();
     }

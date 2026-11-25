@@ -32,7 +32,7 @@ jobs:
       - name: Build the system dictionary
         shell: pwsh
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
-      - run: cargo test --locked -p sweet-macos -p sweet-zenz -- --test-threads=1
+      - run: cargo test --locked -p sweet-macos -p sweet-settings -p sweet-zenz -- --test-threads=1
       - run: bash macos/build.sh
       - uses: actions/upload-artifact@v7
         with:
@@ -64,6 +64,26 @@ jobs:
       - name: Verify native candidate rows and capture the panel
         if: matrix.runner == 'macos-15'
         run: '"Sweet IME.app/Contents/MacOS/SweetIME" --candidate-panel-preview macOS-candidates.png'
+      - name: Verify first install, replacement and invalid bundle rejection
+        if: matrix.runner == 'macos-15'
+        run: |
+          export SWEET_IME_INPUT_METHODS_DIR="$RUNNER_TEMP/installer test/Input Methods"
+          target="$SWEET_IME_INPUT_METHODS_DIR/Sweet IME.app"
+          test -x "./Install Sweet IME.command"
+          "./Install Sweet IME.command"
+          codesign --verify --deep --strict "$target"
+          touch "$target/Contents/Resources/previous-install"
+          bash macos/install.sh --archive SweetIME-macOS.zip
+          test ! -e "$target/Contents/Resources/previous-install"
+          codesign --verify --deep --strict "$target"
+          cp -R "Sweet IME.app" "$RUNNER_TEMP/tampered.app"
+          printf 'invalid' > "$RUNNER_TEMP/tampered.app/Contents/Resources/system.dict"
+          if bash macos/install.sh --bundle "$RUNNER_TEMP/tampered.app"; then
+            echo "Installer accepted a modified bundle" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict "$target"
+          test ! -e "$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install"
       - uses: actions/upload-artifact@v7
         if: matrix.runner == 'macos-15'
         with:
