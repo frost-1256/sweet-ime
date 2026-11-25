@@ -1,11 +1,15 @@
 //! Update notices: the banner and the 情報 page section of the settings app,
 //! and the small window shown at sign-in (`--check-update`).
 
-use sweet_ui::eframe::{self, egui};
-use egui::{RichText, Vec2};
+use sweet_ui::eframe::egui;
+use egui::RichText;
+#[cfg(not(target_os = "macos"))]
+use {egui::Vec2, sweet_ui::eframe};
 use sweet_ui::{card, card_frame, toggle};
 
-use crate::update::{self, Release, current, Remembered, State, Updater};
+use crate::update::{Release, current, State, Updater};
+#[cfg(not(target_os = "macos"))]
+use crate::update::{self, Remembered};
 
 fn notes(ui: &mut egui::Ui, r: &Release, height: f32) {
     if r.notes.is_empty() {
@@ -16,20 +20,20 @@ fn notes(ui: &mut egui::Ui, r: &Release, height: f32) {
     });
 }
 
-/// The update button (Windows) or how to update (elsewhere).
+/// The update button (Windows and macOS) or package manager instructions.
 fn actions(ui: &mut egui::Ui, u: &mut Updater, r: &Release) {
     ui.horizontal(|ui| {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if ui.add(sweet_ui::primary_button("更新する")).clicked() {
             u.install(ui.ctx());
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = &u;
         if !r.page.is_empty() {
             ui.hyperlink_to("リリースノート", &r.page);
         }
     });
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     ui.label(
         RichText::new("NixOS では、flake の sweet-ime 入力を更新して再ビルドすると新しいバージョンになります。")
             .small()
@@ -47,6 +51,13 @@ fn downloading(ui: &mut egui::Ui, u: &Updater, r: &Release) {
 
 /// A notice above every page while an update is available or downloading.
 pub fn banner(ui: &mut egui::Ui, u: &mut Updater) {
+    #[cfg(target_os = "macos")]
+    if matches!(u.state, State::Installed) {
+        card_frame(ui).show(ui, |ui| {
+            ui.label("更新しました。ログアウトして再ログインすると反映されます。");
+        });
+        return;
+    }
     let r = match &u.state {
         State::Available(r) | State::Downloading(r) => r.clone(),
         _ => return,
@@ -106,8 +117,13 @@ pub fn section(ui: &mut egui::Ui, u: &mut Updater, auto: &mut bool) -> bool {
                 let r = r.clone();
                 downloading(ui, u, &r);
             }
+            #[cfg(not(target_os = "macos"))]
             State::Launched => {
                 ui.label("インストーラーを起動しました。");
+            }
+            #[cfg(target_os = "macos")]
+            State::Installed => {
+                ui.label("更新しました。ログアウトして再ログインすると反映されます。");
             }
             State::Failed(e) => {
                 ui.colored_label(ui.visuals().error_fg_color, e);
@@ -119,6 +135,7 @@ pub fn section(ui: &mut egui::Ui, u: &mut Updater, auto: &mut bool) -> bool {
 
 /// `--check-update`: checks quietly (at sign-in) and opens a small window
 /// only when there is a new version the user hasn't skipped.
+#[cfg(not(target_os = "macos"))]
 pub fn check_at_sign_in() -> eframe::Result<()> {
     if !sweet_engine::paths::load_options().update_check {
         return Ok(());
@@ -152,10 +169,12 @@ pub fn check_at_sign_in() -> eframe::Result<()> {
     )
 }
 
+#[cfg(not(target_os = "macos"))]
 struct Prompt {
     updater: Updater,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl eframe::App for Prompt {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();

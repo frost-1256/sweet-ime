@@ -28,7 +28,7 @@ pub(super) struct Converting {
 impl Session {
     /// The reading to send on a desktop Space key that starts conversion.
     pub fn simeji_conversion_reading(&self, key: Key) -> Option<String> {
-        if key != Key::Space || !self.options.simeji_cloud || self.private {
+        if key != Key::Space || self.is_converting() || !self.options.simeji_cloud || self.private {
             return None;
         }
         self.simeji_reading()

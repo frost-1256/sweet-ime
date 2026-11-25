@@ -317,7 +317,7 @@ public final class SettingsActivity extends Activity {
         engineToggle(extra, "emoji");
         engineToggle(extra, "calculator");
         extra.addView(prefToggle("Simejiクラウド変換",
-                "候補バーの「クラウド」を押すと、入力中のかなの読みをSimejiに送信し、顔文字候補を取得します。",
+                "候補バーの雲アイコンを押すと、入力中のかなの読みをSimejiに送信し、顔文字候補を一覧に表示します。",
                 Prefs.SIMEJI_CLOUD, false));
     }
 

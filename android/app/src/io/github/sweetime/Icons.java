@@ -36,6 +36,7 @@ final class Icons {
     static final int INFO = 23;
     static final int EMOJI = 24;
     static final int UNDO = 25;
+    static final int CLOUD = 26;
 
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -59,6 +60,14 @@ final class Icons {
         fill.setColor(color);
         path.reset();
         switch (icon) {
+            case CLOUD:
+                path.moveTo(7, 18.5f);
+                path.cubicTo(1, 18.5f, 1, 10, 7.5f, 10);
+                path.cubicTo(9, 3.5f, 18, 3.5f, 19, 10.5f);
+                path.cubicTo(24, 11.5f, 23, 18.5f, 18.5f, 18.5f);
+                path.close();
+                c.drawPath(path, stroke);
+                break;
             case CLIPBOARD:
                 c.drawRoundRect(5, 4, 19, 21, 2, 2, stroke);
                 c.drawRoundRect(9, 2, 15, 6, 1, 1, stroke);

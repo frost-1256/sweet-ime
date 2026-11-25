@@ -18,7 +18,8 @@ version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml)
 bundle_version=${version%%[-+]*}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-app="$work/Sweet IME.app"
+payload="$work/payload"
+app="$payload/Sweet IME.app"
 resources="$app/Contents/Resources"
 settings="$resources/Sweet IME Settings.app"
 settings_resources="$settings/Contents/Resources"
@@ -75,6 +76,8 @@ codesign --verify --deep --strict "$app"
 
 mkdir -p "$root/out"
 archive="$root/out/SweetIME-macOS.zip"
-ditto -c -k --keepParent "$app" "$work/SweetIME-macOS.zip"
+cp macos/install.sh "$payload/Install Sweet IME.command"
+chmod +x "$payload/Install Sweet IME.command"
+ditto -c -k "$payload" "$work/SweetIME-macOS.zip"
 mv -f "$work/SweetIME-macOS.zip" "$archive"
 printf '%s\n' "$archive"

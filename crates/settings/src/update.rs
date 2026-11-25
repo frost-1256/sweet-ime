@@ -1,11 +1,10 @@
-//! Update check against GitHub Releases, and (on Windows) download and
-//! launch of the new installer.
+//! Update check against GitHub Releases and installation on Windows and macOS.
 //!
 //! Requests go through `curl`, which ships with Windows 10 and later and is
 //! on the PATH of the Linux package.
 
 // Elsewhere updates come from the package manager: only the check is used.
-#![cfg_attr(not(windows), allow(dead_code))]
+#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -16,6 +15,9 @@ use sweet_engine::paths;
 use sweet_ui::eframe::egui;
 
 const REPO: &str = "frost-1256/sweet-ime";
+#[cfg(target_os = "macos")]
+const INSTALLER: &str = "SweetIME-macOS.zip";
+#[cfg(not(target_os = "macos"))]
 const INSTALLER: &str = "SweetIME-Setup.exe";
 /// The running version. Debug builds can pretend to be another one with
 /// `SWEET_UPDATE_CURRENT` to try the update flow.
@@ -74,7 +76,9 @@ fn curl() -> std::process::Command {
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         c
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    return std::process::Command::new("/usr/bin/curl");
+    #[cfg(not(any(windows, target_os = "macos")))]
     std::process::Command::new("curl")
 }
 
@@ -91,10 +95,10 @@ fn run(c: &mut std::process::Command) -> Result<Vec<u8>, String> {
 fn parse_release(json: &[u8]) -> Result<Release, String> {
     let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("応答を読めません: {e}"))?;
     let tag = v["tag_name"].as_str().ok_or("応答にバージョンがありません")?;
-    let prefix = format!("https://github.com/{REPO}/releases/download/");
+    let expected_url = format!("https://github.com/{REPO}/releases/download/{tag}/{INSTALLER}");
     let installer = v["assets"].as_array().into_iter().flatten().find_map(|a| {
         let url = a["browser_download_url"].as_str()?;
-        if a["name"].as_str()? != INSTALLER || !url.starts_with(&prefix) {
+        if a["name"].as_str()? != INSTALLER || url != expected_url {
             return None;
         }
         Some(Asset {
@@ -115,7 +119,12 @@ fn parse_release(json: &[u8]) -> Result<Release, String> {
 pub fn fetch_latest() -> Result<Release, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body = run(curl().args([
+        "-q",
         "-fsSL",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
         "--max-time",
         "20",
         "-H",
@@ -145,7 +154,12 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 /// Downloads the installer into the temporary directory and checks it.
 fn download(asset: &Asset, dest: &Path) -> Result<PathBuf, String> {
     let _ = std::fs::remove_file(dest);
-    run(curl().args(["-fsSL", "--max-time", "900", "-o"]).arg(dest).arg(&asset.url))?;
+    run(curl()
+        .args([
+            "-q", "-fsSL", "--proto", "=https", "--proto-redir", "=https", "--max-time", "900", "-o",
+        ])
+        .arg(dest)
+        .arg(&asset.url))?;
     let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
     if asset.size != 0 && size != asset.size {
         let _ = std::fs::remove_file(dest);
@@ -170,6 +184,36 @@ fn launch(installer: &Path) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("インストーラーを起動できません: {e}"))
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos(asset: &Asset, archive: &Path) -> Result<(), String> {
+    if !asset
+        .sha256
+        .as_ref()
+        .is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err("このリリースのダウンロードを検証できません。".into());
+    }
+    let work = archive.parent().unwrap();
+    std::fs::create_dir(work).map_err(|e| format!("更新用フォルダーを作れません: {e}"))?;
+    let result = download(asset, archive).and_then(|archive| {
+        let output = std::process::Command::new("/bin/bash")
+            .arg("-c")
+            .arg(include_str!("../../../macos/install.sh"))
+            .args(["sweet-ime-install", "--archive"])
+            .arg(archive)
+            .output()
+            .map_err(|e| format!("インストーラーを起動できません: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let message = String::from_utf8_lossy(&output.stderr);
+            Err(format!("アップデートに失敗しました: {}", message.trim()))
+        }
+    });
+    let _ = std::fs::remove_dir_all(work);
+    result
 }
 
 // --- Remembered state (last check, skipped version) ---
@@ -212,6 +256,7 @@ impl Remembered {
     }
 
     /// Whether a background check is due (at most about once a day).
+    #[cfg(not(target_os = "macos"))]
     pub fn due(&self) -> bool {
         now().saturating_sub(self.last_check) >= Duration::from_secs(20 * 3600).as_secs()
     }
@@ -231,13 +276,19 @@ pub enum State {
     Available(Release),
     Downloading(Release),
     /// The installer is running; the caller should close.
+    #[cfg(not(target_os = "macos"))]
     Launched,
+    #[cfg(target_os = "macos")]
+    Installed,
     Failed(String),
 }
 
 enum Event {
     Checked(Result<Release, String>),
+    #[cfg(not(target_os = "macos"))]
     Downloaded(Result<PathBuf, String>),
+    #[cfg(target_os = "macos")]
+    Installed(Result<(), String>),
 }
 
 pub struct Updater {
@@ -252,6 +303,7 @@ impl Updater {
     }
 
     /// Starts with a known release (from a check done before the window opened).
+    #[cfg(not(target_os = "macos"))]
     pub fn with_release(r: Release) -> Self {
         Self { state: State::Available(r), rx: None, download_path: None }
     }
@@ -275,7 +327,7 @@ impl Updater {
     }
 
     /// Downloads and launches the installer of the available release.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn install(&mut self, ctx: &egui::Context) {
         let State::Available(r) = &self.state else { return };
         let Some(asset) = r.installer.clone() else {
@@ -283,12 +335,20 @@ impl Updater {
             return;
         };
         let r = r.clone();
+        #[cfg(windows)]
         let dest = std::env::temp_dir().join(format!("SweetIME-Setup-{}.exe", r.version));
+        #[cfg(target_os = "macos")]
+        let dest = std::env::temp_dir()
+            .join(format!("sweet-ime-update-{}-{}", std::process::id(), now()))
+            .join(INSTALLER);
         self.download_path = Some((dest.clone(), asset.size));
         let (tx, rx) = channel();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
+            #[cfg(windows)]
             let _ = tx.send(Event::Downloaded(download(&asset, &dest)));
+            #[cfg(target_os = "macos")]
+            let _ = tx.send(Event::Installed(install_macos(&asset, &dest)));
             ctx2.request_repaint();
         });
         self.rx = Some(rx);
@@ -317,14 +377,20 @@ impl Updater {
                 m.checked();
                 if is_newer(&r.version, &current()) { State::Available(r) } else { State::UpToDate }
             }
-            Event::Checked(Err(e)) | Event::Downloaded(Err(e)) => State::Failed(e),
+            Event::Checked(Err(e)) => State::Failed(e),
+            #[cfg(not(target_os = "macos"))]
+            Event::Downloaded(Err(e)) => State::Failed(e),
             #[cfg(windows)]
             Event::Downloaded(Ok(path)) => match launch(&path) {
                 Ok(()) => State::Launched,
                 Err(e) => State::Failed(e),
             },
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             Event::Downloaded(Ok(_)) => State::Idle,
+            #[cfg(target_os = "macos")]
+            Event::Installed(Ok(())) => State::Installed,
+            #[cfg(target_os = "macos")]
+            Event::Installed(Err(e)) => State::Failed(e),
         };
     }
 }
@@ -348,17 +414,17 @@ mod tests {
 
     #[test]
     fn parses_release_json() {
-        let json = br###"{
+        let json = r###"{
             "tag_name": "v0.2.0",
             "html_url": "https://github.com/frost-1256/sweet-ime/releases/tag/v0.2.0",
             "body": "## What's Changed\n* Things\n",
             "assets": [
                 {"name": "other.zip", "size": 1, "browser_download_url": "https://github.com/frost-1256/sweet-ime/releases/download/v0.2.0/other.zip"},
-                {"name": "SweetIME-Setup.exe", "size": 123, "digest": "sha256:ABCDEF",
-                 "browser_download_url": "https://github.com/frost-1256/sweet-ime/releases/download/v0.2.0/SweetIME-Setup.exe"}
+                {"name": "@installer@", "size": 123, "digest": "sha256:ABCDEF",
+                 "browser_download_url": "https://github.com/frost-1256/sweet-ime/releases/download/v0.2.0/@installer@"}
             ]
-        }"###;
-        let r = parse_release(json).unwrap();
+        }"###.replace("@installer@", INSTALLER);
+        let r = parse_release(json.as_bytes()).unwrap();
         assert_eq!(r.version, "0.2.0");
         assert_eq!(r.notes, "## What's Changed\n* Things");
         let a = r.installer.unwrap();
@@ -382,7 +448,7 @@ mod tests {
     #[ignore]
     fn downloads_and_verifies_installer() {
         let a = fetch_latest().unwrap().installer.unwrap();
-        let dest = std::env::temp_dir().join("sweet-update-test.exe");
+        let dest = std::env::temp_dir().join(format!("sweet-update-test-{INSTALLER}"));
         download(&a, &dest).unwrap();
         let _ = std::fs::remove_file(&dest);
         let bad = Asset { sha256: Some("0".repeat(64)), ..a };
@@ -392,8 +458,9 @@ mod tests {
 
     #[test]
     fn ignores_installers_hosted_elsewhere() {
-        let json = br#"{"tag_name": "v9.0.0", "assets": [
-            {"name": "SweetIME-Setup.exe", "size": 1, "browser_download_url": "https://example.com/SweetIME-Setup.exe"}]}"#;
-        assert!(parse_release(json).unwrap().installer.is_none());
+        let json = r#"{"tag_name": "v9.0.0", "assets": [
+            {"name": "@installer@", "size": 1, "browser_download_url": "https://example.com/@installer@"}]}"#
+            .replace("@installer@", INSTALLER);
+        assert!(parse_release(json.as_bytes()).unwrap().installer.is_none());
     }
 }
