@@ -752,7 +752,7 @@ fn main() -> Result<()> {
         {
             use windows::Win32::UI::HiDpi::GetDpiForWindow;
             use windows::Win32::UI::WindowsAndMessaging::{
-                GWL_EXSTYLE, GetWindowLongPtrW, IsWindowVisible, SendMessageW, WM_LBUTTONUP,
+                GWL_EXSTYLE, GetLayeredWindowAttributes, GetWindowLongPtrW, IsWindowVisible, SendMessageW, WM_LBUTTONUP,
                 WS_EX_LAYERED,
             };
             let hwnd = own_candidate_window().expect("candidate window in this process");
@@ -762,7 +762,15 @@ fn main() -> Result<()> {
             if std::env::var_os("SWEET_TEST_SEARCH_HOST").is_some() {
                 let styles = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
                 check("Search candidate window visible", IsWindowVisible(hwnd).as_bool().to_string(), "true", &mut fails);
-                check("Search candidate window is opaque", (styles & WS_EX_LAYERED.0 == 0).to_string(), "true", &mut fails);
+                check("Search candidate window is layered", (styles & WS_EX_LAYERED.0 != 0).to_string(), "true", &mut fails);
+                check(
+                    "Search candidate window uses bitmap presentation",
+                    GetLayeredWindowAttributes(hwnd, None, None, None)
+                        .is_err()
+                        .to_string(),
+                    "true",
+                    &mut fails,
+                );
             }
             let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
             // Rows start after the padding and optional input line.

@@ -44,7 +44,7 @@ struct State {
     /// The current composition started with the preview on in a public field.
     typed_input_allowed: bool,
     window: Option<CandidateWindow>,
-    opaque_candidates: bool,
+    bitmap_candidates: bool,
     candidate_font: String,
     /// GUID atoms for [input, converted, focused] display attributes.
     atoms: [i32; 3],
@@ -487,9 +487,9 @@ impl TextService_Impl {
 fn make_window(
     this: &ComObject<TextService>,
     owner: Option<HWND>,
-    opaque: bool,
+    bitmap_popup: bool,
 ) -> Option<CandidateWindow> {
-    let w = CandidateWindow::new(owner, opaque).ok()?;
+    let w = CandidateWindow::new(owner, bitmap_popup).ok()?;
     w.warm_up();
     let t = this.clone();
     w.set_on_click(move |i| t.on_candidate_click(i));
@@ -621,8 +621,8 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 st.app_off = app_mode == AppMode::Off;
                 let imm = st.thread_mgr.as_ref().is_some_and(immersive);
                 crate::debug_log!("activate: immersive={imm}");
-                st.opaque_candidates = imm || windows_search();
-                if st.window.is_none() && !st.opaque_candidates {
+                st.bitmap_candidates = imm || windows_search();
+                if st.window.is_none() && !st.bitmap_candidates {
                     st.window = make_window(&this, None, false);
                 }
             }
