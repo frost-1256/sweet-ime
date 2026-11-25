@@ -64,7 +64,7 @@ lipo -create "$work"/sweet-settings-{arm64,x86_64} -output "$settings/Contents/M
 lipo -create "$work"/sweet-zenz-pack-{arm64,x86_64} -output "$settings/Contents/MacOS/sweet-zenz-pack"
 for exe in "$app/Contents/MacOS/SweetIME" "$settings/Contents/MacOS/"*; do
     chmod +x "$exe"
-    lipo -verify_arch arm64 x86_64 "$exe"
+    lipo "$exe" -verify_arch arm64 x86_64
 done
 
 identity=${MACOS_CODESIGN_IDENTITY:--}

@@ -28,6 +28,7 @@ jobs:
           sparse-checkout: src/data/dictionary_oss
           persist-credentials: false
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
       - name: Build the system dictionary
         shell: pwsh
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
