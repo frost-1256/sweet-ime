@@ -291,7 +291,7 @@ public final class SettingsActivity extends Activity {
         entry(list, Icons.CONVERT, "変換", "ライブ変換・予測・英単語・絵文字など", CONVERSION);
         aiSummary = entry(list, Icons.SPARKLE, "AI 変換", "", AI);
         learningSummary = entry(list, Icons.HISTORY, "学習とプライバシー", "", LEARNING);
-        entry(list, Icons.KEYBOARD, "キーボード", "かなフリック・キーの高さ・振動と音・使い方", KEYBOARD);
+        entry(list, Icons.KEYBOARD, "キーボード", "かな・英数フリック、キーの高さ、振動と音", KEYBOARD);
         int t = Math.min(Prefs.number(this, Prefs.THEME, 0), Theme.LABELS.length - 1);
         entry(list, Icons.PALETTE, "テーマ", Theme.LABELS[t], THEME);
         entry(list, Icons.INFO, "このアプリについて", "バージョン " + version() + "・ライセンス", ABOUT);
@@ -335,6 +335,9 @@ public final class SettingsActivity extends Activity {
         LinearLayout layout = card("レイアウト");
         layout.addView(prefToggle("かなフリック入力", "日本語入力に12キーのかな配列を使います。",
                 Prefs.KANA_FLICK, false));
+        layout.addView(prefToggle("英数フリック入力",
+                "英字の直接入力に12キー配列を使います。パスワード欄ではQWERTY配列になります。",
+                Prefs.ENGLISH_FLICK, false));
         layout.addView(prefToggle("数字の段",
                 "QWERTY 配列の文字キーの上に数字の段を表示します。オフのときは q〜p の長押しで数字を入力します。",
                 Prefs.NUMBER_ROW, false));
@@ -347,8 +350,9 @@ public final class SettingsActivity extends Activity {
         LinearLayout help = card("使い方");
         for (String tip : new String[] {
             "Shift で始めた英字は英単語になり、日本語が続くと日本語入力に戻ります。",
-            "地球儀のキーで、英字の直接入力と切り替えます。",
+            "QWERTYの地球儀キーや12キーの英数／かなキーで、日本語と英字入力を切り替えます。",
             "かなフリックでは、あのキーをタップすると「あ」、左・上・右・下にはじくと「い・う・え・お」が入力できます。",
+            "英数フリックでは、abc のキーをタップすると「a」、左・上・下にはじくと「b・c・2」が入力できます。",
             "小゛゜キーで、カーソルの直前のかなを小文字・濁音・半濁音に切り替えます。",
             "スペースキーを左右になぞると、カーソルが動きます。",
             "候補バーの右の矢印で、すべての候補を一覧できます。",

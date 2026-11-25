@@ -27,6 +27,8 @@ final class KeyboardView extends View {
 
         void onToggleMode();
 
+        void onUndo();
+
         /** Opens the emoji keyboard. */
         void onEmoji();
     }
@@ -40,6 +42,7 @@ final class KeyboardView extends View {
     static final int NUMPAD = -106;
     private static final int FLICK = -107;
     private static final int EMOJI = -108;
+    private static final int UNDO = -109;
     /** A hint that opens the emoji keyboard instead of typing. */
     private static final String EMOJI_HINT = "<emoji>";
 
@@ -50,7 +53,7 @@ final class KeyboardView extends View {
         final RectF rect = new RectF();
         /** Shown small in the corner and typed by a long press. */
         String hint;
-        /** Characters in tap, left, up, right, down order. */
+        /** Characters in tap, left, up, right, down order. A space leaves a direction unused. */
         final String flick;
         /** Drawn in the function key color. */
         boolean fn;
@@ -109,10 +112,12 @@ final class KeyboardView extends View {
     private long lastShiftTap;
     private boolean english;
     private boolean urlField;
+    private boolean passwordField;
     /** 0 letters, 1 symbols, 2 more symbols. */
     private int page;
     private boolean composing;
     private boolean converting;
+    private boolean undoAvailable;
     /** The editor's Enter action (EditorInfo.IME_ACTION_*), shown as an icon. */
     private int enterAction = EditorInfo.IME_ACTION_NONE;
     private final Icons icons = new Icons();
@@ -125,6 +130,7 @@ final class KeyboardView extends View {
     private boolean haptic = true;
     private boolean sound;
     private boolean kanaFlick;
+    private boolean englishFlick;
     private boolean numberRow = false;
     /** The long press fired; the release types nothing. */
     private boolean longPressed;
@@ -194,8 +200,8 @@ final class KeyboardView extends View {
     }
 
     /** Applies the keyboard settings. */
-    void configure(Theme theme, boolean haptic, boolean sound, boolean kanaFlick, boolean numberRow,
-                   boolean keyPreview, int keyHeight, int symbolWidth) {
+    void configure(Theme theme, boolean haptic, boolean sound, boolean kanaFlick, boolean englishFlick,
+                   boolean numberRow, boolean keyPreview, int keyHeight, int symbolWidth) {
         this.theme = theme;
         this.haptic = haptic;
         this.sound = sound;
@@ -203,8 +209,10 @@ final class KeyboardView extends View {
         // Gboard-sized by default; low and high step about 8% each way.
         rowHeightDp = keyHeight == 0 ? 53 : keyHeight == 2 ? 64 : 58;
         float width = symbolWidth == 0 ? 0.85f : symbolWidth == 2 ? 1.35f : 1f;
-        if (kanaFlick != this.kanaFlick || numberRow != this.numberRow || punctuationWidth != width) {
+        if (kanaFlick != this.kanaFlick || englishFlick != this.englishFlick
+                || numberRow != this.numberRow || punctuationWidth != width) {
             this.kanaFlick = kanaFlick;
+            this.englishFlick = englishFlick;
             this.numberRow = numberRow;
             punctuationWidth = width;
             build();
@@ -222,18 +230,21 @@ final class KeyboardView extends View {
         rows.clear();
         List<KeyDef> bottom = new ArrayList<>();
         if (isFlickPage()) {
-            rows.add(Arrays.asList(new KeyDef("?123", SYMBOLS, 2),
-                    new KeyDef("あいうえお"), new KeyDef("かきくけこ"), new KeyDef("さしすせそ"),
+            rows.add(Arrays.asList(new KeyDef("", UNDO, 2).fn(),
+                    flickKey("あいうえお", "@ 1", "@-_/1"), flickKey("かきくけこ", "abc", "abc 2"),
+                    flickKey("さしすせそ", "def", "def 3"),
                     new KeyDef("⌫", Native.KEY_BACKSPACE, 2)));
             rows.add(Arrays.asList(new KeyDef("◀", Native.KEY_LEFT, 2).fn(),
-                    new KeyDef("たちつてと"), new KeyDef("なにぬねの"), new KeyDef("はひふへほ"),
+                    flickKey("たちつてと", "ghi", "ghi 4"), flickKey("なにぬねの", "jkl", "jkl 5"),
+                    flickKey("はひふへほ", "mno", "mno 6"),
                     new KeyDef("▶", Native.KEY_RIGHT, 2).fn()));
-            rows.add(Arrays.asList(new KeyDef("", MODE, 2).fn(),
-                    new KeyDef("まみむめも"), new KeyDef("や「ゆ」よ"), new KeyDef("らりるれろ"),
-                    new KeyDef("", Native.KEY_SPACE, 2)));
-            bottom.addAll(Arrays.asList(new KeyDef("", EMOJI, 2).fn(),
-                    new KeyDef("小゛゜", Native.KEY_KANA_VARIANT, 2).fn(),
-                    new KeyDef("わをんー～"), new KeyDef("、。？！…"),
+            rows.add(Arrays.asList(new KeyDef("?123", SYMBOLS, 1), new KeyDef("", EMOJI, 1).fn(),
+                    flickKey("まみむめも", "pqrs", "pqrs7"), flickKey("や「ゆ」よ", "tuv", "tuv 8"),
+                    flickKey("らりるれろ", "wxyz", "wxyz9"),
+                    new KeyDef("", Native.KEY_SPACE, 2).fn()));
+            bottom.addAll(Arrays.asList(new KeyDef(english ? "かな" : "英数", MODE, 2).fn(),
+                    english ? new KeyDef("⇧", SHIFT, 2) : new KeyDef("小゛゜", Native.KEY_KANA_VARIANT, 2).fn(),
+                    flickKey("わをんー～", "0", "0'+=&"), flickKey("、。？！…", ", . ?", ",.!?:"),
                     new KeyDef("⏎", Native.KEY_ENTER, 2)));
         } else if (page == 0) {
             if (numberRow) addRow("1234567890");
@@ -256,9 +267,9 @@ final class KeyboardView extends View {
             } else {
                 bottom.add(new KeyDef("、", ',', punctuationWidth).hint(EMOJI_HINT).fn());
             }
-            bottom.add(new KeyDef("", MODE, 1));
+            if (!passwordField) bottom.add(new KeyDef("", MODE, 1));
             if (english) {
-                bottom.add(new KeyDef("", Native.KEY_SPACE, 6 - 2 * punctuationWidth));
+                bottom.add(new KeyDef("", Native.KEY_SPACE, (passwordField ? 7 : 6) - 2 * punctuationWidth));
                 bottom.add(new KeyDef("。", '.', punctuationWidth).fn());
             } else {
                 bottom.add(new KeyDef("", Native.KEY_SPACE, 4 - 2 * punctuationWidth));
@@ -317,6 +328,10 @@ final class KeyboardView extends View {
         invalidate();
     }
 
+    private KeyDef flickKey(String kana, String latinLabel, String latin) {
+        return english ? new KeyDef(latinLabel, FLICK, 2, latin) : new KeyDef(kana);
+    }
+
     private List<KeyDef> textRow(String[] keys) {
         List<KeyDef> row = new ArrayList<>();
         for (String k : keys) row.add(new KeyDef(k, TEXT, 1));
@@ -334,9 +349,10 @@ final class KeyboardView extends View {
         listener = l;
     }
 
-    void setUrlField(boolean url) {
-        if (urlField == url) return;
+    void setField(boolean url, boolean password) {
+        if (urlField == url && passwordField == password) return;
         urlField = url;
+        passwordField = password;
         build();
     }
 
@@ -364,6 +380,12 @@ final class KeyboardView extends View {
         this.composing = composing;
         this.converting = converting;
         this.enterAction = enterAction;
+        invalidate();
+    }
+
+    void setUndoAvailable(boolean available) {
+        if (undoAvailable == available) return;
+        undoAvailable = available;
         invalidate();
     }
 
@@ -420,7 +442,7 @@ final class KeyboardView extends View {
     }
 
     private boolean isFlickPage() {
-        return kanaFlick && !english && page == 0;
+        return !passwordField && page == 0 && (english ? englishFlick : kanaFlick);
     }
 
     private String hintOf(KeyDef key) {
@@ -430,7 +452,7 @@ final class KeyboardView extends View {
     private String labelOf(KeyDef k) {
         switch (k.code) {
             case MODE:
-                return questionKey() ? "？" : "";
+                return questionKey() ? "？" : k.label;
             case Native.KEY_SPACE:
                 if (english || (page != 0 && !composing)) return english ? "English" : "日本語";
                 return converting ? "次候補" : composing ? "変換" : isFlickPage() ? "空白" : "日本語";
@@ -444,6 +466,8 @@ final class KeyboardView extends View {
                 return english ? "-" : "ー";
             case SHIFT:
                 return capsLock ? "⇪" : "⇧";
+            case FLICK:
+                return english && upper() ? k.label.toUpperCase(java.util.Locale.ROOT) : k.label;
             default:
                 if (k.isLetter() && upper()) return k.label.toUpperCase();
                 return k.label;
@@ -496,7 +520,9 @@ final class KeyboardView extends View {
                 }
                 int icon = iconOf(k);
                 if (icon != 0) {
-                    icons.draw(canvas, icon, k.rect, 22 * density, on ? theme.onAccent : theme.text);
+                    int ink = k.code == UNDO && !undoAvailable ? theme.subText
+                            : on ? theme.onAccent : theme.text;
+                    icons.draw(canvas, icon, k.rect, 22 * density, ink);
                     continue;
                 }
                 if (k.code == NUMPAD) {
@@ -507,8 +533,9 @@ final class KeyboardView extends View {
                     continue;
                 }
                 boolean flickPressed = k == pressed && k.flick != null;
-                String label = flickPressed && !keyPreview
-                        ? flickLabel(k, flickDirection) : labelOf(k);
+                char selected = flickPressed ? flickChar(k, flickDirection) : ' ';
+                String label = flickPressed && !keyPreview && selected != ' '
+                        ? String.valueOf(selected) : labelOf(k);
                 float size = label.length() > 2 ? 14 : label.length() == 2 && !label.equals("1/2")
                         && !label.equals("2/2") ? 15 : 22;
                 if (label.length() > 1 && k.code == TEXT) size = 18;
@@ -544,8 +571,9 @@ final class KeyboardView extends View {
         }
     }
 
-    private static String flickLabel(KeyDef key, int direction) {
-        return key.flick.substring(direction, direction + 1);
+    private char flickChar(KeyDef key, int direction) {
+        char ch = key.flick.charAt(direction);
+        return english && upper() ? Character.toUpperCase(ch) : ch;
     }
 
     private void drawFlickGuide(Canvas canvas, KeyDef key) {
@@ -564,20 +592,23 @@ final class KeyboardView extends View {
         keyPaint.setColor(theme.preview);
         canvas.drawRoundRect(flickRect, radius, radius, keyPaint);
         textPaint.setColor(theme.text);
-        if (flickDirection != 0) {
+        char selected = flickChar(key, flickDirection);
+        if (flickDirection != 0 && selected != ' ') {
             textPaint.setTextSize(29 * density);
-            drawCentered(canvas, flickLabel(key, flickDirection), cx, cy);
+            drawCentered(canvas, String.valueOf(selected), cx, cy);
             drawFlickDirection(canvas, key.rect);
             return;
         }
         textPaint.setTextSize(19 * density);
-        drawCentered(canvas, key.label, cx, cy);
+        drawCentered(canvas, String.valueOf(flickChar(key, 0)), cx, cy);
         for (int i = 1; i < key.flick.length(); i++) {
+            char ch = flickChar(key, i);
+            if (ch == ' ') continue;
             int dy = FLICK_Y[i];
             textPaint.setTextSize((dy == 0 ? 14 : 13) * density);
             float x = cx + FLICK_X[i] * halfWidth * 0.66f;
             float y = cy + dy * 17 * density;
-            drawCentered(canvas, flickLabel(key, i), x, y);
+            drawCentered(canvas, String.valueOf(ch), x, y);
         }
     }
 
@@ -629,9 +660,11 @@ final class KeyboardView extends View {
     private int iconOf(KeyDef k) {
         switch (k.code) {
             case MODE:
-                return questionKey() ? 0 : Icons.GLOBE;
+                return questionKey() || !k.label.isEmpty() ? 0 : Icons.GLOBE;
             case EMOJI:
                 return Icons.EMOJI;
+            case UNDO:
+                return Icons.UNDO;
             case SHIFT:
                 return capsLock ? Icons.CAPS_LOCK : shift ? Icons.SHIFT_ON : Icons.SHIFT;
             case Native.KEY_BACKSPACE:
@@ -827,11 +860,21 @@ final class KeyboardView extends View {
     private void fire(KeyDef k) {
         if (listener == null) return;
         switch (k.code) {
-            case FLICK:
-                listener.onKey(k.flick.charAt(flickDirection));
+            case FLICK: {
+                char ch = flickChar(k, flickDirection);
+                if (ch == ' ') return;
+                listener.onKey(ch);
+                if (ch >= 'A' && ch <= 'Z' && !capsLock) {
+                    shift = false;
+                    invalidate();
+                }
                 return;
+            }
             case EMOJI:
                 listener.onEmoji();
+                return;
+            case UNDO:
+                if (undoAvailable) listener.onUndo();
                 return;
             case SHIFT: {
                 long now = System.currentTimeMillis();

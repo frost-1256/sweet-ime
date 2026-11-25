@@ -222,8 +222,13 @@ or down for い, う, え or お. Use **小゛゜** to cycle the kana before the
 caret through its small, voiced or semi-voiced forms while composing.
 [See the kana flick layout.](assets/android/flick-guide.png)
 
-Shift starts an English word as on the desktop, and the globe key switches
-to direct English input. Password, URL, email and number fields start in
+Turn on **英数フリック入力** to use a 12-key layout for direct English input.
+Tap **abc** for a or flick left, up or down for b, c or 2. The letter keys
+also enter digits with a downward flick. Password fields always open QWERTY.
+
+On QWERTY, Shift starts an English word as on the desktop. The globe key
+on QWERTY and the **英数** / **かな** key on 12-key layouts switch between
+Japanese and direct English input. Password, URL, email and number fields start in
 English. Long-press q–p for digits, use **?123** for symbols and a number
 pad, and swipe along the space bar to move the caret. The undo button in
 the candidate bar takes the last commit back to its reading. The app holds
