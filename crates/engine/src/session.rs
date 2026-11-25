@@ -16,6 +16,9 @@ use conversion::{Converting, SegState};
 use live::{LiveConversion, LiveTypo};
 pub use options::Options;
 
+const MIN_KANA_TYPO_KEYS: usize = 8;
+const KANA_TYPO_MARGIN: i32 = 3200;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
@@ -109,7 +112,7 @@ struct Composing {
     /// `live` already includes the pending keys: they end an English word
     /// ("kyouhalinux" shows 今日はLinux, not 今日はぃぬx).
     live_pending: bool,
-    /// Live conversion turned off for this composition (Esc / caret moves).
+    /// Live conversion turned off until this composition is committed or cancelled.
     live_off: bool,
     /// The last background-refined live conversion. While the reading only
     /// grows, its text is kept so the display doesn't flip between the
@@ -616,7 +619,7 @@ impl Session {
         if self.conv.is_some() || self.comp.is_empty() || self.comp.literal {
             return false;
         }
-        self.handle(conv, Key::Space);
+        self.handle(conv, Key::Down);
         self.open_candidates(conv)
     }
 
@@ -920,6 +923,12 @@ impl Session {
                 true
             }
             Key::Down if self.comp.literal => false,
+            Key::Space if self.comp.live_typo.is_some() => {
+                // Restore the original keys before a subsequent conversion.
+                self.comp.live_off = true;
+                self.comp.refined = None;
+                true
+            }
             Key::Space | Key::Down => {
                 self.start_conversion(conv);
                 true
