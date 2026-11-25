@@ -23,11 +23,14 @@ final class Prefs {
     static final String ENGLISH_FLICK = "english_flick";
     static final String NUMBER_ROW = "number_row";
     static final String KEY_PREVIEW = "key_preview";
+    static final String SIMEJI_CLOUD = "simeji_cloud";
     /** 0 small, 1 normal, 2 large. */
     static final String KEY_HEIGHT = "key_height";
     static final String PUNCTUATION_WIDTH = "punctuation_width";
     /** 0 system, 1 light, 2 dark. */
     static final String THEME = "theme";
+    static final String FONT = "font";
+    static final String FONT_FILE_NAME = "font_file_name";
 
     private Prefs() {}
 

@@ -129,7 +129,16 @@ impl Session {
         // A bundled spelling also counts its pending keys ("github" settles
         // as ぎてゅ until the last "b" resolves).
         let kana = c.kana();
-        if self.options.english_words && c.before.is_empty() && c.after.is_empty() {
+        let all_letters_known = if kana == settled {
+            words
+        } else {
+            english::covers_letters(&kana, listed)
+        };
+        if self.options.english_words
+            && c.before.is_empty()
+            && c.after.is_empty()
+            && !all_letters_known
+        {
             for (reading, word) in english::split_words(&c.raw, &kana) {
                 conv.note_typed_word(&reading, &word);
             }
@@ -296,14 +305,16 @@ fn is_plain_interjection(reading: &str) -> bool {
 
 /// What to show for `reading` while its refined conversion is pending:
 /// the lattice result, unless it rewrites text the refined result for an
-/// earlier part of the reading already settled. Then that text is kept,
-/// followed by the lattice's conversion of the rest, if the lattice splits
-/// the reading there. (A refined result that ended mid-word doesn't line up
-/// with a split, and the lattice result is shown.)
+/// earlier part while a short continuation is still being entered. As
+/// more context appears, allow the lattice to revise ambiguous homophones.
+/// A complete sentence can keep its refinement across the next sentence.
 fn stable_live(refined: Option<&LiveConversion>, reading: &str, lattice: &Conversion) -> String {
     let surface = lattice.surface();
     let Some(r) = refined else { return surface };
-    if !reading.starts_with(r.reading.as_str()) || surface.starts_with(&r.surface) {
+    let Some(tail) = reading.strip_prefix(r.reading.as_str()) else { return surface };
+    if surface.starts_with(&r.surface) ||
+        (!r.reading.ends_with(['。', '！', '？']) && tail.chars().nth(2).is_some())
+    {
         return surface;
     }
     let mut consumed = 0;
@@ -357,12 +368,15 @@ mod tests {
             ),
             "機械が"
         );
-        // The lattice would flip it back: keep it, then the lattice's rest.
-        let flip = conv(&[("きかい", "機会"), ("がこわれた", "が壊れた")]);
+        // A newly typed particle need not flip the displayed homophone.
+        let flip = conv(&[("きかい", "機会"), ("が", "が")]);
         assert_eq!(
-            stable_live(Some(&r), "きかいがこわれた", &flip),
-            "機械が壊れた"
+            stable_live(Some(&r), "きかいが", &flip),
+            "機械が"
         );
+        // Once the continuation disambiguates the reading, prefer the full lattice.
+        let clarified = conv(&[("きかい", "機会"), ("をいかす", "を生かす")]);
+        assert_eq!(stable_live(Some(&r), "きかいをいかす", &clarified), "機会を生かす");
         assert_eq!(
             stable_live(Some(&r), "きかい", &conv(&[("きかい", "機会")])),
             "機械"

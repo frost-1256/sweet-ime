@@ -105,20 +105,28 @@ fn in_word_list(word: &str) -> bool {
     false
 }
 
-/// Keep a full listed spelling intact. Otherwise let the lattice handle
-/// a listed word next to kana ("busydesu" reads ぶsyです).
+/// Detect a listed spelling at a kana boundary, including between two
+/// other spans ("testnobest" reads てstのべst).
 pub(crate) fn has_listed_part(raw: &str, reading: &str) -> bool {
     if in_word_list(&raw.to_ascii_lowercase()) {
         return false;
     }
-    let kana = |ch| ('ぁ'..='ゖ').contains(&ch);
     let index = word_index();
-    reading.char_indices().skip(1).any(|(at, _)| {
-        let (before, after) = reading.split_at(at);
-        (before.len() <= index.max_len && after.chars().all(kana) && index.get(before).is_some())
-            || (after.len() <= index.max_len
-                && before.chars().all(kana)
-                && index.get(after).is_some())
+    let kana = |ch| matches!(ch, 'ぁ'..='ゖ' | 'ー');
+    reading.char_indices().any(|(start, _)| {
+        if start > 0 && !reading[..start].ends_with(kana) {
+            return false;
+        }
+        let rest = &reading[start..];
+        rest.char_indices()
+            .map(|(i, ch)| i + ch.len_utf8())
+            .take_while(|&end| end <= index.max_len)
+            .any(|end| {
+                let tail = &rest[end..];
+                (start > 0 || !tail.is_empty())
+                    && (tail.is_empty() || tail.starts_with(kana))
+                    && index.get(&rest[..end]).is_some()
+            })
     })
 }
 

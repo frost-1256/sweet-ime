@@ -139,11 +139,12 @@ pub(crate) fn theme_colors() -> sweet_engine::theme::Colors {
 
 /// Modification times of the settings files; a change means the settings
 /// app saved something and the service should reload.
-pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 3] {
+pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 4] {
     [
         sweet_engine::paths::modified(sweet_engine::paths::config_file()),
         sweet_engine::paths::modified(sweet_engine::paths::keymap_file()),
         sweet_engine::paths::modified(sweet_engine::paths::apps_file()),
+        sweet_engine::paths::modified(sweet_engine::paths::candidate_font_file()),
     ]
 }
 

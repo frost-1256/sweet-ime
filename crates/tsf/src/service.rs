@@ -21,7 +21,7 @@ use windows::Win32::UI::TextServices::{
 };
 use windows_core::{BOOL, ComObject, GUID, IUnknownImpl, Interface, Ref, Result, implement};
 
-use crate::candidate_window::CandidateWindow;
+use crate::candidate_window::{BackgroundResult, CandidateWindow};
 use crate::keys::{self, Input, Toggle};
 use crate::langbar::ModeButton;
 use crate::mode_indicator::ModeIndicator;
@@ -44,6 +44,7 @@ struct State {
     /// The current composition started with the preview on in a public field.
     typed_input_allowed: bool,
     window: Option<CandidateWindow>,
+    candidate_font: String,
     /// GUID atoms for [input, converted, focused] display attributes.
     atoms: [i32; 3],
     /// Context of the last key event (target for mouse selections).
@@ -56,7 +57,7 @@ struct State {
     indicator: Option<ModeIndicator>,
     keymap: Keymap,
     /// Settings file times when last loaded.
-    settings_stamp: [Option<std::time::SystemTime>; 3],
+    settings_stamp: [Option<std::time::SystemTime>; 4],
     /// The per-application settings turn the IME off in this application.
     app_off: bool,
     /// Open/close compartment event sink: (compartment source, cookie).
@@ -112,6 +113,7 @@ impl TextService_Impl {
                 return;
             }
             st.ctx = Some(ctx.clone());
+            st.session.cancel_simeji();
             st.layout_sink.take()
         };
         unsafe {
@@ -165,6 +167,7 @@ impl TextService_Impl {
         if st.settings_stamp != stamp {
             st.settings_stamp = stamp;
             st.session.options = crate::load_options();
+            st.candidate_font = sweet_engine::paths::load_candidate_font();
             st.keymap = sweet_engine::paths::load_keymap();
             st.app_off = crate::app_mode() == sweet_engine::app_modes::AppMode::Off;
             drop(st);
@@ -347,10 +350,17 @@ impl TextService_Impl {
     }
 
     /// A background live conversion result arrived (UI thread).
-    fn on_live_result(&self, reading: String, surface: String) {
+    fn on_live_result(&self, result: BackgroundResult) {
         let _ = crate::guard(|| {
             let Ok(mut st) = self.st.try_borrow_mut() else { return Ok(()) };
-            if !st.session.apply_live(&reading, &surface) {
+            let changed = match result {
+                BackgroundResult::Live(reading, surface) => st.session.apply_live(&reading, &surface),
+                BackgroundResult::Simeji(response) => {
+                    st.thread_focused
+                        && crate::converter().is_some_and(|conv| st.session.apply_simeji(conv, response))
+                }
+            };
+            if !changed {
                 return Ok(());
             }
             let (ctx, tid) = (st.ctx.clone(), st.tid);
@@ -414,11 +424,24 @@ impl TextService_Impl {
 
     /// Pushes the session state (commit text, preedit, candidates) into the
     /// document through an edit session.
-    fn update(&self, ctx: &ITfContext) -> Result<()> {
+    fn update(&self, ctx: &ITfContext, cloud_reading: Option<String>) -> Result<()> {
         let this: ComObject<TextService> = self.to_object();
         let tid = self.st.borrow().tid;
-        let ctx2 = ctx.clone();
-        edit::request(ctx, tid, move |ec| update_document(&this, ec, &ctx2))
+        let target = ctx.clone();
+        edit::request(ctx, tid, move |ec| {
+            update_document(&this, ec, &target)?;
+            if let Some(reading) = &cloud_reading
+                && document::private_field(&target, ec).ok() == Some(false)
+            {
+                let mut st = this.st.borrow_mut();
+                if let Some(hwnd) = st.window.as_ref().map(CandidateWindow::raw) {
+                    st.session.request_simeji(reading.clone(), move |response| {
+                        crate::candidate_window::post_result(hwnd, BackgroundResult::Simeji(response));
+                    });
+                }
+            }
+            Ok(())
+        })
     }
 
     fn handle_toggle(&self, ctx: Option<&ITfContext>, t: Toggle) {
@@ -466,7 +489,7 @@ fn make_window(this: &ComObject<TextService>, owner: Option<HWND>) -> Option<Can
     let t = this.clone();
     w.set_on_click(move |i| t.on_candidate_click(i));
     let t = this.clone();
-    w.set_on_live(move |r, s| t.on_live_result(r, s));
+    w.set_on_live(move |result| t.on_live_result(result));
     let t = this.clone();
     w.set_on_relayout(move || t.relayout(true));
     this.window_hwnd.set(w.raw());
@@ -577,6 +600,7 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 let this: ComObject<TextService> = self.to_object();
                 let mut st = self.st.borrow_mut();
                 st.session.options = crate::load_options();
+                st.candidate_font = sweet_engine::paths::load_candidate_font();
                 st.keymap = sweet_engine::paths::load_keymap();
                 st.settings_stamp = crate::settings_stamp();
                 st.app_off = app_mode == AppMode::Off;
@@ -693,6 +717,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             let Some(conv) = crate::converter() else { return Ok(BOOL(0)) };
             let ctx = pic.ok()?.clone();
             self.track_context(&ctx);
+            let cloud_reading = self.st.borrow().session.simeji_conversion_reading(key);
             let consumed = self.st.borrow_mut().session.handle(conv, key);
             let report = self.st.borrow_mut().session.take_report();
             if let Some(report) = report {
@@ -703,7 +728,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 if let Some(i) = &self.st.borrow().indicator {
                     i.hide();
                 }
-                self.update(&ctx)?;
+                self.update(&ctx, cloud_reading)?;
                 self.request_live_refinement();
             }
             Ok(BOOL(consumed as i32))
@@ -792,6 +817,7 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         let _ = crate::guard(|| {
             if let Ok(mut st) = self.st.try_borrow_mut() {
                 st.thread_focused = false;
+                st.session.cancel_simeji();
                 if let Some(w) = &st.window {
                     w.hide();
                 }

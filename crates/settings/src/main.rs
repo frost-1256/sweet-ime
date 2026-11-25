@@ -10,6 +10,8 @@ mod apps_page;
 mod dict_page;
 #[cfg(not(target_os = "macos"))]
 mod fcitx_theme;
+#[cfg(not(target_os = "macos"))]
+mod font_picker;
 mod keys_page;
 mod learning_page;
 mod neural_page;
@@ -126,6 +128,8 @@ struct App {
     #[cfg(windows)]
     activation: single_instance::Activation,
     opts: Options,
+    #[cfg(not(target_os = "macos"))]
+    font_picker: Option<font_picker::FontPicker>,
     status: Option<(String, bool)>,
     history: Option<UserHistory>,
     learned: Vec<(String, Learned)>,
@@ -162,6 +166,8 @@ impl App {
             #[cfg(windows)]
             activation: single_instance::Activation::register(cc)?,
             opts,
+            #[cfg(not(target_os = "macos"))]
+            font_picker: None,
             status: None,
             history,
             learned: Vec::new(),
@@ -259,6 +265,9 @@ impl eframe::App for App {
                     Page::Apps => self.apps.ui(ui, &mut self.status),
                     #[cfg(not(target_os = "macos"))]
                     Page::Theme => {
+                        self.font_picker
+                            .get_or_insert_with(font_picker::FontPicker::new)
+                            .ui(ui, &mut self.status);
                         if theme_page::ui(ui, &mut self.opts.theme) {
                             self.save();
                             #[cfg(not(windows))]
@@ -311,6 +320,9 @@ impl App {
         });
         card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
             changed |= toggle(ui, &mut self.opts.suggestions).changed();
+        });
+        card(ui, "Simejiクラウド変換", "オンにすると、スペースで変換を始めたときに、ひと文節のかなの読みをSimejiに送信し、顔文字を候補に追加します。", |ui| {
+            changed |= toggle(ui, &mut self.opts.simeji_cloud).changed();
         });
         #[cfg(windows)]
         card(ui, "入力した文字を表示", "「こんにちは」の近くに、打ったローマ字（konnnitiha）を表示します。", |ui| {

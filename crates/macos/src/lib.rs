@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use serde_json::json;
 use sweet_engine::keymap::{Action, Chord, Keymap};
 use sweet_engine::live::LiveConversionWorker;
+use sweet_engine::simeji;
 use sweet_engine::{CandidateList, Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
 
 static CONVERTER: OnceLock<Converter> = OnceLock::new();
@@ -19,6 +20,7 @@ pub struct Context {
     keymap: Keymap,
     enabled: bool,
     live: Option<Receiver<(String, String)>>,
+    cloud: Option<Receiver<simeji::Response>>,
     snapshot: CString,
 }
 
@@ -63,6 +65,7 @@ impl Context {
             },
             None => return false,
         };
+        let cloud_reading = self.session.simeji_conversion_reading(key);
         if !self.enabled
             || key == Key::UndoCommit
             || !(self.session.is_active()
@@ -73,6 +76,14 @@ impl Context {
             || !self.session.handle(self.converter, key)
         {
             return false;
+        }
+        if let Some(reading) = cloud_reading {
+            let (send, receive) = mpsc::channel();
+            if self.session.request_simeji(reading, move |response| {
+                let _ = send.send(response);
+            }) {
+                self.cloud = Some(receive);
+            }
         }
         if let Some(report) = self.session.take_report()
             && let Some(path) = paths::reports_file()
@@ -131,6 +142,7 @@ impl Context {
 
     fn finish(&mut self, commit: bool) {
         self.live = None;
+        self.cloud = None;
         if commit {
             self.session.commit_all();
         } else {
@@ -215,6 +227,7 @@ pub extern "C" fn sweet_macos_new() -> *mut Context {
         keymap: Keymap::default(),
         enabled: true,
         live: None,
+        cloud: None,
         snapshot: CString::default(),
     };
     context.reload();
@@ -258,11 +271,27 @@ pub extern "C" fn sweet_macos_snapshot(context: &mut Context) -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn sweet_macos_live_pending(context: &Context) -> bool {
-    context.live.is_some()
+    context.live.is_some() || context.cloud.is_some()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn sweet_macos_apply_live(context: &mut Context) -> bool {
+    if let Some(result) = context.cloud.as_ref().map(Receiver::try_recv) {
+        match result {
+            Ok(response) => {
+                context.cloud = None;
+                if context.session.apply_simeji(context.converter, response) {
+                    context.live = None;
+                    return true;
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                context.cloud = None;
+                context.session.cancel_simeji();
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
     match context.live.as_ref().map(Receiver::try_recv) {
         Some(Ok((reading, surface))) => {
             context.live = None;
@@ -296,6 +325,7 @@ mod tests {
             keymap: Keymap::default(),
             enabled: true,
             live: None,
+            cloud: None,
             snapshot: CString::default(),
         };
         context.session.options.live_conversion = false;

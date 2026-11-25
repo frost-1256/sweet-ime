@@ -1365,6 +1365,35 @@ fn listed_english_words_convert_inside_sentences() {
     c.set_english_words(true, true);
 }
 
+#[test]
+fn two_listed_spellings_keep_the_japanese_text_between_them() {
+    let Some(c) = converter() else { return };
+    let mut s = Session::new();
+    type_str(&mut s, &c, "testnobest");
+    assert_eq!(s.preedit().text, "testのベスト");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "testのベスト");
+}
+
+#[test]
+fn isolated_shi_does_not_prioritize_a_frequently_learned_death() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
+    let Ok(dict) = Dictionary::open(path) else { return };
+    let mut history = sweet_engine::UserHistory::new();
+    let death = dict.lookup("し").into_iter().find(|entry| entry.surface == "死").unwrap();
+    for _ in 0..256 {
+        history.learn("し", "死", death.lid, death.rid);
+    }
+    let conv = Converter::new(dict).with_history(history);
+    let mut s = Session::new();
+    type_str(&mut s, &conv, "shi");
+    assert_eq!(s.preedit().text, "し");
+    assert!(s.handle(&conv, Key::Space));
+    assert_eq!(s.preedit().text, "し");
+    s.open_candidates(&conv);
+    assert!(s.candidates().unwrap().items.contains(&"死".to_owned()));
+}
+
 /// Prefers the first candidate that spells "best", like a model reading the
 /// typed keys.
 struct PickSpelling;

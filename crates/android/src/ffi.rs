@@ -187,6 +187,33 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_liveRequest(
 /// # Safety
 /// `p` is a live context.
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_cloudReading(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+) -> jstring {
+    to_java(&mut env, guard(None, || unsafe { ctx(p) }.cloud_reading()))
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_applyCloud(
+    mut env: JNIEnv,
+    _: JClass,
+    p: jlong,
+    reading: JString,
+    items: JString,
+) -> jstring {
+    let reading = to_string(&mut env, &reading);
+    let items = to_string(&mut env, &items);
+    let snapshot = guard(None, || unsafe { ctx(p) }.apply_cloud(&reading, &items));
+    to_java(&mut env, snapshot)
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn Java_io_github_sweetime_Native_liveCommitRequest(
     mut env: JNIEnv,
     _: JClass,

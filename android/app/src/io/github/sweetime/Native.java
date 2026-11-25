@@ -50,6 +50,11 @@ final class Native {
     /** The live conversion to refine with zenz ("reading\u001fleft"), or null. */
     static native String liveRequest(long ctx);
 
+    static native String cloudReading(long ctx);
+
+    /** Adds cloud candidates for the same reading, separated by U+001E. */
+    static native String applyCloud(long ctx, String reading, String items);
+
     /** Reading and context for a live conversion being confirmed with Enter. */
     static native String liveCommitRequest(long ctx);
 

@@ -45,6 +45,30 @@ pub fn config_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.txt"))
 }
 
+/// The Windows candidate window's font family, one name per file.
+#[cfg(windows)]
+pub fn candidate_font_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("candidate-font.txt"))
+}
+
+#[cfg(windows)]
+pub fn load_candidate_font() -> String {
+    candidate_font_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| text.lines().next().map(str::trim).map(str::to_owned))
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+pub fn save_candidate_font(family: &str) -> std::io::Result<()> {
+    let path =
+        candidate_font_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, family)
+}
+
 /// Learning history.
 pub fn history_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("history.tsv"))

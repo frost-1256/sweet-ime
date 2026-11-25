@@ -67,6 +67,12 @@ fn is_kana(c: char) -> bool {
     matches!(c, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー' | 'ゝ' | 'ゞ' | 'ｦ'..='ﾟ')
 }
 
+fn standalone_penalty(input: &str, surface: &str) -> i32 {
+    // A single typed し is usually a fragment. Learning should still be
+    // able to prefer 死 in longer readings, where there is more context.
+    if input == "し" && surface == "死" { 4_000 } else { 0 }
+}
+
 /// Prefer common homophones where the reading already supplies context.
 fn context_bonus(before: &str, reading: &str, surface: &str) -> i32 {
     if surface == "円"
@@ -189,7 +195,8 @@ impl Converter {
                         lid: e.lid,
                         rid: e.rid,
                         wcost: i32::from(e.cost)
-                            - context_bonus(&text[..pos], &rest[..l], e.surface),
+                            - context_bonus(&text[..pos], &rest[..l], e.surface)
+                            + standalone_penalty(text, e.surface),
                         surface: e.surface,
                         best: i32::MAX,
                         origin: None,
@@ -222,7 +229,11 @@ impl Converter {
                         end: x.end,
                         lid: x.lid,
                         rid: x.rid,
-                        wcost: x.cost,
+                        wcost: x.cost + if x.origin == Origin::Learned {
+                            standalone_penalty(text, &x.surface)
+                        } else {
+                            0
+                        },
                         surface: &x.surface,
                         best: i32::MAX,
                         origin: Some(x.origin),

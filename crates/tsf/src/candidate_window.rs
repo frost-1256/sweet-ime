@@ -24,9 +24,9 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS,
-    DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
@@ -74,6 +74,44 @@ const FONT_SIZE: f32 = 16.0;
 const MIN_W: f32 = 140.0;
 const FADE_MS: f32 = 90.0;
 const SLIDE_MS: f32 = 70.0;
+
+fn candidate_format(dwrite: &IDWriteFactory, family: &str) -> Result<IDWriteTextFormat> {
+    let locale = w!("ja-jp");
+    let create = |name: PCWSTR, collection: Option<&IDWriteFontCollection>| unsafe {
+        dwrite.CreateTextFormat(
+            name,
+            collection,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            FONT_SIZE,
+            locale,
+        )
+    };
+    if !family.is_empty() {
+        let name = HSTRING::from(family);
+        let mut collection = None;
+        unsafe {
+            if dwrite
+                .GetSystemFontCollection(&mut collection, true)
+                .is_ok()
+                && let Some(collection) = collection.as_ref()
+            {
+                let mut index = 0;
+                let mut exists = false.into();
+                if collection
+                    .FindFamilyName(&name, &mut index, &mut exists)
+                    .is_ok()
+                    && exists.as_bool()
+                    && let Ok(format) = create(PCWSTR(name.as_ptr()), Some(collection))
+                {
+                    return Ok(format);
+                }
+            }
+        }
+    }
+    create(w!("Yu Gothic UI"), None)
+}
 
 #[derive(Clone, Copy)]
 struct Palette {
@@ -154,6 +192,7 @@ struct State {
     dwrite: IDWriteFactory,
     target: Option<ID2D1HwndRenderTarget>,
     format: IDWriteTextFormat,
+    font_family: String,
     small: IDWriteTextFormat,
     pal: Palette,
     gaming_mode: bool,
@@ -179,7 +218,7 @@ struct State {
     on_click: Option<std::rc::Rc<dyn Fn(usize)>>,
     /// Called with (reading, surface) when a background live conversion
     /// result arrives.
-    on_live: Option<std::rc::Rc<dyn Fn(String, String)>>,
+    on_live: Option<std::rc::Rc<dyn Fn(BackgroundResult)>>,
     /// Called when a [`relayout_after`] timer fires.
     on_relayout: Option<std::rc::Rc<dyn Fn()>>,
     /// Where the list was last shown (screen rectangle of the text).
@@ -195,16 +234,34 @@ pub fn relayout_after(hwnd: isize, ms: u32) {
 }
 
 /// Results from the live-conversion worker, keyed by window handle.
-static LIVE_MAILBOX: std::sync::Mutex<Vec<(isize, String, String)>> = std::sync::Mutex::new(Vec::new());
+pub enum BackgroundResult {
+    Live(String, String),
+    Simeji(sweet_engine::simeji::Response),
+}
+
+static LIVE_MAILBOX: std::sync::Mutex<Vec<(isize, BackgroundResult)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Delivers a live conversion result to the window `hwnd` (any thread).
 pub fn post_live(hwnd: isize, reading: String, surface: String) {
+    post_result(hwnd, BackgroundResult::Live(reading, surface));
+}
+
+pub fn post_result(hwnd: isize, result: BackgroundResult) {
     let mut m = LIVE_MAILBOX.lock().unwrap_or_else(|e| e.into_inner());
-    m.retain(|(h, _, _)| *h != hwnd);
-    m.push((hwnd, reading, surface));
-    drop(m);
+    let same_kind = |item: &BackgroundResult| {
+        std::mem::discriminant(item) == std::mem::discriminant(&result)
+    };
+    if m.iter().any(|(h, item)| {
+        *h == hwnd && matches!((item, &result), (BackgroundResult::Simeji(old), BackgroundResult::Simeji(new)) if old.id > new.id)
+    }) {
+        return;
+    }
+    m.retain(|(h, item)| *h != hwnd || !same_kind(item));
     unsafe {
-        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_LIVE, WPARAM(0), LPARAM(0));
+        if PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_LIVE, WPARAM(0), LPARAM(0)).is_ok() {
+            m.push((hwnd, result));
+        }
     }
 }
 
@@ -305,12 +362,8 @@ impl CandidateWindow {
             );
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let font = HSTRING::from("Yu Gothic UI");
             let locale = HSTRING::from("ja-jp");
-            let format = dwrite.CreateTextFormat(
-                &font, None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, FONT_SIZE, &locale,
-            )?;
+            let format = candidate_format(&dwrite, "")?;
             let small = dwrite.CreateTextFormat(
                 &HSTRING::from("Segoe UI Variable Text"), None, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0, &locale,
@@ -320,6 +373,7 @@ impl CandidateWindow {
                 dwrite,
                 target: None,
                 format,
+                font_family: String::new(),
                 small,
                 pal: palette(),
                 gaming_mode: false,
@@ -368,6 +422,7 @@ impl CandidateWindow {
         input: Option<&str>,
         anchor: RECT,
         gaming_mode: bool,
+        font_family: &str,
     ) {
         let gaming_mode = gaming_mode && list.is_some();
         let hwnd = self.hwnd;
@@ -405,7 +460,15 @@ impl CandidateWindow {
             } else {
                 (selected - page_start) as f32
             };
-            if st.items != items || st.rows.iter().any(Option::is_none) {
+            let mut font_changed = false;
+            if st.font_family != font_family
+                && let Ok(format) = candidate_format(&st.dwrite, font_family)
+            {
+                st.font_family = font_family.to_owned();
+                st.format = format;
+                font_changed = true;
+            }
+            if font_changed || st.items != items || st.rows.iter().any(Option::is_none) {
                 let prev_width = st.width;
                 st.items = items.to_vec();
                 let mut max_width: f32 = 0.0;
@@ -427,7 +490,7 @@ impl CandidateWindow {
                     .ceil();
                 // Predictions change on every keystroke: don't let the
                 // window shrink and grow with them.
-                if was_visible && suggest && st.suggest {
+                if !font_changed && was_visible && suggest && st.suggest {
                     st.width = st.width.max(prev_width);
                 }
             }
@@ -523,7 +586,7 @@ impl CandidateWindow {
     }
 
     /// Sets the handler for background live conversion results.
-    pub fn set_on_live(&self, f: impl Fn(String, String) + 'static) {
+    pub fn set_on_live(&self, f: impl Fn(BackgroundResult) + 'static) {
         with_state(self.hwnd, |st| st.on_live = Some(std::rc::Rc::new(f)));
     }
 
@@ -597,6 +660,10 @@ impl Drop for CandidateWindow {
         unsafe {
             let _ = DestroyWindow(self.hwnd);
         }
+        LIVE_MAILBOX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(h, _)| *h != self.hwnd.0 as isize);
     }
 }
 
@@ -877,11 +944,11 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             WM_APP_LIVE => {
                 let item = {
                     let mut m = LIVE_MAILBOX.lock().unwrap_or_else(|e| e.into_inner());
-                    m.iter().position(|(h, _, _)| *h == hwnd.0 as isize).map(|i| m.remove(i))
+                    m.iter().position(|(h, _)| *h == hwnd.0 as isize).map(|i| m.remove(i))
                 };
                 let handler = with_state(hwnd, |st| st.on_live.clone()).flatten();
-                if let (Some((_, reading, surface)), Some(f)) = (item, handler) {
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(reading, surface)));
+                if let (Some((_, result)), Some(f)) = (item, handler) {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(result)));
                 }
                 LRESULT(0)
             }
@@ -926,6 +993,27 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_installed_candidate_font_and_falls_back_when_missing() {
+        unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let family = |name| {
+                let format = candidate_format(&factory, name).unwrap();
+                let len = format.GetFontFamilyNameLength() as usize;
+                let mut output = vec![0; len + 1];
+                format.GetFontFamilyName(&mut output).unwrap();
+                String::from_utf16(&output[..len]).unwrap()
+            };
+            assert_eq!(family("Arial"), "Arial");
+            assert_eq!(family("Sweet IME nonexistent test font"), family(""));
         }
     }
 }

@@ -164,22 +164,105 @@ pub fn select_in_classicui(conf: &str, theme: Theme) -> String {
 }
 
 /// Sets `key=value` lines, keeping every other line.
-fn set_keys(conf: &str, mut values: Vec<(&str, &str)>) -> String {
+fn set_keys(conf: &str, values: Vec<(&str, &str)>) -> String {
+    let mut values: Vec<_> = values
+        .into_iter()
+        .map(|(key, value)| (key, Some(value)))
+        .collect();
     let mut out = String::new();
-    for line in conf.lines() {
+    let mut lines = conf.lines();
+    let mut section = None;
+    for line in lines.by_ref() {
+        if is_section(line) {
+            section = Some(line);
+            break;
+        }
         let key = line.split('=').next().unwrap_or("").trim();
-        if let Some(i) = values.iter().position(|(k, _)| *k == key) {
-            let (k, v) = values.remove(i);
-            out += &format!("{k}={v}\n");
+        if let Some((key, value)) = values.iter_mut().find(|(k, _)| *k == key) {
+            if let Some(value) = value.take() {
+                out += &format!("{key}={value}\n");
+            }
         } else {
             out += line;
             out.push('\n');
         }
     }
-    for (k, v) in values {
+    for (k, v) in values
+        .into_iter()
+        .filter_map(|(key, value)| Some((key, value?)))
+    {
         out += &format!("{k}={v}\n");
     }
+    for line in section.into_iter().chain(lines) {
+        out.push_str(line);
+        out.push('\n');
+    }
     out
+}
+
+fn is_section(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with('[') && line.ends_with(']')
+}
+
+fn font_parts(conf: &str) -> (&str, &str) {
+    let desc = conf
+        .lines()
+        .take_while(|line| !is_section(line))
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(key, value)| (key.trim() == "Font").then_some(value.trim()))
+        .last()
+        .unwrap_or("Sans 10");
+    let desc = desc
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(desc);
+    let core = desc.split_once(" @").map_or(desc, |(core, _)| core);
+    let core = core.split_once(" #").map_or(core, |(core, _)| core);
+    if let Some((family, size)) = core.rsplit_once(char::is_whitespace)
+        && size
+            .strip_suffix("px")
+            .unwrap_or(size)
+            .parse::<f32>()
+            .is_ok_and(|n| n.is_finite() && n > 0.0)
+    {
+        return (family.trim_end().trim_end_matches(','), size);
+    }
+    (core, "10")
+}
+
+#[cfg(not(windows))]
+pub fn candidate_font() -> String {
+    let conf = xdg("XDG_CONFIG_HOME", ".config")
+        .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
+        .unwrap_or_default();
+    let (font, _) = font_parts(&conf);
+    if font == "Sans" {
+        String::new()
+    } else {
+        font.replace("\\\"", "\"").replace("\\\\", "\\")
+    }
+}
+
+fn select_font(conf: &str, family: &str) -> String {
+    let (_, size) = font_parts(conf);
+    let family = if family.is_empty() { "Sans" } else { family }
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    // A trailing comma separates the family from Pango's style keywords.
+    let value = format!("\"{family}, {size}\"");
+    set_keys(conf, vec![("Font", &value)])
+}
+
+#[cfg(not(windows))]
+pub fn apply_candidate_font(family: &str) -> Result<(), String> {
+    let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
+    let hint = if family.is_empty() { "Sans" } else { family };
+    write_classicui(
+        &config,
+        |conf| select_font(conf, family),
+        &format!("Font={hint}"),
+    )
 }
 
 fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
@@ -224,7 +307,11 @@ pub fn restore() -> Result<(), String> {
 
 fn write_classicui(config: &Path, edit: impl FnOnce(&str) -> String, hint: &str) -> Result<(), String> {
     let path = config.join("fcitx5/conf/classicui.conf");
-    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let old = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{} を読み込めませんでした: {e}", path.display())),
+    };
     let new = edit(&old);
     if new != old {
         // Home Manager links a managed file into the Nix store.
@@ -298,5 +385,26 @@ mod tests {
         assert_eq!(new, "Theme=sweet-ime-light\nDarkTheme=sweet-ime-dark\nUseDarkTheme=True\n");
         // Applying twice changes nothing.
         assert_eq!(select_in_classicui(&new, Theme::Default), new);
+    }
+
+    #[test]
+    fn classicui_font_preserves_size_and_other_sections() {
+        let old =
+            "Theme=default\nFont=\"Sans Bold 13px\"\nMenuFont=\"Sans 10\"\n\n[Other]\nFont=Other\n";
+        let new = select_font(old, "Noto Serif CJK JP");
+        assert_eq!(
+            new,
+            "Theme=default\nFont=\"Noto Serif CJK JP, 13px\"\nMenuFont=\"Sans 10\"\n\n[Other]\nFont=Other\n"
+        );
+        assert_eq!(font_parts(&new), ("Noto Serif CJK JP", "13px"));
+        assert_eq!(font_parts(&select_font(&new, "")), ("Sans", "13px"));
+        assert_eq!(
+            select_font("[Other]\nFont=Other\n", "Serif"),
+            "Font=\"Serif, 10\"\n[Other]\nFont=Other\n"
+        );
+        assert_eq!(
+            select_font("Font=Sans 12\nFont=Sans 14\n", "Serif"),
+            "Font=\"Serif, 14\"\n"
+        );
     }
 }
