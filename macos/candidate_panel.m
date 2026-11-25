@@ -44,6 +44,10 @@ static NSColor *SelectionTextColor(NSColor *background) {
 
 @implementation SweetCandidateRow
 
+- (BOOL)isAccessibilitySelected {
+    return self.highlightedCandidate;
+}
+
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
     return YES;
 }
@@ -76,6 +80,7 @@ static NSColor *SelectionTextColor(NSColor *background) {
     NSFont *_font;
     CGFloat _preferredWidth;
     NSParagraphStyle *_titleStyle;
+    NSUInteger _selectedRow;
 }
 
 - (instancetype)initWithSelection:(void (^)(NSUInteger))selection {
@@ -88,6 +93,7 @@ static NSColor *SelectionTextColor(NSColor *background) {
         NSMutableParagraphStyle *titleStyle = [[NSMutableParagraphStyle alloc] init];
         titleStyle.lineBreakMode = NSLineBreakByTruncatingTail;
         _titleStyle = titleStyle;
+        _selectedRow = NSNotFound;
         self.level = NSStatusWindowLevel;
         self.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                                   NSWindowCollectionBehaviorFullScreenAuxiliary |
@@ -104,6 +110,9 @@ static NSColor *SelectionTextColor(NSColor *background) {
         background.wantsLayer = YES;
         background.layer.cornerRadius = 8;
         background.layer.masksToBounds = YES;
+        [background setAccessibilityElement:YES];
+        [background setAccessibilityRole:NSAccessibilityListRole];
+        [background setAccessibilityLabel:@"変換候補"];
         self.contentView = background;
     }
     return self;
@@ -144,6 +153,7 @@ static NSColor *SelectionTextColor(NSColor *background) {
             [rows addObject:row];
         }
         _rows = rows;
+        [self.contentView setAccessibilityChildren:_rows];
     }
     NSRect frame = SweetCandidatePanelFrame(candidates.count, _preferredWidth, anchor, screen.visibleFrame);
     [self setFrame:frame display:NO];
@@ -158,6 +168,11 @@ static NSColor *SelectionTextColor(NSColor *background) {
         }
     }
     if (!self.visible) [self orderFrontRegardless];
+    if (changed || _selectedRow != selected) {
+        _selectedRow = selected;
+        [self.contentView setAccessibilitySelectedChildren:selected < _rows.count ? @[_rows[selected]] : @[]];
+        NSAccessibilityPostNotification(self.contentView, NSAccessibilitySelectedChildrenChangedNotification);
+    }
 }
 
 - (void)choose:(SweetCandidateRow *)sender {
@@ -195,7 +210,9 @@ BOOL SweetCandidatePanelPreview(NSString *path) {
     if (rows.count != candidates.count) return NO;
     SweetCandidateRow *first = rows[0];
     SweetCandidateRow *second = rows[1];
-    if (first.highlightedCandidate || !second.highlightedCandidate) return NO;
+    if (first.highlightedCandidate || !second.highlightedCandidate ||
+        first.isAccessibilitySelected || !second.isAccessibilitySelected ||
+        ![[panel.contentView accessibilitySelectedChildren] isEqual:@[second]]) return NO;
     [second performClick:nil];
     if (clicked != 1) return NO;
     [panel showCandidates:@[@"仮名"] selectedRow:0 anchor:anchor];
