@@ -70,6 +70,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     /** This field wants no conversion (passwords, URLs, numbers). */
     private boolean fieldEnglish;
     private boolean fieldUrl;
+    private boolean fieldPassword;
     private boolean composing;
     private int selectedCandidate = -1;
     private int composingLength;
@@ -284,7 +285,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         panelTitle.setGravity(Gravity.CENTER_VERTICAL);
         panelTitle.setPadding(dp(14), 0, 0, 0);
         toolbar.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
-        undoButton = iconButton(() -> Icons.UNDO, "確定を取り消して読みに戻す", this::undoCommit);
+        undoButton = iconButton(() -> Icons.UNDO, "確定を取り消して読みに戻す", this::onUndo);
         toolbar.addView(undoButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         expandButton = iconButton(() -> candidatesExpanded ? Icons.COLLAPSE : Icons.EXPAND,
                 "候補を展開", () -> {
@@ -320,7 +321,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
         keyboard = new KeyboardView(this, theme);
         keyboard.setListener(this);
-        keyboard.setUrlField(fieldUrl);
+        keyboard.setField(fieldUrl, fieldPassword);
         keyboard.setEnglish(english);
         configureKeyboard();
         KeyboardView keys = keyboard;
@@ -405,6 +406,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 Prefs.flag(this, Prefs.HAPTIC, true),
                 Prefs.flag(this, Prefs.SOUND, false),
                 Prefs.flag(this, Prefs.KANA_FLICK, false),
+                Prefs.flag(this, Prefs.ENGLISH_FLICK, false),
                 Prefs.flag(this, Prefs.NUMBER_ROW, false),
                 Prefs.flag(this, Prefs.KEY_PREVIEW, true),
                 Prefs.number(this, Prefs.KEY_HEIGHT, 1),
@@ -425,13 +427,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         composingLength = 0;
         int cls = attr.inputType & EditorInfo.TYPE_MASK_CLASS;
         int variation = attr.inputType & EditorInfo.TYPE_MASK_VARIATION;
-        boolean password = (cls == EditorInfo.TYPE_CLASS_TEXT
+        fieldPassword = (cls == EditorInfo.TYPE_CLASS_TEXT
                 && (variation == EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
                     || variation == EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
                     || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_PASSWORD))
                 || (cls == EditorInfo.TYPE_CLASS_NUMBER
                     && variation == EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD);
-        privateField = password || (attr.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0;
+        privateField = fieldPassword || (attr.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0;
         if (ctx != 0) Native.setPrivate(ctx, privateField);
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
@@ -439,10 +441,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         fieldUrl = cls == EditorInfo.TYPE_CLASS_TEXT && variation == EditorInfo.TYPE_TEXT_VARIATION_URI;
         boolean address = fieldUrl || variation == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || variation == EditorInfo.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS;
-        fieldEnglish = cls != EditorInfo.TYPE_CLASS_TEXT || password || address;
+        fieldEnglish = cls != EditorInfo.TYPE_CLASS_TEXT || fieldPassword || address;
         english = fieldEnglish || chosenEnglish;
         if (keyboard != null) {
-            keyboard.setUrlField(fieldUrl);
+            keyboard.setField(fieldUrl, fieldPassword);
             keyboard.setEnglish(english);
         }
         if (ctx != 0) {
@@ -540,6 +542,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onToggleMode() {
+        if (fieldPassword) return;
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         english = !english;
@@ -685,6 +688,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     private void clearUndo() {
         undoTarget = null;
+        if (keyboard != null) keyboard.setUndoAvailable(false);
         if (undoButton != null) undoButton.setVisibility(View.GONE);
     }
 
@@ -703,7 +707,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 ? extracted.startOffset + end : -1;
     }
 
-    private void undoCommit() {
+    @Override
+    public void onUndo() {
         UndoTarget target = undoTarget;
         clearUndo();
         InputConnection ic = getCurrentInputConnection();
@@ -856,7 +861,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         ic.endBatchEdit();
         if (committed && st.undoable && !privateField) {
             int end = commitEnd(ic, st.commit);
-            if (end >= 0) undoTarget = new UndoTarget(st.commit, end);
+            if (end >= 0) {
+                undoTarget = new UndoTarget(st.commit, end);
+                if (keyboard != null) keyboard.setUndoAvailable(true);
+            }
         }
         showCandidates(st.candidates, st.selected, st.suggestions);
         updateKeys();

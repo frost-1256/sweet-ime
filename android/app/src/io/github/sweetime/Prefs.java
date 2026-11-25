@@ -20,6 +20,7 @@ final class Prefs {
     static final String HAPTIC = "haptic";
     static final String SOUND = "sound";
     static final String KANA_FLICK = "kana_flick";
+    static final String ENGLISH_FLICK = "english_flick";
     static final String NUMBER_ROW = "number_row";
     static final String KEY_PREVIEW = "key_preview";
     /** 0 small, 1 normal, 2 large. */
