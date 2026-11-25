@@ -82,6 +82,17 @@ In **System Settings → Keyboard → Text Input → Edit**, add **Sweet IME**
 under Japanese and select it from the input menu. The same menu opens
 **設定…** (Settings).
 
+When updating from `v0.5.0-alpha.1`, replace the previous `Sweet IME.app`
+before logging back in. If the source is missing, run this in Terminal to
+check whether macOS recognizes it in the current login session:
+
+```sh
+"$HOME/Library/Input Methods/Sweet IME.app/Contents/MacOS/SweetIME" --check-input-source
+```
+
+If macOS displays a warning about a downloaded build, see
+[Apple's guidance](https://support.apple.com/en-us/102445).
+
 The first macOS implementation uses the system candidate appearance and
 converts text within the current composition. Its settings, history and optional
 zenz model live in `~/Library/Application Support/SweetIME`. After installing

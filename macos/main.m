@@ -4,6 +4,7 @@
 #import <dispatch/dispatch.h>
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "bridge.h"
@@ -243,9 +244,48 @@ static uint16_t VirtualKey(NSEvent *event) {
 
 @end
 
+static NSString *InputSourceID(NSBundle *bundle) {
+    NSString *bundleID = bundle.bundleIdentifier;
+    NSString *connection = [bundle objectForInfoDictionaryKey:@"InputMethodConnectionName"];
+    NSDictionary *modes = [bundle objectForInfoDictionaryKey:@"ComponentInputModeDict"];
+    NSArray<NSString *> *visibleModes = modes[@"tsVisibleInputModeOrderedArrayKey"];
+    NSString *sourceID = visibleModes.firstObject;
+    NSDictionary *mode = modes[@"tsInputModeListKey"][sourceID ?: @""];
+    if ([bundleID containsString:@".inputmethod."] &&
+        [connection isEqualToString:[bundleID stringByAppendingString:@"_Connection"]] &&
+        [sourceID hasPrefix:[bundleID stringByAppendingString:@"."]] &&
+        [mode[@"TISInputSourceID"] isEqualToString:sourceID] &&
+        [mode[@"TISIntendedLanguage"] isEqualToString:@"ja"] &&
+        [mode[@"tsInputModeScriptKey"] isEqualToString:@"smJapanese"] &&
+        [mode[@"tsInputModeIsVisibleKey"] boolValue]) {
+        return sourceID;
+    }
+    return nil;
+}
+
+static int CheckInputSource(NSBundle *bundle) {
+    NSString *sourceID = InputSourceID(bundle);
+    if (!sourceID) {
+        fputs("Sweet IME has invalid input source metadata.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID: sourceID};
+    NSArray *sources = CFBridgingRelease(TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true));
+    if (!sources.count) {
+        fprintf(stderr, "%s is missing from this login session.\n", sourceID.UTF8String);
+        return EXIT_FAILURE;
+    }
+    NSArray *enabled = CFBridgingRelease(TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false));
+    printf("%s is %s.\n", sourceID.UTF8String, enabled.count ? "registered and enabled" : "registered but disabled");
+    return EXIT_SUCCESS;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSBundle *bundle = [NSBundle mainBundle];
+        if (argc == 2 && strcmp(argv[1], "--check-input-source") == 0) {
+            return CheckInputSource(bundle);
+        }
         NSString *dictionary = [bundle pathForResource:@"system" ofType:@"dict"];
         if (!dictionary || !sweet_macos_load(dictionary.fileSystemRepresentation)) {
             NSLog(@"Sweet IME could not load system.dict");
@@ -253,7 +293,9 @@ int main(int argc, const char *argv[]) {
         }
         if (argc == 2 && strcmp(argv[1], "--smoke-test") == 0) {
             NSString *controllerClass = [bundle objectForInfoDictionaryKey:@"InputMethodServerControllerClass"];
-            if (![NSClassFromString(controllerClass) isSubclassOfClass:IMKInputController.class]) {
+            if (!InputSourceID(bundle) ||
+                ![NSClassFromString(controllerClass) isSubclassOfClass:IMKInputController.class]) {
+                fputs("Sweet IME has invalid input source metadata or controller class.\n", stderr);
                 return EXIT_FAILURE;
             }
             SweetContext *context = sweet_macos_new();
