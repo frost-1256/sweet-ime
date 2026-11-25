@@ -1,0 +1,74 @@
+name: 変換ミス報告
+description: かな漢字変換の誤り・候補の順序などを報告する
+title: "[変換] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        変換精度の改善に直結する報告です。ありがとうございます。
+        ※ 実在の人名・住所など、個人を特定できる文はそのまま貼らず、置き換えてください。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: プラットフォーム
+      options:
+        - Windows
+        - Linux (fcitx5)
+        - Android
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: ime_version
+    attributes:
+      label: Sweet IME のバージョン
+      placeholder: "例: v0.5.0-alpha.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: ai_rerank
+    attributes:
+      label: AI リランキング（zenz）
+      options:
+        - 有効（xsmall）
+        - 有効（small）
+        - 無効（辞書のみ）
+        - わからない
+    validations:
+      required: true
+  - type: input
+    id: input_kana
+    attributes:
+      label: 入力した読み
+      placeholder: "例: さんぜんえん"
+    validations:
+      required: true
+  - type: input
+    id: expected
+    attributes:
+      label: 期待した変換
+      placeholder: "例: 三千円"
+    validations:
+      required: true
+  - type: input
+    id: actual
+    attributes:
+      label: 実際に出た変換（第一候補）
+      placeholder: "例: 三千縁"
+    validations:
+      required: true
+  - type: textarea
+    id: context_sentence
+    attributes:
+      label: 前後の文脈
+      description: 文の中で変換した場合は、文全体があると再現しやすくなります（カーソル位置も分かれば）。
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: 補足
+      description: 文節の区切り位置、学習が効いていたか、など気づいた点があれば。
+    validations:
+      required: false

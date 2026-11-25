@@ -1,0 +1,74 @@
+name: バグ報告
+description: 動作の不具合・クラッシュなどを報告する
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。先に、最新版でも再現するか、似た Issue が既に無いかを確認してください。
+        ※ パスワードや個人の入力履歴など、プライベートな内容は貼らないでください。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: プラットフォーム
+      options:
+        - Windows
+        - Linux (fcitx5)
+        - Android
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: OS のバージョン
+      placeholder: "例: Windows 11 24H2 / Ubuntu 24.04 + niri / Android 14 / macOS 15.2"
+    validations:
+      required: true
+  - type: input
+    id: ime_version
+    attributes:
+      label: Sweet IME のバージョン
+      description: Releases や設定アプリの「情報」で確認できます。
+      placeholder: "例: v0.5.0-alpha.2"
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: 問題が起きたアプリ
+      placeholder: "例: VS Code / Google Chrome / ターミナル"
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: できるだけ具体的に、番号付きで書いてください。
+      placeholder: |
+        1. ○○を起動する
+        2. ○○と入力する
+        3. ○○が起きる
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の動作
+      description: エラーメッセージやログがあればここに貼ってください（個人情報は除いてください）。
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 補足
+      description: 設定の変更点、スクリーンショットなど、参考になる情報があれば。
+    validations:
+      required: false
