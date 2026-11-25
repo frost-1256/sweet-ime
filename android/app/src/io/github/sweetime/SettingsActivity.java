@@ -915,7 +915,8 @@ public final class SettingsActivity extends Activity {
         StringBuilder body = new StringBuilder("Sweet IME で報告した変換です(読み → 期待する変換)。\n\n```tsv\n");
         for (String[] r : reports) body.append(reportLine(r)).append('\n');
         body.append("```\n");
-        open(ISSUE_URL + "?title=" + urlEncode("変換の報告") + "&body=" + urlEncode(body.toString()));
+        open(ISSUE_URL + "?template=in_app_conversion_report.md&title="
+                + urlEncode("変換の報告") + "&body=" + urlEncode(body.toString()));
     }
 
     private static String urlEncode(String s) {

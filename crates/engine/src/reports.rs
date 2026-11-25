@@ -109,7 +109,11 @@ pub fn issue_url(reports: &[Report]) -> String {
         body.push('\n');
     }
     body.push_str("```\n");
-    format!("{ISSUE_URL}?title={}&body={}", encode("変換の報告"), encode(&body))
+    format!(
+        "{ISSUE_URL}?template=in_app_conversion_report.md&title={}&body={}",
+        encode("変換の報告"),
+        encode(&body)
+    )
 }
 
 /// Percent-encodes a URL query value.
@@ -153,7 +157,11 @@ mod tests {
         let text = to_text(&[report("きかい", "機会")]);
         assert!(text.ends_with("OK:\tきかい\t\tConversion Expected\t機会\n"));
         let url = issue_url(&[report("きかい", "機会")]);
-        assert!(url.starts_with("https://github.com/frost-1256/sweet-ime/issues/new?title=%E5%A4%89"));
+        assert!(url.starts_with(concat!(
+            "https://github.com/frost-1256/sweet-ime/issues/new",
+            "?template=in_app_conversion_report.md&title=%E5%A4%89"
+        )));
+        assert!(url.contains("Conversion%20Expected%09%E6%A9%9F%E4%BC%9A"));
         assert!(!url.contains(' ') && !url.contains('\n'));
     }
 }

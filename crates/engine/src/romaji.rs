@@ -48,7 +48,7 @@ const BASE: &[(&str, &str)] = &[
     ("tsa", "つぁ"), ("tsi", "つぃ"), ("tse", "つぇ"), ("tso", "つぉ"),
     ("thi", "てぃ"), ("thu", "てゅ"), ("dhi", "でぃ"), ("dhu", "でゅ"),
     ("twu", "とぅ"), ("dwu", "どぅ"), ("whi", "うぃ"), ("whe", "うぇ"), ("who", "うぉ"),
-    ("qa", "くぁ"), ("qi", "くぃ"), ("qe", "くぇ"), ("qo", "くぉ"), ("kwa", "くぁ"),
+    ("qa", "くぁ"), ("qi", "くぃ"), ("qu", "くぅ"), ("qe", "くぇ"), ("qo", "くぉ"), ("kwa", "くぁ"),
     ("gwa", "ぐぁ"),
     // Small kana
     ("xa", "ぁ"), ("xi", "ぃ"), ("xu", "ぅ"), ("xe", "ぇ"), ("xo", "ぉ"),
@@ -365,5 +365,15 @@ mod tests {
             "kon'nichiha,gakkou!ko-hi- Qwen3.6"
         );
         assert_eq!(display_romaji("しゃちょっ"), "shachoxtsu");
+    }
+
+    #[test]
+    fn qu_composes_small_u_incrementally() {
+        let mut composer = Composer::new();
+        composer.push('q');
+        assert_eq!(composer.pending(), "q");
+        composer.push('u');
+        assert_eq!(composer.kana(), "くぅ");
+        assert!(composer.pending().is_empty());
     }
 }
