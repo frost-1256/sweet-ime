@@ -68,7 +68,7 @@ impl Context {
             || !(self.session.is_active()
                 || matches!(
                     key,
-                    Key::Char(_) | Key::ShiftedLetter(_) | Key::ReportCommit
+                    Key::Char(_) | Key::ShiftedLetter(_) | Key::Space | Key::ReportCommit
                 ))
             || !self.session.handle(self.converter, key)
         {
@@ -299,6 +299,10 @@ mod tests {
             snapshot: CString::default(),
         };
         context.session.options.live_conversion = false;
+        assert!(context.handle(0x20, ' ' as u32, 0));
+        let state: serde_json::Value =
+            serde_json::from_slice(context.snapshot().to_bytes()).unwrap();
+        assert_eq!(state["commit"], "　");
         for ch in "kana".chars() {
             assert!(context.handle(ch.to_ascii_uppercase() as u16, ch as u32, 0));
         }

@@ -384,7 +384,8 @@ The APK is written to `out/SweetIME-Android.apk`.
 ### Build for macOS
 
 On macOS 15 or later, install the Xcode Command Line Tools, stable Rust and
-PowerShell. Use the Mozc revision pinned in `.github/workflows/macos.yml`.
+PowerShell. Check out Mozc under `third_party/mozc-data` at the revision
+pinned in `.github/workflows/macos.yml`.
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin

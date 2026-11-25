@@ -369,7 +369,8 @@ APK は `out/SweetIME-Android.apk` にできます。
 ### macOS 版のビルド
 
 macOS 15 以降で Xcode Command Line Tools、安定版 Rust、PowerShell を用意します。
-Mozc は `.github/workflows/macos.yml` に固定されたリビジョンを使います。
+Mozc は `.github/workflows/macos.yml` に固定されたリビジョンを
+`third_party/mozc-data` にチェックアウトします。
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
