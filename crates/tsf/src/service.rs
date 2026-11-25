@@ -44,6 +44,7 @@ struct State {
     /// The current composition started with the preview on in a public field.
     typed_input_allowed: bool,
     window: Option<CandidateWindow>,
+    opaque_candidates: bool,
     candidate_font: String,
     /// GUID atoms for [input, converted, focused] display attributes.
     atoms: [i32; 3],
@@ -483,8 +484,12 @@ impl TextService_Impl {
 
 /// Creates the candidate window with its handlers. The closures keep the
 /// service alive; Deactivate drops the window, which breaks the cycle.
-fn make_window(this: &ComObject<TextService>, owner: Option<HWND>) -> Option<CandidateWindow> {
-    let w = CandidateWindow::new(owner).ok()?;
+fn make_window(
+    this: &ComObject<TextService>,
+    owner: Option<HWND>,
+    opaque: bool,
+) -> Option<CandidateWindow> {
+    let w = CandidateWindow::new(owner, opaque).ok()?;
     w.warm_up();
     let t = this.clone();
     w.set_on_click(move |i| t.on_candidate_click(i));
@@ -503,6 +508,16 @@ fn immersive(tm: &ITfThreadMgr) -> bool {
             .and_then(|t| t.GetActiveFlags())
             .is_ok_and(|f| f & TF_TMF_IMMERSIVEMODE != 0)
     }
+}
+
+fn windows_search() -> bool {
+    std::env::current_exe().ok().is_some_and(|path| {
+        path.file_name().is_some_and(|name| {
+            ["SearchHost.exe", "SearchApp.exe", "SearchUI.exe"]
+                .iter()
+                .any(|exe| name.eq_ignore_ascii_case(exe))
+        })
+    })
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
@@ -606,8 +621,9 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
                 st.app_off = app_mode == AppMode::Off;
                 let imm = st.thread_mgr.as_ref().is_some_and(immersive);
                 crate::debug_log!("activate: immersive={imm}");
-                if st.window.is_none() && !imm {
-                    st.window = make_window(&this, None);
+                st.opaque_candidates = imm || windows_search();
+                if st.window.is_none() && !st.opaque_candidates {
+                    st.window = make_window(&this, None, false);
                 }
             }
             // Taskbar indicator ("あ" / "A"). The handler holds the service;

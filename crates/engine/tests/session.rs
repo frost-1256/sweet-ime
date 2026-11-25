@@ -1749,3 +1749,30 @@ fn colloquial_long_vowels_stay_hiragana() {
     let candidates = c.segment_candidates("ちょーだい", 5);
     assert_eq!(candidates[..2], ["ちょーだい", "チョーダイ"]);
 }
+
+#[test]
+fn casual_reactions_keep_their_hiragana_spelling() {
+    let Some(c) = converter() else { return };
+    let c = c.with_reranker(Box::new(PickLast));
+    for (romaji, reading, katakana) in [
+        ("mousoro", "もうそろ", "もうソロ"),
+        ("a-ne", "あーね", "アーネ"),
+        ("ryo", "りょ", "リョ"),
+    ] {
+        assert_eq!(c.convert(reading, &[], 1)[0].surface(), reading);
+        assert_eq!(c.convert_best(reading, &[], "")[0].surface(), reading);
+        let with_punctuation = format!("{reading}。");
+        assert_eq!(c.convert_best(&with_punctuation, &[], "")[0].surface(), with_punctuation);
+        let prefix = format!("{reading}、");
+        let sentence = format!("{prefix}いこう");
+        assert!(c.convert(&sentence, &[], 1)[0].surface().starts_with(&prefix));
+        assert!(c.convert_best(&sentence, &[], "")[0].surface().starts_with(&prefix));
+        let mut s = Session::new();
+        type_str(&mut s, &c, romaji);
+        assert_eq!(s.preedit().text, reading, "{romaji}");
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, reading, "{romaji}");
+        assert!(c.convert(reading, &[], 12).iter().any(|item| item.surface() == katakana));
+    }
+    assert_eq!(c.convert("りょうかい", &[], 1)[0].surface(), "了解");
+}

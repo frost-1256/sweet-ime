@@ -84,6 +84,29 @@ jobs:
           fi
           codesign --verify --deep --strict "$target"
           test ! -e "$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install"
+          (
+            exec 9>>"$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install.lock"
+            /usr/bin/perl -MFcntl=:flock -e 'flock(STDIN, LOCK_EX | LOCK_NB) or exit 1' <&9
+            if bash macos/install.sh --archive SweetIME-macOS.zip; then
+              echo "Installer ignored another process's lock" >&2
+              exit 1
+            fi
+          )
+          work="$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install"
+          mkdir "$work"
+          mv "$target" "$work/previous.app"
+          if bash macos/install.sh --bundle "$RUNNER_TEMP/tampered.app"; then
+            echo "Installer accepted a modified bundle during recovery" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict "$target"
+          test ! -e "$work"
+          bash macos/install.sh --archive SweetIME-macOS.zip
+          codesign --verify --deep --strict "$target"
+          mkdir -p "$work/previous.app/Contents"
+          bash macos/install.sh --archive SweetIME-macOS.zip
+          test ! -e "$work"
+          codesign --verify --deep --strict "$target"
       - uses: actions/upload-artifact@v7
         if: matrix.runner == 'macos-15'
         with:

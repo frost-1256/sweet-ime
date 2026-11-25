@@ -19,7 +19,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_WRAP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Factory,
     ID2D1HwndRenderTarget, ID2D1LinearGradientBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -40,7 +41,7 @@ use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegG
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    GWLP_USERDATA, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
+    GA_ROOT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
     PostMessageW, SetTimer, SetWindowLongPtrW, GWLP_HWNDPARENT, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -191,6 +192,7 @@ struct State {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
     target: Option<ID2D1HwndRenderTarget>,
+    opaque: bool,
     format: IDWriteTextFormat,
     font_family: String,
     small: IDWriteTextFormat,
@@ -331,16 +333,32 @@ fn register_class() {
     });
 }
 
+fn root_owner(owner: HWND) -> HWND {
+    let root = unsafe { GetAncestor(owner, GA_ROOT) };
+    if root.is_invalid() {
+        owner
+    } else {
+        root
+    }
+}
+
 impl CandidateWindow {
     /// Creates the window owned by `owner` (the application window the
     /// text is in). Owned windows stay above their owner, including in
     /// immersive hosts such as Windows Search, where an unowned topmost
     /// window would end up behind the host's UI.
-    pub fn new(owner: Option<HWND>) -> Result<Self> {
+    pub fn new(owner: Option<HWND>, opaque: bool) -> Result<Self> {
         register_class();
+        let owner = owner.map(root_owner);
         unsafe {
+            // The Windows Search compositor can show a black surface for
+            // a layered Direct2D popup. Use an ordinary owned popup there.
+            let mut style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            if !opaque {
+                style |= WS_EX_LAYERED;
+            }
             let hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                style,
                 CLASS_NAME,
                 PCWSTR::null(),
                 WS_POPUP,
@@ -372,6 +390,7 @@ impl CandidateWindow {
                 d2d,
                 dwrite,
                 target: None,
+                opaque,
                 format,
                 font_family: String::new(),
                 small,
@@ -407,6 +426,7 @@ impl CandidateWindow {
     /// Changes the owner window (e.g. focus moved to another window of the
     /// same thread).
     pub fn set_owner(&self, owner: HWND) {
+        let owner = root_owner(owner);
         if self.owner.get() != owner.0 as isize {
             self.owner.set(owner.0 as isize);
             unsafe {
@@ -520,7 +540,8 @@ impl CandidateWindow {
             let mut fade = false;
             if !was_visible {
                 st.pal = palette();
-                fade = st.hidden_at.is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
+                fade = !st.opaque
+                    && st.hidden_at.is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
                 st.shown_at = if fade {
                     Instant::now()
                 } else {
@@ -550,9 +571,10 @@ impl CandidateWindow {
                 (padding + text_offset) * st.scale,
                 was_visible,
                 fade,
+                st.opaque,
             )
         });
-        let Some((w, h, text_x, was_visible, fade)) = geom else { return };
+        let Some((w, h, text_x, was_visible, fade, opaque)) = geom else { return };
         unsafe {
             let _ = KillTimer(Some(self.hwnd), HIDE_TIMER_ID);
             // Align candidate text with the composition text.
@@ -568,7 +590,7 @@ impl CandidateWindow {
                 x = x.clamp(wa.left, (wa.right - w).max(wa.left));
                 y = y.max(wa.top);
             }
-            if !was_visible {
+            if !was_visible && !opaque {
                 let alpha = if fade { 0 } else { 255 };
                 let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
             }
@@ -771,10 +793,13 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc);
         let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
         if st.target.is_none() {
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
+            let mut props = D2D1_RENDER_TARGET_PROPERTIES {
                 pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_UNKNOWN },
                 ..Default::default()
             };
+            if st.opaque {
+                props.r#type = D2D1_RENDER_TARGET_TYPE_SOFTWARE;
+            }
             let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY };
             st.target = Some(st.d2d.CreateHwndRenderTarget(&props, &hprops)?);
         }
@@ -894,8 +919,10 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             return Err(e);
         }
         // Fade-in.
-        let t = (st.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), (255.0 * t) as u8, LWA_ALPHA);
+        if !st.opaque {
+            let t = (st.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), (255.0 * t) as u8, LWA_ALPHA);
+        }
     }
     Ok(())
 }
