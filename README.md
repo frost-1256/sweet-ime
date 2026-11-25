@@ -52,6 +52,11 @@ latency measured locally on Windows.
 | + zenz v3.1 small            | 89.7% | ~28 ms       |
 | Mozc OSS (reference)         | 74.6% | —            |
 
+`sweet-cli data/system.dict eval-ajimee <evaluation_items.json>` measures
+Acc@1 and mean MinCER from the official JSON, separately with and without
+left context. Set `SWEET_ZENZ` to evaluate with a model.
+[AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench)
+
 ## Install
 
 ### Windows

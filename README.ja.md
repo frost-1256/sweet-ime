@@ -48,6 +48,10 @@ Mozc の `evaluation.tsv`（397 件）での 1 位正解率と、Windows で測�
 | + zenz v3.1 small             | 89.7%     | 約 28 ms  |
 | Mozc OSS(参考)              | 74.6%     | —        |
 
+`sweet-cli data/system.dict eval-ajimee <evaluation_items.json>` で、公式 JSON の
+Acc@1 と平均 MinCER を左文脈の有無別に測定できます。モデルを使う場合は
+`SWEET_ZENZ` を設定します。[AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench)
+
 ## インストール
 
 ### Windows
