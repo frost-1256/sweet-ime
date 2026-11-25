@@ -15,6 +15,7 @@ pub(super) struct SegState {
     pub(super) selected: usize,
     /// Candidates are predictions (not conversions of `reading`); don't learn.
     pub(super) predicted: bool,
+    pub(super) cloud: std::ops::Range<usize>,
 }
 
 pub(super) struct Converting {
@@ -25,6 +26,57 @@ pub(super) struct Converting {
 }
 
 impl Session {
+    /// The reading to send on a desktop Space key that starts conversion.
+    pub fn simeji_conversion_reading(&self, key: Key) -> Option<String> {
+        if key != Key::Space || !self.options.simeji_cloud || self.private {
+            return None;
+        }
+        self.simeji_reading()
+    }
+
+    pub fn request_simeji(
+        &mut self,
+        reading: String,
+        ready: impl FnOnce(crate::simeji::Response) + Send + 'static,
+    ) -> bool {
+        if let Some(cv) = &self.conv
+            && self.simeji_request.is_none()
+            && cv.segs.len() == 1
+            && cv.segs[0].reading == reading
+            && self.options.simeji_cloud
+            && !self.private
+        {
+            self.simeji_request = crate::simeji::submit(reading, ready);
+            return self.simeji_request.is_some();
+        }
+        false
+    }
+
+    pub fn apply_simeji(&mut self, conv: &Converter, response: crate::simeji::Response) -> bool {
+        if self.simeji_request != Some(response.id) {
+            return false;
+        }
+        self.cancel_simeji();
+        if !self.options.simeji_cloud
+            || self.private
+            || response.items.is_empty()
+            || self.conv.is_none()
+        {
+            return false;
+        }
+        self.expand(conv);
+        let cv = self.conv.as_mut().unwrap();
+        let segment = &mut cv.segs[cv.focus];
+        let start = segment.cands.len();
+        for item in response.items {
+            if !segment.cands.contains(&item) {
+                segment.cands.push(item);
+            }
+        }
+        segment.cloud = start..segment.cands.len();
+        cv.window && !segment.cloud.is_empty()
+    }
+
     /// Dates, emoji and kaomoji for a segment reading (see [`crate::special`]).
     fn special_candidates(&self, reading: &str) -> Vec<String> {
         let mut v = Vec::new();
@@ -49,6 +101,7 @@ impl Session {
                         expanded: true,
                         selected: 0,
                         predicted: true,
+                        cloud: 0..0,
                     }],
                     focus: 0,
                     window: false,
@@ -65,6 +118,7 @@ impl Session {
                     expanded: false,
                     selected: 0,
                     predicted: false,
+                    cloud: 0..0,
                 }],
                 focus: 0,
                 window: false,
@@ -119,6 +173,7 @@ impl Session {
                         expanded: false,
                         selected: 0,
                         predicted: false,
+                        cloud: 0..0,
                     }],
                     focus: 0,
                     window: false,
@@ -146,6 +201,7 @@ impl Session {
                 expanded: false,
                 selected: 0,
                 predicted: false,
+                cloud: 0..0,
             }];
         }
         self.conv = Some(Converting {
@@ -197,10 +253,12 @@ impl Session {
                 let new_word = self.options.english_words
                     && english::typed_word(&s.reading, surface)
                     && !english::is_spelling(&s.reading, surface);
-                if s.predicted {
-                    self.learn_selected_typo(conv, surface);
-                } else if (s.selected != 0 || new_word) && !self.private {
-                    conv.learn(&s.reading, surface);
+                if !s.cloud.contains(&s.selected) {
+                    if s.predicted {
+                        self.learn_selected_typo(conv, surface);
+                    } else if (s.selected != 0 || new_word) && !self.private {
+                        conv.learn(&s.reading, surface);
+                    }
                 }
                 self.commit.push_str(surface);
             }
@@ -391,6 +449,7 @@ fn segs_from(conv: Option<&Conversion>, kana: &str) -> Vec<SegState> {
                 expanded: false,
                 selected: 0,
                 predicted: false,
+                cloud: 0..0,
             })
             .collect(),
         _ => vec![SegState {
@@ -399,6 +458,7 @@ fn segs_from(conv: Option<&Conversion>, kana: &str) -> Vec<SegState> {
             expanded: false,
             selected: 0,
             predicted: false,
+            cloud: 0..0,
         }],
     }
 }

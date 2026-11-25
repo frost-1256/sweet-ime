@@ -7,6 +7,8 @@ pub struct Options {
     pub live_conversion: bool,
     /// Show predictions while typing.
     pub suggestions: bool,
+    /// Add Simeji kaomoji candidates to desktop Space conversions.
+    pub simeji_cloud: bool,
     /// Show the original input alongside the Windows composition.
     pub show_typed_input: bool,
     /// Rerank conversions with the neural model when it is installed.
@@ -47,6 +49,7 @@ impl Default for Options {
         Self {
             live_conversion: true,
             suggestions: true,
+            simeji_cloud: false,
             show_typed_input: false,
             neural: true,
             learning: true,
@@ -82,6 +85,7 @@ impl Options {
             match k.trim() {
                 "live_conversion" => o.live_conversion = on,
                 "suggestions" => o.suggestions = on,
+                "simeji_cloud" => o.simeji_cloud = on,
                 "show_typed_input" => o.show_typed_input = on,
                 "neural" => o.neural = on,
                 "learning" => o.learning = on,
@@ -110,6 +114,7 @@ impl Options {
             "# Sweet IME settings (applied when the IME is next activated)
              live_conversion = {}
              suggestions = {}
+             simeji_cloud = {}
              show_typed_input = {}
              neural = {}
              learning = {}
@@ -128,6 +133,7 @@ impl Options {
 ",
             b(self.live_conversion),
             b(self.suggestions),
+            b(self.simeji_cloud),
             b(self.show_typed_input),
             b(self.neural),
             b(self.learning),
@@ -167,6 +173,7 @@ mod tests {
         let o = Options {
             live_conversion: false,
             suggestions: true,
+            simeji_cloud: true,
             show_typed_input: true,
             neural: false,
             learning: true,

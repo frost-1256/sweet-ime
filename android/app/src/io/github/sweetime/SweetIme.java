@@ -26,6 +26,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -33,6 +34,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /** The input method service and its candidate bar. */
 public final class SweetIme extends InputMethodService implements KeyboardView.Listener {
@@ -55,9 +59,15 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private View expandButton;
     private View clipboardButton;
     private View undoButton;
+    private TextView cloudButton;
+    private boolean cloudEnabled;
+    private final ExecutorService cloudWorker = Executors.newSingleThreadExecutor();
+    private Future<?> cloudLookup;
+    private long cloudRequestId;
     private UndoTarget undoTarget;
     private TextView panelTitle;
     private String[] candidateItems = new String[0];
+    private Typeface displayFont = Typeface.DEFAULT;
     private boolean candidatesExpanded;
     private boolean clipboardOpen;
     private EmojiPanel emojiPanel;
@@ -205,6 +215,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onDestroy() {
         cancelLive();
+        cancelCloud();
+        cloudWorker.shutdownNow();
         refineThread.quitSafely();
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         if (ctx != 0) {
@@ -287,6 +299,13 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         toolbar.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
         undoButton = iconButton(() -> Icons.UNDO, "確定を取り消して読みに戻す", this::onUndo);
         toolbar.addView(undoButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        cloudButton = new TextView(this);
+        cloudButton.setTextSize(13);
+        cloudButton.setGravity(Gravity.CENTER);
+        cloudButton.setTextColor(theme.text);
+        cloudButton.setContentDescription("Simejiで顔文字を検索");
+        cloudButton.setOnClickListener(v -> requestCloud());
+        toolbar.addView(cloudButton, new LinearLayout.LayoutParams(dp(64), dp(48)));
         expandButton = iconButton(() -> candidatesExpanded ? Icons.COLLAPSE : Icons.EXPAND,
                 "候補を展開", () -> {
                     candidatesExpanded = !candidatesExpanded;
@@ -383,6 +402,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         theme = Theme.of(this);
         inputRoot.setBackgroundColor(theme.background);
         panelTitle.setTextColor(theme.text);
+        cloudButton.setTextColor(theme.text);
         undoButton.invalidate();
         clipboardButton.invalidate();
         expandButton.invalidate();
@@ -401,7 +421,11 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         }
     }
 
-    private void configureKeyboard() {
+    private boolean configureKeyboard() {
+        Typeface font = ImeFont.selected(this);
+        boolean fontChanged = font != displayFont;
+        displayFont = font;
+        keyboard.setTypeface(font);
         keyboard.configure(theme,
                 Prefs.flag(this, Prefs.HAPTIC, true),
                 Prefs.flag(this, Prefs.SOUND, false),
@@ -411,6 +435,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 Prefs.flag(this, Prefs.KEY_PREVIEW, true),
                 Prefs.number(this, Prefs.KEY_HEIGHT, 1),
                 Prefs.number(this, Prefs.PUNCTUATION_WIDTH, 1));
+        return fontChanged;
     }
 
     private int dp(int v) {
@@ -421,6 +446,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     public void onStartInput(EditorInfo attr, boolean restarting) {
         super.onStartInput(attr, restarting);
         cancelLive();
+        cancelCloud();
         clearUndo();
         if (ctx != 0) Native.reset(ctx);
         composing = false;
@@ -457,12 +483,17 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onStartInputView(EditorInfo attr, boolean restarting) {
         super.onStartInputView(attr, restarting);
+        cloudEnabled = Prefs.flag(this, Prefs.SIMEJI_CLOUD, false);
         // Keep the attached view and its navigation-bar insets when changing themes.
         if (keyboard != null) {
             refreshTheme();
-            configureKeyboard();
+            boolean fontChanged = configureKeyboard();
             clipboardPanel.setInputActive(true, privateField);
-            if (candidatesExpanded) renderExpandedCandidates();
+            if (fontChanged && candidateItems.length > 0) {
+                showCandidates(candidateItems, selectedCandidate, false);
+            } else if (candidatesExpanded) {
+                renderExpandedCandidates();
+            }
             if (clipboardOpen) clipboardPanel.open(theme);
         }
         if (ctx != 0) Native.reloadOptions(ctx);
@@ -476,6 +507,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onFinishInputView(boolean finishingInput) {
         cancelLive();
+        cancelCloud();
         clearUndo();
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
@@ -490,6 +522,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onFinishInput() {
         cancelLive();
+        cancelCloud();
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         super.onFinishInput();
@@ -524,6 +557,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 && (newSelStart != newSelEnd || newSelStart < candidatesStart
                 || newSelStart > candidatesEnd)) {
             cancelLive();
+            cancelCloud();
             Native.reset(ctx);
             composing = false;
             InputConnection ic = getCurrentInputConnection();
@@ -543,6 +577,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     @Override
     public void onToggleMode() {
         if (fieldPassword) return;
+        cancelCloud();
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         english = !english;
@@ -553,6 +588,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onSymbol(String text) {
+        cancelCloud();
         finishEnter(pendingEnter, null);
         if (!english && composing && ctx != 0 && text.length() == 1) {
             String snapshot = Native.symbol(ctx, text.charAt(0));
@@ -565,6 +601,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     }
 
     private void onText(String text) {
+        cancelCloud();
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
         InputConnection ic = getCurrentInputConnection();
@@ -574,6 +611,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onEmoji() {
+        cancelCloud();
         clearUndo();
         // What is being typed goes in first, as when tapping an emoji.
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
@@ -656,6 +694,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onKey(int code) {
+        cancelCloud();
         finishEnter(pendingEnter, null);
         clearUndo();
         if (!english && engine()) {
@@ -871,6 +910,63 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         requestLive();
     }
 
+    private String cloudReading() {
+        return cloudEnabled && !privateField && !english && composing && ctx != 0
+                && pendingEnter == null && !clipboardOpen && !emojiOpen && !candidatesExpanded
+                ? Native.cloudReading(ctx) : null;
+    }
+
+    private void updateCloudButton() {
+        if (cloudButton == null) return;
+        cloudButton.setVisibility(cloudReading() != null ? View.VISIBLE : View.GONE);
+        cloudButton.setEnabled(cloudLookup == null);
+        cloudButton.setText(cloudLookup == null ? "クラウド" : "検索中");
+    }
+
+    private void cancelCloud() {
+        cloudRequestId++;
+        if (cloudLookup != null) {
+            cloudLookup.cancel(true);
+            cloudLookup = null;
+            updateCloudButton();
+        }
+    }
+
+    private void requestCloud() {
+        String reading = cloudReading();
+        if (reading == null || cloudLookup != null || getCurrentInputConnection() == null) return;
+        long requestId = ++cloudRequestId;
+        cloudLookup = cloudWorker.submit(() -> {
+            String items;
+            try {
+                items = SimejiCloud.lookup(reading);
+            } catch (java.io.IOException | org.json.JSONException error) {
+                Log.d(TAG, "Simeji lookup failed: " + error.getClass().getSimpleName());
+                items = null;
+            }
+            String result = items;
+            main.post(() -> publishCloud(requestId, reading, result));
+        });
+        updateCloudButton();
+    }
+
+    private void publishCloud(long requestId, String reading, String result) {
+        if (requestId != cloudRequestId) return;
+        cloudLookup = null;
+        updateCloudButton();
+        if (!reading.equals(cloudReading())) return;
+        if (result == null || result.isEmpty()) {
+            Toast.makeText(this, result == null ? "クラウド候補を取得できませんでした"
+                    : "クラウド候補が見つかりませんでした", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String snapshot = Native.applyCloud(ctx, reading, result);
+        if (snapshot != null) {
+            Native.State state = Native.State.parse(snapshot);
+            showCandidates(state.candidates, state.selected, state.suggestions);
+        }
+    }
+
     private View iconButton(java.util.function.IntSupplier icon, String label, Runnable action) {
         Icons icons = new Icons();
         android.graphics.RectF bounds = new android.graphics.RectF();
@@ -894,6 +990,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private void updatePanelVisibility() {
         if (keyboard == null) return;
         boolean panel = clipboardOpen || candidatesExpanded || emojiOpen;
+        updateCloudButton();
         keyboard.setVisibility(panel ? View.INVISIBLE : View.VISIBLE);
         candidateScroll.setVisibility(panel ? View.GONE : View.VISIBLE);
         expandedScroll.setVisibility(candidatesExpanded ? View.VISIBLE : View.GONE);
@@ -943,8 +1040,9 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         } else if (index == selectedCandidate) {
             view.setBackgroundColor(theme.focus);
         }
-        if (index == selectedCandidate) view.setTypeface(Typeface.DEFAULT_BOLD);
+        view.setTypeface(displayFont, index == selectedCandidate ? Typeface.BOLD : Typeface.NORMAL);
         view.setOnClickListener(v -> {
+            cancelCloud();
             if (ctx != 0) apply(Native.select(ctx, index));
         });
         return view;

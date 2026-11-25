@@ -58,6 +58,7 @@ public final class SettingsActivity extends Activity {
     private static final String KEYBOARD = "keyboard";
     private static final String THEME = "theme";
     private static final String ABOUT = "about";
+    private static final int PICK_FONT = 1;
 
     /** The page shown: HOME or one of the categories. */
     private String page = HOME;
@@ -74,6 +75,7 @@ public final class SettingsActivity extends Activity {
     private TextView learningSummary;
     /** Handles back on a category page (Android 13 and later). */
     private Object backCallback;
+    private boolean fontImporting;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -293,7 +295,7 @@ public final class SettingsActivity extends Activity {
         learningSummary = entry(list, Icons.HISTORY, "学習とプライバシー", "", LEARNING);
         entry(list, Icons.KEYBOARD, "キーボード", "かな・英数フリック、キーの高さ、振動と音", KEYBOARD);
         int t = Math.min(Prefs.number(this, Prefs.THEME, 0), Theme.LABELS.length - 1);
-        entry(list, Icons.PALETTE, "テーマ", Theme.LABELS[t], THEME);
+        entry(list, Icons.PALETTE, "テーマとフォント", Theme.LABELS[t], THEME);
         entry(list, Icons.INFO, "このアプリについて", "バージョン " + version() + "・ライセンス", ABOUT);
 
         TextView note = text("設定はキーボードを次に表示したときに反映されます。", 13, theme.subText);
@@ -314,6 +316,9 @@ public final class SettingsActivity extends Activity {
         engineToggle(extra, "dates");
         engineToggle(extra, "emoji");
         engineToggle(extra, "calculator");
+        extra.addView(prefToggle("Simejiクラウド変換",
+                "候補バーの「クラウド」を押すと、入力中のかなの読みをSimejiに送信し、顔文字候補を取得します。",
+                Prefs.SIMEJI_CLOUD, false));
     }
 
     private void aiPage() {
@@ -365,7 +370,8 @@ public final class SettingsActivity extends Activity {
     }
 
     private void themePage() {
-        header("テーマ");
+        header("テーマとフォント");
+        fontCard();
         int current = Prefs.number(this, Prefs.THEME, 0);
         LinearLayout row = null;
         for (int i = 0; i < Theme.LABELS.length; i++) {
@@ -383,6 +389,75 @@ public final class SettingsActivity extends Activity {
         TextView note = text("Material 3 のテーマは、Android 12 以降では壁紙の色に合わせます。", 13, theme.subText);
         note.setPadding(dp(4), dp(12), dp(4), 0);
         box.addView(note);
+    }
+
+    private void fontCard() {
+        LinearLayout card = card("キーボードと候補のフォント");
+        TextView sample = text("あいうえお　日本語　Aa 123", 22, theme.text);
+        sample.setTypeface(ImeFont.selected(this));
+        card.addView(sample);
+        RadioGroup options = new RadioGroup(this);
+        String[] labels = {"標準", "明朝・セリフ", "等幅", ImeFont.customName(this)};
+        int count = ImeFont.hasCustom(this) ? labels.length : labels.length - 1;
+        int current = Prefs.number(this, Prefs.FONT, ImeFont.SYSTEM);
+        if (current < 0 || current >= count) current = ImeFont.SYSTEM;
+        for (int value = 0; value < count; value++) {
+            RadioButton option = new RadioButton(this);
+            option.setId(View.generateViewId());
+            option.setText(labels[value]);
+            option.setTextColor(theme.text);
+            option.setButtonTintList(ColorStateList.valueOf(theme.accent));
+            option.setTag(value);
+            option.setEnabled(!fontImporting);
+            options.addView(option);
+            if (value == current) options.check(option.getId());
+        }
+        options.setOnCheckedChangeListener((group, id) -> {
+            View option = group.findViewById(id);
+            if (option == null) return;
+            Prefs.keyboard(this).edit().putInt(Prefs.FONT, (int) option.getTag()).apply();
+            sample.setTypeface(ImeFont.selected(this));
+        });
+        card.addView(options);
+        Button choose = button(fontImporting ? "フォントを読み込み中…" : "フォントファイルを選ぶ（TTF・OTF）");
+        choose.setEnabled(!fontImporting);
+        choose.setOnClickListener(v -> pickFont());
+        card.addView(choose);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void pickFont() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        picker.setType("*/*");
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        startActivityForResult(picker, PICK_FONT);
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != PICK_FONT || result != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        Context context = getApplicationContext();
+        fontImporting = true;
+        show(THEME);
+        new Thread(() -> {
+            String message;
+            try {
+                ImeFont.importFile(context, uri);
+                message = "フォントを読み込みました。キーボードを開くと反映されます。";
+            } catch (java.io.IOException | RuntimeException e) {
+                message = "フォントを読み込めませんでした。TTF・OTFファイルを確認してください。";
+            }
+            String resultMessage = message;
+            runOnUiThread(() -> {
+                fontImporting = false;
+                if (isFinishing() || isDestroyed()) return;
+                if (THEME.equals(page)) show(THEME);
+                Toast.makeText(this, resultMessage, Toast.LENGTH_SHORT).show();
+            });
+        }, "sweet-ime-font-import").start();
     }
 
     /** Theme `index` previewed as a tiny keyboard, with its name. */

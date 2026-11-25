@@ -33,8 +33,8 @@ SweetContext *sweet_context_new(void);
 void sweet_context_free(SweetContext *ctx);
 void sweet_context_set_notify(SweetContext *ctx, SweetNotifyFn fn, void *user);
 
-uint32_t sweet_process_key(SweetContext *ctx, uint32_t sym, uint32_t unicode, uint32_t mods);
-bool sweet_apply_live(SweetContext *ctx);
+uint32_t sweet_process_key(SweetContext *ctx, uint32_t sym, uint32_t unicode, uint32_t mods, bool allow_cloud);
+bool sweet_apply_live(SweetContext *ctx, bool allow_cloud);
 bool sweet_select_candidate(SweetContext *ctx, uint32_t index);
 void sweet_commit_all(SweetContext *ctx);
 void sweet_reset(SweetContext *ctx);

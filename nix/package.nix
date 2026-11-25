@@ -41,7 +41,7 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "sweet-ime";
-  version = "0.5.0-alpha.2";
+  version = "0.5.0";
 
   src = lib.fileset.toSource {
     root = ../.;
@@ -78,6 +78,7 @@ stdenv.mkDerivation (finalAttrs: {
   # One cargo target directory for the addon (built by CMake) and the tools.
   preConfigure = ''
     export CARGO_TARGET_DIR="$NIX_BUILD_TOP/cargo-target"
+    export SWEET_IME_CURL="${curl}/bin/curl"
   '';
 
   postBuild = ''

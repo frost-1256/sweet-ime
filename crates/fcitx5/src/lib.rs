@@ -18,6 +18,7 @@ use std::time::SystemTime;
 
 use sweet_engine::keymap::{Action, Chord, Keymap};
 use sweet_engine::live::LiveConversionWorker;
+use sweet_engine::simeji;
 use sweet_engine::{Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
 
 mod ffi;
@@ -103,6 +104,7 @@ struct Notify {
 #[derive(Default)]
 struct LiveShared {
     result: Mutex<Option<(String, String)>>,
+    cloud: Mutex<Option<simeji::Response>>,
     notify: Mutex<Option<Notify>>,
 }
 
@@ -213,7 +215,7 @@ impl SweetContext {
         self.session.is_active() || matches!(key, Key::Char(_) | Key::ShiftedLetter(_) | Key::Space)
     }
 
-    fn process_key(&mut self, sym: u32, unicode: u32, mods: u32) -> u32 {
+    fn process_key(&mut self, sym: u32, unicode: u32, mods: u32, allow_cloud: bool) -> u32 {
         self.reload_settings_if_changed();
         let key = match self.translate(sym, unicode, mods) {
             None => return 0,
@@ -232,9 +234,25 @@ impl SweetContext {
         if !self.allows(key) {
             return 0;
         }
+        let cloud_reading = allow_cloud
+            .then(|| self.session.simeji_conversion_reading(key))
+            .flatten();
         let Some(conv) = converter() else { return 0 };
         if !self.session.handle(conv, key) {
             return 0;
+        }
+        if let Some(reading) = cloud_reading {
+            let shared = Arc::downgrade(&self.live);
+            self.session.request_simeji(reading, move |response| {
+                if let Some(shared) = shared.upgrade() {
+                    let mut latest = shared.cloud.lock().unwrap_or_else(|e| e.into_inner());
+                    if latest.as_ref().is_none_or(|item| item.id < response.id) {
+                        *latest = Some(response);
+                    }
+                    drop(latest);
+                    shared.notify_ready();
+                }
+            });
         }
         self.snapshot();
         self.request_live_refinement(conv);
@@ -254,16 +272,21 @@ impl SweetContext {
                 return;
             };
             *shared.result.lock().unwrap_or_else(|e| e.into_inner()) = Some((reading, surface));
-            // Called under the lock so `sweet_context_free` cannot
-            // complete while the frontend is being notified.
-            let n = shared.notify.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(n) = n.as_ref() {
-                (n.f)(n.user as *mut c_void);
-            }
+            shared.notify_ready();
         });
     }
 
-    fn apply_live(&mut self) -> bool {
+    fn apply_live(&mut self, allow_cloud: bool) -> bool {
+        let cloud = self.live.cloud.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if !allow_cloud {
+            self.session.cancel_simeji();
+        }
+        if let (Some(response), Some(conv)) = (cloud, converter())
+            && self.session.apply_simeji(conv, response)
+        {
+            self.snapshot();
+            return true;
+        }
         let r = self
             .live
             .result
@@ -316,6 +339,16 @@ impl SweetContext {
                 ListKind::Conversion => s.cursor = (list.selected - start) as i32,
                 ListKind::Suggestion => s.kind = 1,
             }
+        }
+    }
+}
+
+impl LiveShared {
+    fn notify_ready(&self) {
+        // Keep the callback alive while context destruction waits on the lock.
+        let n = self.notify.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = n.as_ref() {
+            (n.f)(n.user as *mut c_void);
         }
     }
 }
@@ -374,17 +407,17 @@ mod tests {
         c.session.options.live_conversion = false;
         c.session.options.suggestions = false;
         for ch in "kana".chars() {
-            assert_eq!(c.process_key(ch as u32, ch as u32, 0), RESULT_CONSUMED);
+            assert_eq!(c.process_key(ch as u32, ch as u32, 0, false), RESULT_CONSUMED);
         }
         assert_eq!(c.snap.preedit.to_str().unwrap(), "かな");
-        assert_eq!(c.process_key(0xff0d, 0x0d, 0), RESULT_CONSUMED);
+        assert_eq!(c.process_key(0xff0d, 0x0d, 0, false), RESULT_CONSUMED);
         assert_eq!(c.snap.commit.to_str().unwrap(), "かな");
         assert_eq!(c.snap.preedit.to_str().unwrap(), "");
         // Off: keys pass through.
         assert_eq!(
-            c.process_key(0xff2a, 0, 0),
+            c.process_key(0xff2a, 0, 0, false),
             RESULT_CONSUMED | RESULT_MODE_CHANGED
         );
-        assert_eq!(c.process_key('a' as u32, 'a' as u32, 0), 0);
+        assert_eq!(c.process_key('a' as u32, 'a' as u32, 0, false), 0);
     }
 }

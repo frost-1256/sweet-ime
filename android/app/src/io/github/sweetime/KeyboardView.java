@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Looper;
@@ -347,6 +348,11 @@ final class KeyboardView extends View {
 
     void setListener(Listener l) {
         listener = l;
+    }
+
+    void setTypeface(Typeface face) {
+        textPaint.setTypeface(face);
+        invalidate();
     }
 
     void setField(boolean url, boolean password) {
@@ -863,11 +869,11 @@ final class KeyboardView extends View {
             case FLICK: {
                 char ch = flickChar(k, flickDirection);
                 if (ch == ' ') return;
-                listener.onKey(ch);
                 if (ch >= 'A' && ch <= 'Z' && !capsLock) {
                     shift = false;
                     invalidate();
                 }
+                listener.onKey(ch);
                 return;
             }
             case EMOJI:

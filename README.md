@@ -76,7 +76,9 @@ use **Settings → 情報**, or set `update_check = off`.
 
 ### macOS
 
-Build the test bundle using the steps below and extract `SweetIME-macOS.zip`.
+Download `SweetIME-macOS.zip` from the
+[latest release](https://github.com/frost-1256/sweet-ime/releases/latest)
+and extract it.
 Copy `Sweet IME.app` into `~/Library/Input Methods`, then log out and back in.
 In **System Settings → Keyboard → Text Input → Edit**, add **Sweet IME**
 under Japanese and select it from the input menu. The same menu opens
@@ -252,6 +254,14 @@ Turn on **英数フリック入力** to use a 12-key layout for direct English i
 Tap **abc** for a or flick left, up or down for b, c or 2. The letter keys
 also enter digits with a downward flick. Password fields always open QWERTY.
 
+Enable **変換 → Simejiクラウド変換** to look up kaomoji. While composing kana,
+tap **クラウド** in the candidate bar to send the reading to Simeji, then
+tap a result to commit it. The feature is off by default and unavailable in
+password or private fields. [Simeji's privacy policy](https://simeji.me/privacy/)
+
+Use **テーマとフォント** to change the font for key labels, flick guides and
+conversion candidates. You can select a system style or open a TTF or OTF file.
+
 On QWERTY, Shift starts an English word as on the desktop. The globe key
 on QWERTY and the **英数** / **かな** key on 12-key layouts switch between
 Japanese and direct English input. Password, URL, email and number fields start in
@@ -263,6 +273,15 @@ sound) and the themes: Material 3 and Material 3 Expressive, which take the
 wallpaper colors on Android 12 and later, and the desktop color themes.
 
 ## Settings
+
+On Windows, Linux and macOS, **入力 → Simejiクラウド変換** is off by default.
+When enabled, starting conversion with Space sends a single-segment kana reading
+to Simeji and adds any kaomoji results after the local candidates. Password and
+private fields are excluded when the platform identifies them.
+
+On Windows and Linux, select an installed candidate font under **テーマ** →
+**候補のフォント**. Linux uses fcitx5 Classic UI, so its setting applies to
+other input methods that use Classic UI as well.
 
 On Windows, open the settings app, `sweet-settings.exe`, from:
 

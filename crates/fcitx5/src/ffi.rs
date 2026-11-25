@@ -66,17 +66,18 @@ pub unsafe extern "C" fn sweet_process_key(
     sym: u32,
     unicode: u32,
     mods: u32,
+    allow_cloud: bool,
 ) -> u32 {
     let c = unsafe { ctx(p) };
-    guard(0, || c.process_key(sym, unicode, mods))
+    guard(0, || c.process_key(sym, unicode, mods, allow_cloud))
 }
 
 /// # Safety
 /// `p` is a live context.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sweet_apply_live(p: *mut SweetContext) -> bool {
+pub unsafe extern "C" fn sweet_apply_live(p: *mut SweetContext, allow_cloud: bool) -> bool {
     let c = unsafe { ctx(p) };
-    guard(false, || c.apply_live())
+    guard(false, || c.apply_live(allow_cloud))
 }
 
 /// Picks entry `index` (absolute) of the candidate list.

@@ -139,8 +139,8 @@ pub struct Context {
     /// Candidates shown before the suggestions while typing: the text as
     /// shown and its reading, each committed as is when tapped.
     typed: Vec<String>,
-    /// For each candidate in the last snapshot after `typed`, its index in
-    /// the session's list (duplicates of `typed` are left out).
+    cloud: Vec<String>,
+    /// For each candidate after `typed` and `cloud`, its session list index.
     listed: Vec<usize>,
     /// The field is a password or asks not to be learned from (a private
     /// browser tab); the session learns nothing there if the option is on.
@@ -160,6 +160,7 @@ impl Context {
         Self {
             session,
             typed: Vec::new(),
+            cloud: Vec::new(),
             listed: Vec::new(),
             private_field: false,
         }
@@ -168,6 +169,9 @@ impl Context {
     pub fn set_private(&mut self, on: bool) {
         self.private_field = on;
         self.session.private = on && self.session.options.private_fields;
+        if on {
+            self.cloud.clear();
+        }
     }
 
     pub fn key_of(code: i32) -> Option<Key> {
@@ -214,6 +218,7 @@ impl Context {
         if !self.session.handle(conv, key) {
             return None;
         }
+        self.cloud.clear();
         // A touch keyboard shows the candidates as soon as it converts.
         self.session.open_candidates(conv);
         Some(self.snapshot())
@@ -223,7 +228,10 @@ impl Context {
         let conv = converter()?;
         self.session
             .handle_symbol(&conv, ch)
-            .then(|| self.snapshot())
+            .then(|| {
+                self.cloud.clear();
+                self.snapshot()
+            })
     }
 
     pub fn select(&mut self, index: usize) -> String {
@@ -231,7 +239,14 @@ impl Context {
             self.session.commit_as(&text);
             return self.snapshot();
         }
-        let Some(&index) = self.listed.get(index - self.typed.len()) else {
+        let index = index - self.typed.len();
+        if let Some(text) = self.cloud.get(index).cloned() {
+            if !self.private_field {
+                self.session.commit_as(&text);
+            }
+            return self.snapshot();
+        }
+        let Some(&index) = self.listed.get(index - self.cloud.len()) else {
             return self.snapshot();
         };
         if let Some(conv) = converter() {
@@ -282,6 +297,7 @@ impl Context {
         self.session.reset();
         self.session.take_commit();
         self.typed.clear();
+        self.cloud.clear();
         self.listed.clear();
     }
 
@@ -297,6 +313,29 @@ impl Context {
     pub fn live_request(&self) -> Option<(String, String)> {
         converter().filter(|c| c.has_reranker())?;
         self.session.live_request()
+    }
+
+    pub fn cloud_reading(&self) -> Option<String> {
+        if self.private_field {
+            return None;
+        }
+        self.session.simeji_reading()
+    }
+
+    pub fn apply_cloud(&mut self, reading: &str, items: &str) -> Option<String> {
+        if self.cloud_reading().as_deref() != Some(reading) {
+            return None;
+        }
+        self.cloud.clear();
+        for item in items.split(ITEM).take(12) {
+            if !item.is_empty()
+                && !item.chars().any(char::is_control)
+                && !self.cloud.iter().any(|word| word == item)
+            {
+                self.cloud.push(item.to_owned());
+            }
+        }
+        Some(self.snapshot())
     }
 
     pub fn live_commit_request(&self) -> Option<(String, String)> {
@@ -350,6 +389,9 @@ impl Context {
         let commit = self.session.take_commit();
         let undoable =
             !self.private_field && self.session.undoable_commit() == Some(commit.as_str());
+        if !self.cloud.is_empty() && (!commit.is_empty() || self.cloud_reading().is_none()) {
+            self.cloud.clear();
+        }
         self.typed = self.typed_items();
         let p = self.session.preedit();
         let u16_at = |byte: usize| p.text[..byte.min(p.text.len())].encode_utf16().count();
@@ -373,11 +415,15 @@ impl Context {
             None => (1, -1, Vec::new()),
         };
         self.listed = (0..session_items.len())
-            .filter(|&i| !self.typed.contains(&session_items[i]))
+            .filter(|&i| {
+                !self.typed.contains(&session_items[i]) && !self.cloud.contains(&session_items[i])
+            })
             .collect();
+        self.cloud.retain(|item| !self.typed.contains(item));
         let items: Vec<&String> = self
             .typed
             .iter()
+            .chain(&self.cloud)
             .chain(self.listed.iter().map(|&i| &session_items[i]))
             .collect();
         let clean = |s: &str| s.replace([FIELD, ITEM], "");
@@ -399,6 +445,38 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_candidates_follow_the_current_public_reading() {
+        let dict = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict"));
+        if !dict.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join("sweet-android-test");
+        assert!(init(dict, dir.to_str().unwrap()));
+        let mut context = Context::new();
+        context.session.options.live_conversion = false;
+        context.session.options.suggestions = false;
+        for ch in "kao".chars() {
+            context.key(ch as i32).unwrap();
+        }
+        assert_eq!(context.cloud_reading().as_deref(), Some("かお"));
+        assert!(context.apply_cloud("かおう", "(^^)").is_none());
+        let snapshot = context.apply_cloud("かお", "(^^)\u{1e}(^^)").unwrap();
+        assert_eq!(snapshot.split(FIELD).nth(6), Some("かお\u{1e}(^^)"));
+        let snapshot = context.select(1);
+        assert_eq!(snapshot.split(FIELD).next(), Some("(^^)"));
+        for ch in "かお".chars() {
+            context.key(ch as i32).unwrap();
+        }
+        context.apply_cloud("かお", "(^^)").unwrap();
+        let snapshot = context.key('う' as i32).unwrap();
+        assert!(!snapshot.contains("(^^)"));
+        context.session.options.private_fields = false;
+        context.set_private(true);
+        assert!(context.cloud_reading().is_none());
+        assert!(context.apply_cloud("かおう", "(^^)").is_none());
+    }
 
     #[test]
     fn key_codes_map_to_keys() {

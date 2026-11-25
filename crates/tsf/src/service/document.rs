@@ -126,7 +126,7 @@ fn delete_before_caret(ctx: &ITfContext, ec: u32, text: &str) -> Result<bool> {
 
 /// Whether the field at the selection is a password or a private browser
 /// window (input scopes IS_PASSWORD, IS_PRIVATE).
-fn private_field(ctx: &ITfContext, ec: u32) -> Result<bool> {
+pub(super) fn private_field(ctx: &ITfContext, ec: u32) -> Result<bool> {
     unsafe {
         let ins: ITfInsertAtSelection = ctx.cast()?;
         let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
@@ -256,7 +256,13 @@ pub(super) fn refresh_candidates(
         return Ok(());
     };
     let show = |w: &crate::candidate_window::CandidateWindow, rc| {
-        w.show(list.as_ref(), input, rc, st.session.options.gaming_mode);
+        w.show(
+            list.as_ref(),
+            input,
+            rc,
+            st.session.options.gaming_mode,
+            &st.candidate_font,
+        );
     };
     let range = unsafe { comp.GetRange()? };
     let pre = st.session.preedit();

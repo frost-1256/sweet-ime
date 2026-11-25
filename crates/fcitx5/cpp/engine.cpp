@@ -111,7 +111,7 @@ public:
         if (!sweet_is_active(ctx)) {
             setLeftContext(ic, ctx);
         }
-        const uint32_t r = sweet_process_key(ctx, sym, unicode, mods);
+        const uint32_t r = sweet_process_key(ctx, sym, unicode, mods, allowCloud(ic));
         if (!(r & SWEET_RESULT_CONSUMED)) {
             return;
         }
@@ -177,13 +177,19 @@ public:
 private:
     SweetState *state(fcitx::InputContext *ic) { return ic->propertyFor(&factory_); }
 
+    static bool allowCloud(fcitx::InputContext *ic) {
+        const auto flags = ic->capabilityFlags();
+        return !flags.test(fcitx::CapabilityFlag::Password) &&
+               !flags.test(fcitx::CapabilityFlag::Sensitive);
+    }
+
     void applyLive(const fcitx::ICUUID &uuid) {
         auto *ic = instance_->inputContextManager().findByUUID(uuid);
         if (!ic || instance_->inputMethodEngine(ic) != this) {
             return;
         }
         auto *ctx = state(ic)->ctx();
-        if (sweet_apply_live(ctx)) {
+        if (sweet_apply_live(ctx, allowCloud(ic))) {
             updateUI(ic, ctx);
         }
     }

@@ -13,6 +13,7 @@ pub mod reports;
 pub mod romaji;
 mod word_keys;
 pub mod session;
+pub mod simeji;
 pub mod special;
 pub mod theme;
 pub mod typo;

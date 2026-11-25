@@ -382,6 +382,7 @@ pub struct Session {
     undo: Option<String>,
     /// A commit just reported (see [`Session::take_report`]).
     report: Option<crate::reports::Report>,
+    simeji_request: Option<u64>,
 }
 
 /// What a commit replaced, to restore it.
@@ -411,6 +412,7 @@ impl Session {
             last_commit: None,
             undo: None,
             report: None,
+            simeji_request: None,
         }
     }
 
@@ -421,6 +423,23 @@ impl Session {
     /// Whether a conversion (Space) is in progress, as opposed to typing.
     pub fn is_converting(&self) -> bool {
         self.conv.is_some()
+    }
+
+    /// Returns the current reading before explicit conversion, without any
+    /// preceding editor text or live-converted surface.
+    fn unconverted_reading(&self) -> Option<String> {
+        (self.conv.is_none() && !self.comp.literal && self.is_active()).then(|| self.comp.kana())
+    }
+
+    pub fn simeji_reading(&self) -> Option<String> {
+        self.unconverted_reading().filter(|reading| {
+            (2..=32).contains(&reading.chars().count())
+                && reading.chars().all(|ch| matches!(ch, 'ぁ'..='ゖ' | 'ー'))
+        })
+    }
+
+    pub fn cancel_simeji(&mut self) {
+        self.simeji_request = None;
     }
 
     /// Original keystrokes, or a romaji rendering of the current reading
@@ -447,6 +466,7 @@ impl Session {
     }
 
     pub fn reset(&mut self) {
+        self.cancel_simeji();
         self.comp = Composing::default();
         self.conv = None;
         self.last_commit = None;
@@ -522,6 +542,7 @@ impl Session {
     /// Picks entry `index` of the list returned by [`Session::candidates`]
     /// (e.g. a mouse click). Returns whether anything changed.
     pub fn select_candidate(&mut self, conv: &Converter, index: usize) -> bool {
+        self.cancel_simeji();
         let before = self.commit_state();
         let changed = if self.conv.is_none() {
             // Suggestion list: commit the prediction directly.
@@ -641,6 +662,9 @@ impl Session {
 
     /// Handles a key. Returns whether the key was consumed.
     pub fn handle(&mut self, conv: &Converter, key: Key) -> bool {
+        if !matches!(key, Key::Space | Key::Up | Key::Down | Key::Tab | Key::PageUp | Key::PageDown) {
+            self.cancel_simeji();
+        }
         // Only the key right after a commit can take it back.
         if key == Key::ReportCommit {
             let Some(last) = self.last_commit.as_ref().filter(|_| self.reportable_commit().is_some()) else {
@@ -727,6 +751,7 @@ impl Session {
     /// Keeps a dedicated symbol key in an active URL or bundled spelling.
     /// The frontend handles other symbols as usual.
     pub fn handle_symbol(&mut self, conv: &Converter, ch: char) -> bool {
+        self.cancel_simeji();
         let c = &self.comp;
         if self.conv.is_some() {
             return false;
@@ -927,7 +952,7 @@ impl Session {
                 let kana = self.comp.live_kana();
                 let cands = std::mem::take(&mut self.comp.suggestions);
                 self.conv = Some(Converting {
-                    segs: vec![SegState { reading: kana, cands, expanded: true, selected: 0, predicted: true }],
+                    segs: vec![SegState { reading: kana, cands, expanded: true, selected: 0, predicted: true, cloud: 0..0 }],
                     focus: 0,
                     window: true,
                     corrected: self.comp.live_typo.is_some(),
@@ -992,7 +1017,7 @@ impl Session {
                 // Collapse to a single segment showing the transliteration.
                 let text = transliterate(key, &kana, &raw);
                 self.conv = Some(Converting {
-                    segs: vec![SegState { reading: kana, cands: vec![text], expanded: false, selected: 0, predicted: false }],
+                    segs: vec![SegState { reading: kana, cands: vec![text], expanded: false, selected: 0, predicted: false, cloud: 0..0 }],
                     focus: 0,
                     window: false,
                     corrected: false,
@@ -1026,5 +1051,38 @@ mod tests {
         assert_eq!(transliterate(Key::ToHalfAscii, "こーひー", "ko-hi-"), "ko-hi-");
         assert_eq!(transliterate(Key::ToFullAscii, "こーひー", "ko-hi-"), "ｋｏ－ｈｉ－");
         assert_eq!(transliterate(Key::ToHalfKatakana, "がっこう", ""), "ｶﾞｯｺｳ");
+    }
+
+    #[test]
+    fn simeji_candidates_keep_the_local_selection() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/system.dict");
+        let Ok(dict) = crate::Dictionary::open(path) else { return };
+        let conv = Converter::new(dict);
+        let mut session = Session::new();
+        session.comp.before = "えがお".into();
+        assert!(session.simeji_conversion_reading(Key::Space).is_none());
+        session.options.simeji_cloud = true;
+        session.private = true;
+        assert!(session.simeji_conversion_reading(Key::Space).is_none());
+        session.private = false;
+        assert_eq!(session.simeji_conversion_reading(Key::Space).as_deref(), Some("えがお"));
+        assert!(session.simeji_conversion_reading(Key::Tab).is_none());
+        assert!(session.handle(&conv, Key::Space));
+        assert!(session.simeji_conversion_reading(Key::Space).is_none());
+
+        session.simeji_request = Some(2);
+        assert!(session.handle(&conv, Key::Space));
+        let local = session.candidates().unwrap();
+        let item = "(◕‿◕)".to_string();
+        assert!(!session.apply_simeji(&conv, crate::simeji::Response { id: 1, items: vec![item.clone()] }));
+        let mut items = local.items.clone();
+        items.push(item.clone());
+        assert!(session.apply_simeji(&conv, crate::simeji::Response { id: 2, items }));
+        let combined = session.candidates().unwrap();
+        assert_eq!(combined.selected, local.selected);
+        assert_eq!(combined.items[..local.items.len()], local.items);
+        assert_eq!(combined.items.last(), Some(&item));
+        assert!(session.select_candidate(&conv, local.items.len()));
+        assert_eq!(session.take_commit(), item);
     }
 }
