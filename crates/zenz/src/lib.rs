@@ -207,6 +207,10 @@ impl sweet_engine::Reranker for ZenzReranker {
         self.n
     }
 
+    fn repeated_homophones(&self) -> bool {
+        true
+    }
+
     fn choose(&self, reading: &str, left_context: &str, cands: &[sweet_engine::Conversion]) -> Option<usize> {
         static SPELLINGS: OnceLock<HashSet<(&str, &str)>> = OnceLock::new();
         let spellings = SPELLINGS.get_or_init(|| {
@@ -233,24 +237,68 @@ impl sweet_engine::Reranker for ZenzReranker {
         // Distant lattice paths are usually poor homophones. Left context
         // gives the model more evidence, so keep a wider window in that case.
         let best_cost = eligible.iter().map(|&i| cands[i].cost).min()?;
-        let cost_window = if left_context.trim().is_empty() { 2000 } else { 3200 };
-        eligible.retain(|&i| cands[i].cost <= best_cost.saturating_add(cost_window));
+        let first = cands.first()?;
+        let repeated = first.repeated_kanji_reading().map(|(reading, count)| {
+            (
+                reading,
+                count,
+                first.homophone_repetitions(reading, count).unwrap_or(0),
+            )
+        });
+        let repetitions = |candidate: &sweet_engine::Conversion| {
+            repeated.map_or(0, |(reading, count, original)| {
+                candidate
+                    .homophone_repetitions(reading, count)
+                    .unwrap_or(original)
+            })
+        };
+        let cost_window = if left_context.trim().is_empty() {
+            2000
+        } else {
+            3200
+        };
+        eligible.retain(|&i| {
+            let candidate = &cands[i];
+            let window = if repeated
+                .is_some_and(|(_, count, original)| count >= 3 && repetitions(candidate) < original)
+            {
+                4500
+            } else {
+                cost_window
+            };
+            candidate.cost <= best_cost.saturating_add(window)
+        });
         if eligible.len() == 1 {
             return eligible.first().copied();
         }
         let prompt = Zenz::prompt(reading, left_context);
         let surfaces: Vec<String> = eligible.iter().map(|&i| cands[i].surface()).collect();
         let scores = self.zenz.score_candidates(&prompt, &surfaces, true);
-        (0..eligible.len()).max_by(|&a, &b| {
-            let s = |i: usize| scores[i] - self.mix * cands[eligible[i]].cost as f32 / 500.0;
-            s(a).total_cmp(&s(b))
-        }).map(|i| eligible[i])
+        // Repeated readings can make the model copy the first spelling even
+        // where another word is plausible. Keep the original as an option.
+        let repetition_weight = if repeated.is_some_and(|(_, count, _)| count >= 3) {
+            3.2
+        } else {
+            2.7
+        };
+        (0..eligible.len())
+            .max_by(|&a, &b| {
+                let s = |i: usize| {
+                    let candidate = &cands[eligible[i]];
+                    scores[i]
+                        - self.mix * candidate.cost as f32 / 500.0
+                        - repetition_weight * repetitions(candidate) as f32
+                };
+                s(a).total_cmp(&s(b))
+            })
+            .map(|i| eligible[i])
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Zenz;
+    use super::{Zenz, ZenzReranker};
+    use sweet_engine::{Converter, Dictionary};
 
     #[test]
     fn relative_scores_drop_only_the_shared_prefix_probability() {
@@ -267,6 +315,36 @@ mod tests {
         for i in 1..candidates.len() {
             let difference = (absolute[i] - absolute[0]) - (relative[i] - relative[0]);
             assert!(difference.abs() < 1e-3, "{}: {difference}", candidates[i]);
+        }
+    }
+
+    #[test]
+    fn reranks_different_homophones_and_keeps_intentional_repetition() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/");
+        let Ok(model) = Zenz::load(format!("{root}zenz-v3.1-xsmall.swz")) else {
+            return;
+        };
+        let Ok(dict) = Dictionary::open(format!("{root}system.dict")) else {
+            return;
+        };
+        let conv = Converter::new(dict).with_reranker(Box::new(ZenzReranker::new(model)));
+        for (reading, expected) in [
+            (
+                "きしゃのきしゃがきしゃできしゃした",
+                "貴社の記者が汽車で帰社した",
+            ),
+            (
+                "きかいがあればきかいをしゅうりする",
+                "機会があれば機械を修理する",
+            ),
+            ("きしゃがきしゃにしゅざいした", "記者が記者に取材した"),
+            ("こうえんとこうえんをつなぐ", "公園と公園をつなぐ"),
+        ] {
+            assert_eq!(
+                conv.convert_best(reading, &[], "")[0].surface(),
+                expected,
+                "{reading}"
+            );
         }
     }
 }

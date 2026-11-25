@@ -56,6 +56,57 @@ impl Conversion {
     pub fn user_words(&self) -> usize {
         self.segments.iter().flat_map(|s| &s.words).filter(|w| w.user).count()
     }
+
+    /// A reading used by more than one kanji word in this conversion.
+    pub fn repeated_kanji_reading(&self) -> Option<(&str, usize)> {
+        let words = self.segments.iter().flat_map(|segment| &segment.words);
+        let mut readings = Vec::new();
+        for word in words.filter(|word| kanji_homophone(word)) {
+            if let Some((_, count)) = readings
+                .iter_mut()
+                .find(|(r, _)| *r == word.reading.as_str())
+            {
+                *count += 1;
+            } else {
+                readings.push((word.reading.as_str(), 1));
+            }
+        }
+        readings
+            .into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .max_by_key(|(_, count)| *count)
+    }
+
+    /// Number of pairs that use the same spelling for a repeated reading.
+    /// A candidate must keep the number of separately converted occurrences.
+    pub fn homophone_repetitions(&self, reading: &str, count: usize) -> Option<usize> {
+        let mut spellings = Vec::new();
+        let mut pairs = 0;
+        for word in self.segments.iter().flat_map(|segment| &segment.words) {
+            if word.reading == reading && kanji_homophone(word) {
+                pairs += spellings
+                    .iter()
+                    .filter(|&&surface| surface == word.surface)
+                    .count();
+                spellings.push(word.surface.as_str());
+            }
+        }
+        (spellings.len() == count).then_some(pairs)
+    }
+}
+
+fn kanji_homophone(word: &Word) -> bool {
+    word.reading.len() >= 6
+        && word
+            .reading
+            .chars()
+            .all(|c| matches!(c, 'ぁ'..='ゖ' | 'ー'))
+        && !word.surface.is_empty()
+        && word.surface.chars().all(|c| matches!(c, '一'..='鿿'))
+        && !word
+            .surface
+            .chars()
+            .all(|c| "〇一二三四五六七八九十百千万億兆".contains(c))
 }
 
 pub struct Converter {

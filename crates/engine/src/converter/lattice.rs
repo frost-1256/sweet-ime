@@ -12,6 +12,7 @@ use super::{Conversion, Converter, Segment, Word};
 const UNKNOWN_CHAR_COST: i32 = 12_000;
 /// Cost of a run of non-kana characters (ASCII, digits, symbols).
 const UNKNOWN_RUN_COST: i32 = 4_000;
+const MAX_HOMOPHONE_CANDIDATES: usize = 240;
 
 #[derive(Clone, Copy)]
 struct Node<'a> {
@@ -453,6 +454,16 @@ impl Converter {
     /// `boundaries` are byte offsets that segments must break at (user-resized
     /// bunsetsu); pass `&[]` for automatic segmentation.
     pub fn convert(&self, text: &str, boundaries: &[usize], n: usize) -> Vec<Conversion> {
+        self.convert_pool(text, boundaries, n, false)
+    }
+
+    pub(super) fn convert_pool(
+        &self,
+        text: &str,
+        boundaries: &[usize],
+        n: usize,
+        expand_homophones: bool,
+    ) -> Vec<Conversion> {
         if text.is_empty() {
             return Vec::new();
         }
@@ -471,12 +482,33 @@ impl Converter {
         }
         let mut seen = HashSet::new();
         let mut res = Vec::new();
-        for (cost, path) in self.nbest_paths(&lat, n * 3) {
+        let mut limit = n;
+        let maximum = if expand_homophones {
+            n.max(MAX_HOMOPHONE_CANDIDATES)
+        } else {
+            n
+        };
+        for (index, (cost, path)) in self.nbest_paths(&lat, maximum * 3).enumerate() {
+            if index >= limit * 3 {
+                break;
+            }
             let surface: String = lat.path_surface(&path);
             if seen.insert(surface) {
                 let segments = self.segment(self.to_words(&lat, text, &path), boundaries);
-                res.push(Conversion { segments, cost });
-                if res.len() >= n {
+                let candidate = Conversion { segments, cost };
+                if expand_homophones
+                    && res.is_empty()
+                    && let Some((_, occurrences)) = candidate.repeated_kanji_reading()
+                {
+                    // Several occurrences can require several simultaneous replacements.
+                    limit = limit.max(if occurrences >= 4 {
+                        MAX_HOMOPHONE_CANDIDATES
+                    } else {
+                        64
+                    });
+                }
+                res.push(candidate);
+                if res.len() >= limit {
                     break;
                 }
             }
