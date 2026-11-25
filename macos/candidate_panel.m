@@ -159,7 +159,10 @@ BOOL SweetCandidatePanelPreview(NSString *path) {
         fputs("A screen is required for the candidate panel preview.\n", stderr);
         return NO;
     }
-    SweetCandidatePanel *panel = [[SweetCandidatePanel alloc] initWithSelection:nil];
+    __block NSUInteger clicked = NSNotFound;
+    SweetCandidatePanel *panel = [[SweetCandidatePanel alloc] initWithSelection:^(NSUInteger row) {
+        clicked = row;
+    }];
     NSRect screenFrame = screen.visibleFrame;
     NSRect anchor = NSMakeRect(NSMidX(screenFrame), NSMidY(screenFrame), 1, 20);
     NSArray<NSString *> *candidates = @[@"仮名", @"かな", @"カナ", @"仮名文字", @"かな文字"];
@@ -175,6 +178,8 @@ BOOL SweetCandidatePanelPreview(NSString *path) {
     SweetCandidateRow *first = rows[0];
     SweetCandidateRow *second = rows[1];
     if (first.highlightedCandidate || !second.highlightedCandidate) return NO;
+    [second performClick:nil];
+    if (clicked != 1) return NO;
     [panel showCandidates:@[@"仮名"] selectedRow:0 anchor:anchor];
     if (NSHeight(panel.frame) >= initialHeight) return NO;
     [panel showCandidates:candidates selectedRow:1 anchor:anchor];
