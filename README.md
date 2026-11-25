@@ -47,9 +47,9 @@ latency measured locally on Windows.
 
 | Configuration                | Top-1 | Mean latency |
 |------------------------------|-------|--------------|
-| Lattice only                 | 75.8% | ~0.1 ms      |
-| + zenz v3.1 xsmall (default) | 87.9% | ~8.6 ms      |
-| + zenz v3.1 small            | 88.4% | ~27 ms       |
+| Lattice only                 | 76.8% | ~0.1 ms      |
+| + zenz v3.1 xsmall (default) | 89.7% | ~7.9 ms      |
+| + zenz v3.1 small            | 89.7% | ~28 ms       |
 | Mozc OSS (reference)         | 74.6% | —            |
 
 ## Install

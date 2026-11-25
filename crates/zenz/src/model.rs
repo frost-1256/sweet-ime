@@ -120,6 +120,15 @@ fn layer_norm(x: &[f32], w: &[f32], b: &[f32], eps: f32, out: &mut [f32]) {
 }
 
 fn gelu_new(v: &mut [f32]) {
+    if v.len() >= 16_384 {
+        use rayon::prelude::*;
+        crate::kernels::pool().install(|| v.par_chunks_mut(4096).for_each(gelu_chunk));
+    } else {
+        gelu_chunk(v);
+    }
+}
+
+fn gelu_chunk(v: &mut [f32]) {
     // (1 + tanh(z)) / 2 = 1 / (1 + exp(-2z)).
     const C: f32 = -1.595_769_2; // -2 * sqrt(2/pi)
     for x in v {
@@ -163,7 +172,8 @@ impl Model {
     /// The cache is left unchanged. Returns logits `[tokens.len() - logits_from, V]`
     /// for the nodes from index `logits_from` on.
     pub fn forward_tree(&self, tokens: &[u32], parents: &[Option<usize>], cache: &mut KvCache, logits_from: usize) -> Vec<f32> {
-        self.forward_impl(tokens, parents, cache, false, logits_from)
+        // Keep the layer work on the same workers as the matrix products.
+        crate::kernels::pool().install(|| self.forward_impl(tokens, parents, cache, false, logits_from))
     }
 
     fn forward_impl(

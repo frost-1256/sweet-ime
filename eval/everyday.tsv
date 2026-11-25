@@ -166,3 +166,10 @@ OK:	かんりめいがらにしていされた		Conversion Expected	監理銘柄
 OK:	こうざをかいせつした		Conversion Expected	口座を開設した
 OK:	かんりがいしゃにでんわする		Conversion Expected	管理会社に電話する
 OK:	じょういごかんのきしゅ		Conversion Expected	上位互換の機種
+
+# Homophones in nearby contexts
+OK:	へいきんごえのてんすう		Conversion Expected	平均超えの点数
+OK:	せんぱいのこえがきこえる		Conversion Expected	先輩の声が聞こえる
+OK:	さるのなきごえをきいた		Conversion Expected	猿の鳴き声を聞いた
+OK:	くつをはいてでかける		Conversion Expected	靴を履いて出かける
+OK:	わいんをはいてしまった		Conversion Expected	ワインを吐いてしまった
