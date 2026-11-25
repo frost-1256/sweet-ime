@@ -4,7 +4,7 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>ja</string>
     <key>CFBundleExecutable</key><string>SweetIME</string>
-    <key>CFBundleIdentifier</key><string>io.github.sweetime.inputmethod</string>
+    <key>CFBundleIdentifier</key><string>io.github.sweetime.inputmethod.japanese</string>
     <key>CFBundleName</key><string>Sweet IME</string>
     <key>CFBundleDisplayName</key><string>Sweet IME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -13,10 +13,27 @@
     <key>CFBundleShortVersionString</key><string>0</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSBackgroundOnly</key><true/>
-    <key>InputMethodConnectionName</key><string>io.github.sweetime.inputmethod_Connection</string>
+    <key>InputMethodConnectionName</key><string>io.github.sweetime.inputmethod.japanese_Connection</string>
     <key>InputMethodServerControllerClass</key><string>SweetInputController</string>
-    <key>TISInputSourceID</key><string>io.github.sweetime.inputmethod</string>
     <key>TISIntendedLanguage</key><string>ja</string>
+    <key>ComponentInputModeDict</key>
+    <dict>
+        <key>tsInputModeListKey</key>
+        <dict>
+            <key>io.github.sweetime.inputmethod.japanese.Hiragana</key>
+            <dict>
+                <key>TISInputSourceID</key><string>io.github.sweetime.inputmethod.japanese.Hiragana</string>
+                <key>TISIntendedLanguage</key><string>ja</string>
+                <key>tsInputModeDefaultStateKey</key><true/>
+                <key>tsInputModeIsVisibleKey</key><true/>
+                <key>tsInputModePrimaryInScriptKey</key><false/>
+                <key>tsInputModeScriptKey</key><string>smJapanese</string>
+                <key>tsInputModeMenuIconFileKey</key><string>SweetIME.icns</string>
+            </dict>
+        </dict>
+        <key>tsVisibleInputModeOrderedArrayKey</key>
+        <array><string>io.github.sweetime.inputmethod.japanese.Hiragana</string></array>
+    </dict>
     <key>tsInputMethodIconFileKey</key><string>SweetIME.icns</string>
     <key>tsInputMethodCharacterRepertoireKey</key>
     <array><string>Hira</string><string>Kana</string><string>Hani</string><string>Latn</string></array>

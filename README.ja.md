@@ -78,6 +78,17 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 **Sweet IME** を追加し、入力メニューから選びます。同じメニューの
 「設定…」から設定アプリを開けます。
 
+`v0.5.0-alpha.1` から更新する場合は、以前の `Sweet IME.app` を
+差し替えてからログインし直してください。入力ソース名が見つからない場合は、
+ターミナルで以下を実行すると、このログインセッションでの登録状態を確認できます。
+
+```sh
+"$HOME/Library/Input Methods/Sweet IME.app/Contents/MacOS/SweetIME" --check-input-source
+```
+
+ダウンロードしたアプリについてmacOSが警告を表示した場合は、
+[Appleの案内](https://support.apple.com/ja-jp/102445)を参照してください。
+
 macOS 版はシステム標準の候補表示を使い、編集中の文字列を文脈として変換します。
 設定・学習履歴・任意の zenz モデルは `~/Library/Application Support/SweetIME`
 に保存します。zenz モデルの追加・削除後は、ログインし直すと反映されます。
