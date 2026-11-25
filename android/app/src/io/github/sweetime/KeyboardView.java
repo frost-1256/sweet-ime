@@ -13,9 +13,10 @@ import android.view.View;
 import android.view.inputmethod.EditorInfo;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
-/** A QWERTY keyboard with a symbols page, drawn on a canvas. */
+/** QWERTY, kana flick, and symbol keyboards, drawn on a canvas. */
 final class KeyboardView extends View {
     interface Listener {
         /** A character or a Native.KEY_* code. */
@@ -26,7 +27,7 @@ final class KeyboardView extends View {
 
         void onToggleMode();
 
-        /** Opens the emoji keyboard (a long press on the comma key). */
+        /** Opens the emoji keyboard. */
         void onEmoji();
     }
 
@@ -37,6 +38,8 @@ final class KeyboardView extends View {
     static final int MORE_SYMBOLS = -104;
     static final int LETTERS = -105;
     static final int NUMPAD = -106;
+    private static final int FLICK = -107;
+    private static final int EMOJI = -108;
     /** A hint that opens the emoji keyboard instead of typing. */
     private static final String EMOJI_HINT = "<emoji>";
 
@@ -47,13 +50,24 @@ final class KeyboardView extends View {
         final RectF rect = new RectF();
         /** Shown small in the corner and typed by a long press. */
         String hint;
+        /** Characters in tap, left, up, right, down order. */
+        final String flick;
         /** Drawn in the function key color. */
         boolean fn;
 
         KeyDef(String label, int code, float width) {
+            this(label, code, width, null);
+        }
+
+        KeyDef(String flick) {
+            this(flick.substring(0, 1), FLICK, 2, flick);
+        }
+
+        private KeyDef(String label, int code, float width, String flick) {
             this.label = label;
             this.code = code;
             this.width = width;
+            this.flick = flick;
         }
 
         KeyDef hint(String h) {
@@ -103,10 +117,14 @@ final class KeyboardView extends View {
     private int enterAction = EditorInfo.IME_ACTION_NONE;
     private final Icons icons = new Icons();
     private final RectF hintRect = new RectF();
+    private final RectF flickRect = new RectF();
+    private static final int[] FLICK_X = {0, -1, 0, 1, 0};
+    private static final int[] FLICK_Y = {0, 0, -1, 0, 1};
 
     // Settings.
     private boolean haptic = true;
     private boolean sound;
+    private boolean kanaFlick;
     private boolean numberRow = false;
     /** The long press fired; the release types nothing. */
     private boolean longPressed;
@@ -143,6 +161,10 @@ final class KeyboardView extends View {
     private float swipeX;
     private boolean swiped;
 
+    private float flickStartX;
+    private float flickStartY;
+    private int flickDirection;
+
     /** Backspace and the arrows act on press and repeat while held. */
     private static boolean repeats(KeyDef k) {
         return k.code == Native.KEY_BACKSPACE || k.code == Native.KEY_LEFT
@@ -172,7 +194,7 @@ final class KeyboardView extends View {
     }
 
     /** Applies the keyboard settings. */
-    void configure(Theme theme, boolean haptic, boolean sound, boolean numberRow,
+    void configure(Theme theme, boolean haptic, boolean sound, boolean kanaFlick, boolean numberRow,
                    boolean keyPreview, int keyHeight, int symbolWidth) {
         this.theme = theme;
         this.haptic = haptic;
@@ -181,7 +203,8 @@ final class KeyboardView extends View {
         // Gboard-sized by default; low and high step about 8% each way.
         rowHeightDp = keyHeight == 0 ? 53 : keyHeight == 2 ? 64 : 58;
         float width = symbolWidth == 0 ? 0.85f : symbolWidth == 2 ? 1.35f : 1f;
-        if (numberRow != this.numberRow || punctuationWidth != width) {
+        if (kanaFlick != this.kanaFlick || numberRow != this.numberRow || punctuationWidth != width) {
+            this.kanaFlick = kanaFlick;
             this.numberRow = numberRow;
             punctuationWidth = width;
             build();
@@ -195,9 +218,24 @@ final class KeyboardView extends View {
      * layout follows common Android keyboards.
      */
     private void build() {
+        endPress();
         rows.clear();
         List<KeyDef> bottom = new ArrayList<>();
-        if (page == 0) {
+        if (isFlickPage()) {
+            rows.add(Arrays.asList(new KeyDef("?123", SYMBOLS, 2),
+                    new KeyDef("あいうえお"), new KeyDef("かきくけこ"), new KeyDef("さしすせそ"),
+                    new KeyDef("⌫", Native.KEY_BACKSPACE, 2)));
+            rows.add(Arrays.asList(new KeyDef("◀", Native.KEY_LEFT, 2).fn(),
+                    new KeyDef("たちつてと"), new KeyDef("なにぬねの"), new KeyDef("はひふへほ"),
+                    new KeyDef("▶", Native.KEY_RIGHT, 2).fn()));
+            rows.add(Arrays.asList(new KeyDef("", MODE, 2).fn(),
+                    new KeyDef("まみむめも"), new KeyDef("や「ゆ」よ"), new KeyDef("らりるれろ"),
+                    new KeyDef("", Native.KEY_SPACE, 2)));
+            bottom.addAll(Arrays.asList(new KeyDef("", EMOJI, 2).fn(),
+                    new KeyDef("小゛゜", Native.KEY_KANA_VARIANT, 2).fn(),
+                    new KeyDef("わをんー～"), new KeyDef("、。？！…"),
+                    new KeyDef("⏎", Native.KEY_ENTER, 2)));
+        } else if (page == 0) {
             if (numberRow) addRow("1234567890");
             List<KeyDef> top = addRow("qwertyuiop");
             if (!numberRow) {
@@ -378,7 +416,11 @@ final class KeyboardView extends View {
      * into it instead (as on Gboard); switching languages mid-word is rare.
      */
     private boolean questionKey() {
-        return composing && !english && page == 0;
+        return composing && !english && page == 0 && !isFlickPage();
+    }
+
+    private boolean isFlickPage() {
+        return kanaFlick && !english && page == 0;
     }
 
     private String hintOf(KeyDef key) {
@@ -391,7 +433,7 @@ final class KeyboardView extends View {
                 return questionKey() ? "？" : "";
             case Native.KEY_SPACE:
                 if (english || (page != 0 && !composing)) return english ? "English" : "日本語";
-                return converting ? "次候補" : composing ? "変換" : "日本語";
+                return converting ? "次候補" : composing ? "変換" : isFlickPage() ? "空白" : "日本語";
             case Native.KEY_ENTER:
                 return composing ? "確定" : "";
             case ',':
@@ -464,7 +506,9 @@ final class KeyboardView extends View {
                     canvas.drawText("34", k.rect.centerX(), k.rect.centerY() + 12 * density, textPaint);
                     continue;
                 }
-                String label = labelOf(k);
+                boolean flickPressed = k == pressed && k.flick != null;
+                String label = flickPressed && !keyPreview
+                        ? flickLabel(k, flickDirection) : labelOf(k);
                 float size = label.length() > 2 ? 14 : label.length() == 2 && !label.equals("1/2")
                         && !label.equals("2/2") ? 15 : 22;
                 if (label.length() > 1 && k.code == TEXT) size = 18;
@@ -477,8 +521,10 @@ final class KeyboardView extends View {
                 textPaint.setFakeBoldText(false);
             }
         }
-        // The pressed key, enlarged above it.
-        if (keyPreview && pressed != null && pressed.previews()) {
+        // Keep previews above the pressed key and clear of the finger.
+        if (keyPreview && pressed != null && pressed.flick != null) {
+            drawFlickGuide(canvas, pressed);
+        } else if (keyPreview && pressed != null && pressed.previews()) {
             RectF r = pressed.rect;
             float w = r.width() * 1.3f;
             float h = r.height() * 1.15f;
@@ -496,6 +542,56 @@ final class KeyboardView extends View {
             drawCentered(canvas, longPressed && pressed.hint != null && !pressed.hint.equals(EMOJI_HINT)
                     ? hintOf(pressed) : labelOf(pressed), p.centerX(), p.centerY());
         }
+    }
+
+    private static String flickLabel(KeyDef key, int direction) {
+        return key.flick.substring(direction, direction + 1);
+    }
+
+    private void drawFlickGuide(Canvas canvas, KeyDef key) {
+        float cx = key.rect.centerX();
+        float halfWidth = Math.min(32 * density, Math.min(cx, getWidth() - cx));
+        float bottom = key.rect.top - 4 * density;
+        float top = bottom - 50 * density;
+        float cy = (top + bottom) / 2;
+        float radius = 14 * density;
+        if (theme.shadow != 0) {
+            keyPaint.setColor(theme.shadow);
+            canvas.drawRoundRect(cx - halfWidth, top + 2 * density, cx + halfWidth,
+                    bottom + 2 * density, radius, radius, keyPaint);
+        }
+        flickRect.set(cx - halfWidth, top, cx + halfWidth, bottom);
+        keyPaint.setColor(theme.preview);
+        canvas.drawRoundRect(flickRect, radius, radius, keyPaint);
+        textPaint.setColor(theme.text);
+        if (flickDirection != 0) {
+            textPaint.setTextSize(29 * density);
+            drawCentered(canvas, flickLabel(key, flickDirection), cx, cy);
+            drawFlickDirection(canvas, key.rect);
+            return;
+        }
+        textPaint.setTextSize(19 * density);
+        drawCentered(canvas, key.label, cx, cy);
+        for (int i = 1; i < key.flick.length(); i++) {
+            int dy = FLICK_Y[i];
+            textPaint.setTextSize((dy == 0 ? 14 : 13) * density);
+            float x = cx + FLICK_X[i] * halfWidth * 0.66f;
+            float y = cy + dy * 17 * density;
+            drawCentered(canvas, flickLabel(key, i), x, y);
+        }
+    }
+
+    private void drawFlickDirection(Canvas canvas, RectF key) {
+        int dx = FLICK_X[flickDirection];
+        int dy = FLICK_Y[flickDirection];
+        float x = key.centerX() + dx * (key.width() / 2 - 5 * density);
+        float y = key.centerY() + dy * (key.height() / 2 - 5 * density);
+        float halfWidth = (dx == 0 ? 10 : 1.5f) * density;
+        float halfHeight = (dy == 0 ? 10 : 1.5f) * density;
+        flickRect.set(x - halfWidth, y - halfHeight, x + halfWidth, y + halfHeight);
+        keyPaint.setColor(theme.accent);
+        float radius = 1.5f * density;
+        canvas.drawRoundRect(flickRect, radius, radius, keyPaint);
     }
 
     private final android.graphics.Rect bounds = new android.graphics.Rect();
@@ -534,6 +630,8 @@ final class KeyboardView extends View {
         switch (k.code) {
             case MODE:
                 return questionKey() ? 0 : Icons.GLOBE;
+            case EMOJI:
+                return Icons.EMOJI;
             case SHIFT:
                 return capsLock ? Icons.CAPS_LOCK : shift ? Icons.SHIFT_ON : Icons.SHIFT;
             case Native.KEY_BACKSPACE:
@@ -602,6 +700,7 @@ final class KeyboardView extends View {
         if (pressed == null) return;
         feedback(pressed);
         swipeX = e.getX(index);
+        startFlick(e.getX(index), e.getY(index));
         swiped = false;
         longPressed = false;
         used = false;
@@ -613,14 +712,49 @@ final class KeyboardView extends View {
         }
     }
 
-    /** Ends the current press, typing its key unless it was used already. */
-    private void release() {
+    private void startFlick(float x, float y) {
+        flickStartX = x;
+        flickStartY = y;
+        flickDirection = 0;
+    }
+
+    private void updateFlick(float x, float y) {
+        float dx = x - flickStartX;
+        float dy = y - flickStartY;
+        float threshold = 14 * density;
+        int direction = 0;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) >= threshold) {
+            if (Math.abs(dx) >= Math.abs(dy)) direction = dx < 0 ? 1 : 3;
+            else direction = dy < 0 ? 2 : 4;
+        }
+        if (direction != flickDirection) {
+            flickDirection = direction;
+            invalidate();
+        }
+    }
+
+    private void endPress() {
         handler.removeCallbacks(repeat);
         handler.removeCallbacks(longPress);
-        KeyDef k = pressed;
         pressed = null;
         pointerId = -1;
+    }
+
+    /** Ends the current press, typing its key unless it was used already. */
+    private void release(MotionEvent e) {
+        KeyDef k = pressed;
+        int index = e.findPointerIndex(pointerId);
+        if (k != null && k.flick != null && index >= 0) {
+            updateFlick(e.getX(index), e.getY(index));
+        }
+        endPress();
         if (k != null && !used && !swiped && !longPressed) fire(k);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        endPress();
+        super.onDetachedFromWindow();
     }
 
     @Override
@@ -633,7 +767,7 @@ final class KeyboardView extends View {
             case MotionEvent.ACTION_POINTER_DOWN:
                 // Another finger while a key is held: type the held key now
                 // and follow the new one (rollover, as on common keyboards).
-                release();
+                release(e);
                 press(e, e.getActionIndex());
                 invalidate();
                 return true;
@@ -641,6 +775,11 @@ final class KeyboardView extends View {
                 int index = e.findPointerIndex(pointerId);
                 if (index < 0 || pressed == null) return true;
                 float x = e.getX(index);
+                float y = e.getY(index);
+                if (pressed.flick != null) {
+                    updateFlick(x, y);
+                    return true;
+                }
                 if (pressed.code == Native.KEY_SPACE) {
                     float step = 14 * density;
                     while (Math.abs(x - swipeX) >= step) {
@@ -653,10 +792,11 @@ final class KeyboardView extends View {
                 }
                 // A finger sliding off a key types the key it ends on;
                 // keys that already acted stay pressed.
-                KeyDef k = keyAt(x, e.getY(index));
+                KeyDef k = keyAt(x, y);
                 if (k != pressed && k != null && !longPressed && !used) {
                     handler.removeCallbacks(longPress);
                     pressed = k;
+                    startFlick(x, y);
                     if (k.code == Native.KEY_SPACE) swipeX = x;
                     invalidate();
                 }
@@ -666,21 +806,17 @@ final class KeyboardView extends View {
                 // Only the finger holding the key types it; an earlier
                 // finger lifting later does nothing.
                 if (e.getPointerId(e.getActionIndex()) == pointerId) {
-                    release();
+                    release(e);
                     invalidate();
                 }
                 return true;
             case MotionEvent.ACTION_UP:
-                if (e.getPointerId(e.getActionIndex()) == pointerId) release();
-                pressed = null;
-                pointerId = -1;
+                if (e.getPointerId(e.getActionIndex()) == pointerId) release(e);
+                else endPress();
                 invalidate();
                 return true;
             case MotionEvent.ACTION_CANCEL:
-                handler.removeCallbacks(repeat);
-                handler.removeCallbacks(longPress);
-                pressed = null;
-                pointerId = -1;
+                endPress();
                 invalidate();
                 return true;
             default:
@@ -691,6 +827,12 @@ final class KeyboardView extends View {
     private void fire(KeyDef k) {
         if (listener == null) return;
         switch (k.code) {
+            case FLICK:
+                listener.onKey(k.flick.charAt(flickDirection));
+                return;
+            case EMOJI:
+                listener.onEmoji();
+                return;
             case SHIFT: {
                 long now = System.currentTimeMillis();
                 if (capsLock) {

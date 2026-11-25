@@ -21,6 +21,7 @@ pub const KEY_LEFT: i32 = -4;
 pub const KEY_RIGHT: i32 = -5;
 pub const KEY_ESCAPE: i32 = -6;
 pub const KEY_EXPAND: i32 = -7;
+pub const KEY_KANA_VARIANT: i32 = -8;
 /// Added to a letter typed with Shift.
 pub const SHIFTED: i32 = 0x4000_0000;
 
@@ -177,6 +178,7 @@ impl Context {
             KEY_LEFT => Key::Left,
             KEY_RIGHT => Key::Right,
             KEY_ESCAPE => Key::Escape,
+            KEY_KANA_VARIANT => Key::KanaVariant,
             c if c >= 0 && c & SHIFTED != 0 => {
                 Key::ShiftedLetter(char::from_u32((c & !SHIFTED) as u32)?)
             }
@@ -406,7 +408,52 @@ mod tests {
             Some(Key::ShiftedLetter('G'))
         );
         assert_eq!(Context::key_of(KEY_SPACE), Some(Key::Space));
+        assert_eq!(Context::key_of(KEY_KANA_VARIANT), Some(Key::KanaVariant));
         assert_eq!(Context::key_of(-100), None);
+    }
+
+    #[test]
+    fn flick_kana_stays_in_the_reading_and_can_be_edited() {
+        let dict = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/system.dict"
+        ));
+        if !dict.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join("sweet-android-test");
+        assert!(init(dict, dir.to_str().unwrap()));
+        let mut c = Context::new();
+        c.session.options.live_conversion = false;
+        c.session.options.suggestions = false;
+        assert_eq!(c.key(KEY_KANA_VARIANT), None);
+        for kana in "かつはう".chars() {
+            c.key(kana as i32).unwrap();
+        }
+        let state = c.key(KEY_BACKSPACE).unwrap();
+        assert_eq!(state.split(FIELD).nth(1), Some("かつは"));
+        for expected in ["かつば", "かつぱ", "かつは"] {
+            let state = c.key(KEY_KANA_VARIANT).unwrap();
+            assert_eq!(state.split(FIELD).nth(1), Some(expected));
+        }
+        c.key(KEY_LEFT).unwrap();
+        let state = c.key(KEY_KANA_VARIANT).unwrap();
+        assert_eq!(
+            state.split(FIELD).take(3).collect::<Vec<_>>(),
+            ["", "かっは", "2"]
+        );
+        c.key(KEY_RIGHT).unwrap();
+        c.key(KEY_BACKSPACE).unwrap();
+        c.key('こ' as i32).unwrap();
+        let state = c.key('う' as i32).unwrap();
+        assert_eq!(state.split(FIELD).nth(1), Some("かっこう"));
+        let state = c.key(KEY_SPACE).unwrap();
+        let fields: Vec<_> = state.split(FIELD).collect();
+        assert_eq!(fields[4], "0");
+        assert!(!fields[6].is_empty());
+        assert_eq!(c.key(KEY_KANA_VARIANT), None);
+        let state = c.key(KEY_ENTER).unwrap();
+        assert_eq!(state.split(FIELD).next(), Some(fields[1]));
     }
 
     #[test]

@@ -34,7 +34,7 @@
 |---|---|
 | **Windows** | 64 ビット・32 ビットアプリ用の TSF テキストサービス、ライト/ダークとアクセント色に合わせる Direct2D の候補ウィンドウ、「あ」/「A」の入力モード表示 |
 | **Linux** | `input-method-v2` に対応した Wayland コンポジター(niri、Sway、Hyprland など)や、fcitx5 のほかのフロントエンドで使える fcitx5 アドオン |
-| **Android** | 候補バー付きの QWERTY ローマ字キーボード、Material 3 のテーマ、端末内で動く AI 変換(Android 10 以上) |
+| **Android** | QWERTY ローマ字入力と12キーのかなフリック入力、候補バー、Material 3 のテーマ、端末内で動く AI 変換(Android 10 以上) |
 
 ## 変換精度
 
@@ -192,6 +192,8 @@ zenz モデルは CC BY-SA 4.0 なので、同梱していません。モデル�
 - **知っている単語は自動で区切る**:`Googlehakensaku` は `Google` を確定して
   `は検索` に続き、`Googleha` のあと Enter で `Googleは` になります
   (`shift_one_word = off` なら Space か Enter まで英語のままです)。
+  カンマのあとも日本語を続けられます。たとえば Shift で `Anthropic` と
+  打ち始め、`,kyouhadousuru` と続けると `Anthropic、今日はどうする` になります。
 - **技術用語**:`ime`、`ieee`、`github` と打って Space で `IME`、`IEEE`、
   `GitHub` になります。`あいえむいー` のような読みでも変換できます。
 - **よく使う英単語は文の中でも変換**:`korehabestdesu` は `これはベストです`
@@ -199,8 +201,16 @@ zenz モデルは CC BY-SA 4.0 なので、同梱していません。モデル�
   出します(`english_katakana = off` ならつづりのまま)。それ以外はつづりのまま
   (`software`)です。単語は同梱の SCOWL の一覧から来ていて、F10 で直した単語など、
   一覧にない単語も確定すると覚えます。`english_words = off` で止められます。
+- **日本語モードでのアドレス入力**。通常のテキスト欄で URL や
+  `dev@example.com`、`localhost:3000` を打ち、Enter で半角のまま確定できます。
 
 ### Android のキーボード
+
+Sweet IME の設定で **キーボード** → **かなフリック入力** をオンにすると、日本語入力が
+12キー配列になります。**あ** をタップすると「あ」、左・上・右・下にはじくと
+「い・う・え・お」が入力できます。入力中は **小゛゜** キーでカーソルの直前のかなを
+小文字・濁音・半濁音に切り替えられます。
+[かなフリックの画面を見る。](assets/android/flick-guide.png)
 
 デスクトップと同じく Shift で英単語を始められ、地球儀キーで英字の直接入力に
 切り替わります。パスワード・URL・メール・数字の欄は英字で始まります。
@@ -218,11 +228,18 @@ Windows では、設定アプリ `sweet-settings.exe` を次のどれかで開�
 - タスクバーの「あ」/「A」を右クリック
 - Windows の言語の設定:Sweet IME → キーボード オプション
 
-変更はすぐ保存され、次にアプリにフォーカスが移ったときに反映されます。
+Windows で設定を開き直すと、すでに開いているウィンドウが前面に戻ります。
+最小化していた場合は復元します。変更はすぐ保存され、次にアプリにフォーカスが
+移ったときに反映されます。
 設定アプリでは、次のことができます。
 
 - ライブ変換・予測候補・「あ」/「A」表示のオン/オフ
+- Windows の **入力** → **入力した文字を表示** をオンにすると、未確定の文字の近くに
+  打ったローマ字を表示します。候補がないときも表示され、確定や取り消しで消えます。
+  途中編集で打鍵と読みが合わなくなったときは、現在の読みをローマ字で表示します。
+  パスワード欄、シークレットウィンドウ、入力欄の種類を判定できない場合は表示しません。
 - 候補ウィンドウの配色(Linux では fcitx5 のテーマとして)
+- Windows の **テーマ** → **ゲーミングモード** で、候補ウィンドウの縁を流れる虹色で光らせる
 - キーの割り当ての変更
 - AI 変換のオン/オフと、zenz モデルのダウンロード・削除
 - 学習のオン/オフ、覚えた単語の確認・削除、直近 1 時間や 1 日の学習の取り消し
@@ -249,9 +266,11 @@ Linux で `XDG_CONFIG_HOME` や `XDG_DATA_HOME` が設定されていないと�
 ```
 live_conversion = on   # 入力中に変換結果を表示する
 suggestions = on       # 入力中に予測候補を出す
+show_typed_input = off # 未確定の文字の近くにローマ字を表示する（Windows）
 neural = on            # zenz モデルがあれば候補を並べ替える
 learning = on          # 選んだ候補を覚える
 theme = default        # default, light, dark, sakura, matcha, midnight, lavender, dracula, adwaita
+gaming_mode = off      # 候補ウィンドウの縁を流れる虹色で光らせる（Windows）
 update_check = on      # GitHub で新しいリリースを確認する
 dates = on             # きょう / いま -> 日付と時刻
 emoji = on             # えがお -> 😊、かお -> 顔文字
@@ -330,13 +349,15 @@ APK は `out/SweetIME-Android.apk` にできます。
 
 ### テストとツール
 
-- `cargo test --workspace` で単体テストと結合テストを実行します。辞書を使う
-  テストのために、先に `dist\system.dict` を `data\system.dict` にコピーします。
+- CI と同じ単体テスト・結合テストを実行するには、`data/system.dict` を用意して
+  `cargo test --locked --workspace --all-targets -- --test-threads=1` を実行します。
+  直列実行にすることで、時間制限のある誤字補正テストで CPU の競合を避けます。
 - `target\release\examples\harness.exe` は、本物の TSF コア
   (`sweet_tsf_core.dll`)を登録せずにプロセス内で動かし、入口の DLL
   (`sweet_tsf.dll`)がフォーカス時にコアを切り替えることも確かめます。
-- `crates/fcitx5/tests/run-dbus-harness.sh result` は、専用の fcitx5 を D-Bus
-  越しに動かしてアドオンを確かめます(Linux で `nix build` のあと)。
+- Linux では `nix build` のあと、
+  `nix develop --command sh crates/fcitx5/tests/run-dbus-harness.sh result` で
+  専用の fcitx5 を D-Bus 越しに動かし、アドオンを確認します。
 - `sweet-cli data\system.dict eval <evaluation.tsv>` で精度を測ります。
   `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` を設定すると並べ替えも含めます。
   `crates\cli\data\terms.tsv` で、技術用語・ネットスラング・文中の数字を確かめます。
@@ -359,23 +380,29 @@ APK は `out/SweetIME-Android.apk` にできます。
 ### ブランチ・CI・リリース
 
 - 変更は `develop` で行い、CodeRabbit のレビューと CI のために `main` へ
-  プルリクエストを出します。
+  プルリクエストを出します。自動マージを有効にした PR は、必須チェック 7 件を
+  すべて通過すると GitHub がマージします。
 - GitHub Actions では、ワークスペースのテストと Windows の TSF ハーネス、
   エミュレーターで Android の APK が同梱の辞書で起動するかの確認、x86-64 と
   ARM64 の Linux での fcitx5 パッケージのビルドとテストを行います。
   インストーラーと APK は `SweetIME-Windows` と `SweetIME-Android` の
-  アーティファクトとして残ります。Actions タブから手動でも実行できます。
+  アーティファクトとして残ります。ローカルでビルドせずに試したいときは、
+  Actions タブからダウンロードできます。ワークフローは手動実行もできます。
 - Linux のビルドをキャッシュするには、Actions のリポジトリ変数
   `CACHIX_CACHE_NAME` に公開 Cachix キャッシュ名を設定します。PR でも
   キャッシュを読み込めます。書き込み権限のある `CACHIX_AUTH_TOKEN` を
   Actions シークレットに設定すると、push 時の CI がテスト済みの
   x86-64・ARM64 パッケージを登録します。
-- リリースするときは、`Cargo.toml` と `nix/package.nix` の `version` を上げて
-  `main` にマージし、そのコミットの `Release eligibility` が通るのを待ちます。
+- リリースのタイミングは手動で決めます。`0.x` シリーズでは、バグ修正でパッチ、
+  互換性のある機能追加でマイナーを上げます。リリースするときは、
+  `Cargo.toml`、`Cargo.lock` のワークスペース項目、`nix/package.nix` の
+  バージョンを更新します。`main` にマージし、そのコミットの
+  `Release eligibility` が通るのを待ちます。
   `git tag -a vX.Y.Z <main-commit>` で注釈付きタグを作り、タイトルの次に空行を
   入れて、前のリリースから利用者が気づく変更点を Markdown の箇条書きで書きます。
   タグを push すると、インストーラーと APK が公開され、GitHub が自動生成する
-  変更履歴の上にこの要約が表示されます。
+  変更履歴の上にこの要約が表示されます。公開後は、要約と両方の配布ファイルが
+  GitHub Releases にあることを確認します。
 
 ## ライセンス
 

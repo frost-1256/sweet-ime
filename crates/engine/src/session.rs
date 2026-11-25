@@ -19,6 +19,8 @@ pub use options::Options;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Char(char),
+    /// Cycle the kana before the caret through its small and voiced forms.
+    KanaVariant,
     /// A letter typed with Shift held, which starts a temporary English word.
     ShiftedLetter(char),
     Space,
@@ -129,6 +131,67 @@ impl Composing {
         self.composer.flush();
         self.before.push_str(self.composer.kana());
         self.composer.clear();
+    }
+
+    fn cycle_kana_variant(&mut self) -> bool {
+        const VARIANTS: &[&str] = &[
+            "あぁ",
+            "いぃ",
+            "うぅゔ",
+            "えぇ",
+            "おぉ",
+            "かが",
+            "きぎ",
+            "くぐ",
+            "けげ",
+            "こご",
+            "さざ",
+            "しじ",
+            "すず",
+            "せぜ",
+            "そぞ",
+            "ただ",
+            "ちぢ",
+            "つっづ",
+            "てで",
+            "とど",
+            "はばぱ",
+            "ひびぴ",
+            "ふぶぷ",
+            "へべぺ",
+            "ほぼぽ",
+            "やゃ",
+            "ゆゅ",
+            "よょ",
+            "わゎ",
+        ];
+        if self.literal || !self.composer.pending().is_empty() {
+            return false;
+        }
+        let Some(kana) = self
+            .composer
+            .kana()
+            .chars()
+            .next_back()
+            .or_else(|| self.before.chars().next_back())
+        else {
+            return false;
+        };
+        for group in VARIANTS {
+            if let Some(offset) = group.find(kana) {
+                let next = group[offset + kana.len_utf8()..]
+                    .chars()
+                    .next()
+                    .or_else(|| group.chars().next())
+                    .unwrap();
+                self.settle();
+                self.before.pop();
+                self.before.push(next);
+                self.raw.clear();
+                return true;
+            }
+        }
+        false
     }
 
     fn resume_romaji(&mut self) {
@@ -797,6 +860,7 @@ impl Session {
     fn handle_composing(&mut self, conv: &Converter, key: Key) -> bool {
         let empty = self.comp.is_empty();
         match key {
+            Key::KanaVariant => self.comp.cycle_kana_variant(),
             Key::Char(ch) if self.comp.literal && !ch.is_control() => {
                 self.comp.before.push(ch);
                 self.end_shift_word(false);

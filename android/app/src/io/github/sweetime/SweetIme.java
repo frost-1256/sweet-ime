@@ -34,7 +34,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
-/** The input method service: a QWERTY keyboard with a candidate bar. */
+/** The input method service and its candidate bar. */
 public final class SweetIme extends InputMethodService implements KeyboardView.Listener {
     private static final String TAG = "SweetIME";
 
@@ -404,6 +404,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         keyboard.configure(theme,
                 Prefs.flag(this, Prefs.HAPTIC, true),
                 Prefs.flag(this, Prefs.SOUND, false),
+                Prefs.flag(this, Prefs.KANA_FLICK, false),
                 Prefs.flag(this, Prefs.NUMBER_ROW, false),
                 Prefs.flag(this, Prefs.KEY_PREVIEW, true),
                 Prefs.number(this, Prefs.KEY_HEIGHT, 1),
