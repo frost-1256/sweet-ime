@@ -25,6 +25,19 @@ static NSScreen *ScreenForAnchor(NSRect anchor) {
     return nil;
 }
 
+static CGFloat LinearColorComponent(CGFloat component) {
+    return component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4);
+}
+
+static NSColor *SelectionTextColor(NSColor *background) {
+    NSColor *rgb = [background colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (!rgb) return NSColor.whiteColor;
+    CGFloat luminance = 0.2126 * LinearColorComponent(rgb.redComponent) +
+                        0.7152 * LinearColorComponent(rgb.greenComponent) +
+                        0.0722 * LinearColorComponent(rgb.blueComponent);
+    return luminance > 0.179 ? NSColor.blackColor : NSColor.whiteColor;
+}
+
 @interface SweetCandidateRow : NSButton
 @property(nonatomic) BOOL highlightedCandidate;
 @end
@@ -36,12 +49,22 @@ static NSScreen *ScreenForAnchor(NSRect anchor) {
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    NSColor *textColor = NSColor.labelColor;
     if (self.highlightedCandidate) {
-        [NSColor.selectedContentBackgroundColor setFill];
+        NSColor *background = NSColor.selectedContentBackgroundColor;
+        [background setFill];
         [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0, 1)
                                         xRadius:5 yRadius:5] fill];
+        textColor = SelectionTextColor(background);
     }
-    [super drawRect:dirtyRect];
+    NSMutableAttributedString *title = [self.attributedTitle mutableCopy];
+    [title addAttribute:NSForegroundColorAttributeName value:textColor range:NSMakeRange(0, title.length)];
+    CGFloat height = ceil(title.size.height) + 1;
+    NSRect text = NSInsetRect(self.bounds, 5, 0);
+    text.origin.y = floor(NSMidY(self.bounds) - height / 2);
+    text.size.height = height;
+    [title drawWithRect:text options:NSStringDrawingUsesLineFragmentOrigin |
+                                     NSStringDrawingTruncatesLastVisibleLine context:nil];
 }
 
 @end
@@ -108,16 +131,15 @@ static NSScreen *ScreenForAnchor(NSRect anchor) {
         _preferredWidth = 0;
         for (NSUInteger i = 0; i < candidates.count; i++) {
             SweetCandidateRow *row = [[SweetCandidateRow alloc] initWithFrame:NSZeroRect];
-            row.title = [NSString stringWithFormat:@"%lu.  %@", (unsigned long)i + 1, candidates[i]];
+            NSString *title = [NSString stringWithFormat:@"%lu.  %@", (unsigned long)i + 1, candidates[i]];
+            row.attributedTitle = [[NSAttributedString alloc] initWithString:title
+                attributes:@{NSFontAttributeName: _font, NSParagraphStyleAttributeName: _titleStyle}];
             row.bordered = NO;
-            row.alignment = NSTextAlignmentLeft;
-            row.cell.lineBreakMode = NSLineBreakByTruncatingTail;
-            row.font = _font;
             row.tag = (NSInteger)i;
             row.target = self;
             row.action = @selector(choose:);
             [row setAccessibilityLabel:candidates[i]];
-            _preferredWidth = MAX(_preferredWidth, ceil([row.title sizeWithAttributes:@{NSFontAttributeName: _font}].width) + 20);
+            _preferredWidth = MAX(_preferredWidth, ceil(row.attributedTitle.size.width) + 20);
             [self.contentView addSubview:row];
             [rows addObject:row];
         }
@@ -132,10 +154,6 @@ static NSScreen *ScreenForAnchor(NSRect anchor) {
         BOOL highlight = i == selected;
         if (changed || row.highlightedCandidate != highlight) {
             row.highlightedCandidate = highlight;
-            row.attributedTitle = [[NSAttributedString alloc] initWithString:row.title
-                attributes:@{NSFontAttributeName: _font, NSParagraphStyleAttributeName: _titleStyle,
-                    NSForegroundColorAttributeName:
-                    highlight ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor}];
             [row setNeedsDisplay:YES];
         }
     }
