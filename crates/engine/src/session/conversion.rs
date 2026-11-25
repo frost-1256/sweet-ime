@@ -255,6 +255,7 @@ impl Session {
     pub(super) fn handle_converting(&mut self, conv: &Converter, key: Key) -> bool {
         let window = self.conv.as_ref().unwrap().window;
         match key {
+            Key::KanaVariant => false,
             Key::Char(c) if window && ('1'..='9').contains(&c) => {
                 let page = self.candidates().unwrap().page_start();
                 self.choose(conv, page + (c as usize - '1' as usize));

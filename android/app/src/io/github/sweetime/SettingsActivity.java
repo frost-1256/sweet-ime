@@ -291,7 +291,7 @@ public final class SettingsActivity extends Activity {
         entry(list, Icons.CONVERT, "変換", "ライブ変換・予測・英単語・絵文字など", CONVERSION);
         aiSummary = entry(list, Icons.SPARKLE, "AI 変換", "", AI);
         learningSummary = entry(list, Icons.HISTORY, "学習とプライバシー", "", LEARNING);
-        entry(list, Icons.KEYBOARD, "キーボード", "数字の段・キーの高さ・振動と音・使い方", KEYBOARD);
+        entry(list, Icons.KEYBOARD, "キーボード", "かなフリック・キーの高さ・振動と音・使い方", KEYBOARD);
         int t = Math.min(Prefs.number(this, Prefs.THEME, 0), Theme.LABELS.length - 1);
         entry(list, Icons.PALETTE, "テーマ", Theme.LABELS[t], THEME);
         entry(list, Icons.INFO, "このアプリについて", "バージョン " + version() + "・ライセンス", ABOUT);
@@ -333,11 +333,13 @@ public final class SettingsActivity extends Activity {
     private void keyboardPage() {
         header("キーボード");
         LinearLayout layout = card("レイアウト");
+        layout.addView(prefToggle("かなフリック入力", "日本語入力に12キーのかな配列を使います。",
+                Prefs.KANA_FLICK, false));
         layout.addView(prefToggle("数字の段",
-                "文字キーの上に数字の段を表示します。オフのときは q〜p の長押しで数字を入力します。",
+                "QWERTY 配列の文字キーの上に数字の段を表示します。オフのときは q〜p の長押しで数字を入力します。",
                 Prefs.NUMBER_ROW, false));
         layout.addView(choice("キーの高さ", new String[] {"低め", "標準", "高め"}, Prefs.KEY_HEIGHT, 1));
-        layout.addView(choice("句読点キーの幅", new String[] {"細め", "標準", "広め"}, Prefs.PUNCTUATION_WIDTH, 1));
+        layout.addView(choice("QWERTY の句読点キーの幅", new String[] {"細め", "標準", "広め"}, Prefs.PUNCTUATION_WIDTH, 1));
         LinearLayout feedback = card("押したときの反応");
         feedback.addView(prefToggle("キーのプレビュー", "押したキーを大きく表示します。", Prefs.KEY_PREVIEW, true));
         feedback.addView(prefToggle("振動", "キーを押したときに振動します。", Prefs.HAPTIC, true));
@@ -346,6 +348,8 @@ public final class SettingsActivity extends Activity {
         for (String tip : new String[] {
             "Shift で始めた英字は英単語になり、日本語が続くと日本語入力に戻ります。",
             "地球儀のキーで、英字の直接入力と切り替えます。",
+            "かなフリックでは、あのキーをタップすると「あ」、左・上・右・下にはじくと「い・う・え・お」が入力できます。",
+            "小゛゜キーで、カーソルの直前のかなを小文字・濁音・半濁音に切り替えます。",
             "スペースキーを左右になぞると、カーソルが動きます。",
             "候補バーの右の矢印で、すべての候補を一覧できます。",
             "キーを押したまま次のキーを押しても、両方とも入力されます。",

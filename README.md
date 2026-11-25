@@ -37,7 +37,7 @@
 |---|---|
 | **Windows** | A TSF text service for 64-bit and 32-bit apps, a Direct2D candidate window that follows light/dark mode and the accent color, and an "あ" / "A" mode indicator |
 | **Linux** | An fcitx5 addon for Wayland compositors with `input-method-v2` (niri, Sway, Hyprland, …) and fcitx5's other frontends |
-| **Android** | A QWERTY romaji keyboard with a candidate bar, Material 3 themes and on-device AI conversion (Android 10 or later) |
+| **Android** | QWERTY romaji and 12-key kana flick keyboards, a candidate bar, Material 3 themes and on-device AI conversion (Android 10 or later) |
 
 ## Accuracy
 
@@ -215,6 +215,12 @@ text cursor.
   `localhost:3000` in a regular text field and press Enter to keep it in ASCII.
 
 ### Android keyboard
+
+Turn on **かなフリック入力** under **キーボード** in Sweet IME settings to
+use the 12-key Japanese layout. Tap **あ** for あ, or flick left, up, right
+or down for い, う, え or お. Use **小゛゜** to cycle the kana before the
+caret through its small, voiced or semi-voiced forms while composing.
+[See the kana flick layout.](assets/android/flick-guide.png)
 
 Shift starts an English word as on the desktop, and the globe key switches
 to direct English input. Password, URL, email and number fields start in
