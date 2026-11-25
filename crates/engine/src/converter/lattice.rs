@@ -328,48 +328,48 @@ impl Converter {
 
     /// N-best paths (BOS..EOS exclusive) via backward A* over the Viterbi
     /// forward costs, which are an exact heuristic.
-    fn nbest_paths(&self, lat: &Lattice<'_>, n: usize) -> Vec<(i32, Vec<u32>)> {
+    fn nbest_paths<'a>(
+        &'a self,
+        lat: &'a Lattice<'_>,
+        n: usize,
+    ) -> impl Iterator<Item = (i32, Vec<u32>)> + 'a {
         // arena entries: (node, parent arena index, g = cost after node)
         let mut arena: Vec<(u32, u32, i32)> = vec![(EOS, u32::MAX, 0)];
         let mut heap = BinaryHeap::new();
         heap.push((Reverse(lat.nodes[EOS as usize].best), 0u32));
-        let mut out = Vec::new();
         let mut pops = 0;
-        while let Some((Reverse(f), ai)) = heap.pop() {
-            pops += 1;
-            if pops > 20_000 {
-                break;
-            }
-            let (node, _, g) = arena[ai as usize];
-            if node == BOS {
-                let mut path = Vec::new();
-                let mut cur = arena[ai as usize].1;
-                while cur != u32::MAX {
-                    let (nd, parent, _) = arena[cur as usize];
-                    if nd != EOS {
-                        path.push(nd);
+        std::iter::from_fn(move || {
+            while pops < 20_000 {
+                let (Reverse(f), ai) = heap.pop()?;
+                pops += 1;
+                let (node, _, g) = arena[ai as usize];
+                if node == BOS {
+                    let mut path = Vec::new();
+                    let mut cur = arena[ai as usize].1;
+                    while cur != u32::MAX {
+                        let (nd, parent, _) = arena[cur as usize];
+                        if nd != EOS {
+                            path.push(nd);
+                        }
+                        cur = parent;
                     }
-                    cur = parent;
+                    return Some((f, path));
                 }
-                out.push((f, path));
-                if out.len() >= n {
-                    break;
+                let nd = &lat.nodes[node as usize];
+                let g2 = g + nd.wcost;
+                for &p in &lat.ends[nd.start] {
+                    let prev = &lat.nodes[p as usize];
+                    if prev.best == i32::MAX {
+                        continue;
+                    }
+                    let g3 = g2 + self.dict.connection(prev.rid, nd.lid);
+                    arena.push((p, ai, g3));
+                    heap.push((Reverse(prev.best + g3), (arena.len() - 1) as u32));
                 }
-                continue;
             }
-            let nd = &lat.nodes[node as usize];
-            let g2 = g + nd.wcost;
-            for &p in &lat.ends[nd.start] {
-                let prev = &lat.nodes[p as usize];
-                if prev.best == i32::MAX {
-                    continue;
-                }
-                let g3 = g2 + self.dict.connection(prev.rid, nd.lid);
-                arena.push((p, ai, g3));
-                heap.push((Reverse(prev.best + g3), (arena.len() - 1) as u32));
-            }
-        }
-        out
+            None
+        })
+        .take(n)
     }
 
     fn to_words(&self, lat: &Lattice<'_>, text: &str, path: &[u32]) -> Vec<Word> {

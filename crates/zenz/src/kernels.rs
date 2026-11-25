@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-fn pool() -> &'static rayon::ThreadPool {
+pub(crate) fn pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
     POOL.get_or_init(|| {
         let n = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);

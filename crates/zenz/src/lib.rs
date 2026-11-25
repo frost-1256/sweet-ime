@@ -101,9 +101,31 @@ impl Zenz {
     /// given the prompt. The candidates form a token trie that is evaluated
     /// in a single tree-attention pass, with the prompt as the trunk.
     pub fn score(&self, prompt: &str, candidates: &[String]) -> Vec<f32> {
-        let ids = self.encode_prompt(prompt);
+        self.score_candidates(prompt, candidates, false)
+    }
+
+    fn score_candidates(&self, prompt: &str, candidates: &[String], relative: bool) -> Vec<f32> {
+        let mut ids = self.encode_prompt(prompt);
         let mut cache = self.model.new_cache();
         let toks: Vec<Vec<u32>> = candidates.iter().map(|c| self.tokenizer.encode(&normalize(c))).collect();
+        // Shared prefix tokens contribute the same log-probability to every
+        // candidate. Keep them in the prompt and skip their vocabulary projections.
+        let mut shared = 0;
+        if relative
+            && !ids.is_empty()
+            && let Some(first) = toks.first()
+        {
+            shared = first
+                .iter()
+                .enumerate()
+                .take_while(|&(i, token)| {
+                    toks[1..]
+                        .iter()
+                        .all(|candidate| candidate.get(i) == Some(token))
+                })
+                .count();
+            ids.extend_from_slice(&first[..shared]);
+        }
         // Trie: node -> (token, parent). The prompt is a chain at the front;
         // candidates hang off its last token.
         let p = ids.len();
@@ -113,7 +135,7 @@ impl Zenz {
         let mut ends: Vec<Option<usize>> = Vec::with_capacity(toks.len());
         for t in &toks {
             let mut cur: Option<usize> = p.checked_sub(1);
-            for &tok in t {
+            for &tok in &t[shared..] {
                 let next = *children.entry((cur, tok)).or_insert_with(|| {
                     nodes.push(tok);
                     parents.push(cur);
@@ -133,7 +155,17 @@ impl Zenz {
         let logits = self.model.forward_tree(&nodes, &parents, &mut cache, from);
         let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
         // A branch can score several child tokens and EOS from the same logits.
-        let normalizers: Vec<_> = logits.chunks_exact(v).map(model::log_normalizer).collect();
+        let normalizers: Vec<_> = if logits.len() >= 4 * v {
+            use rayon::prelude::*;
+            kernels::pool().install(|| {
+                logits
+                    .par_chunks_exact(v)
+                    .map(model::log_normalizer)
+                    .collect()
+            })
+        } else {
+            logits.chunks_exact(v).map(model::log_normalizer).collect()
+        };
         let log_prob = |i, token| {
             let (mx, log_sum) = normalizers[i - from];
             row(i)[token] - mx - log_sum
@@ -208,10 +240,33 @@ impl sweet_engine::Reranker for ZenzReranker {
         }
         let prompt = Zenz::prompt(reading, left_context);
         let surfaces: Vec<String> = eligible.iter().map(|&i| cands[i].surface()).collect();
-        let scores = self.zenz.score(&prompt, &surfaces);
+        let scores = self.zenz.score_candidates(&prompt, &surfaces, true);
         (0..eligible.len()).max_by(|&a, &b| {
             let s = |i: usize| scores[i] - self.mix * cands[eligible[i]].cost as f32 / 500.0;
             s(a).total_cmp(&s(b))
         }).map(|i| eligible[i])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Zenz;
+
+    #[test]
+    fn relative_scores_drop_only_the_shared_prefix_probability() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/zenz-v3.1-xsmall.swz"
+        );
+        let Ok(zenz) = Zenz::load(path) else { return };
+        let prompt = Zenz::prompt("きょうははしをわたる", "");
+        let candidates = ["今日は橋を渡る", "今日は箸を渡る", "今日は"].map(str::to_owned);
+        let absolute = zenz.score(&prompt, &candidates);
+        let relative = zenz.score_candidates(&prompt, &candidates, true);
+        assert!(relative[0] > absolute[0]);
+        for i in 1..candidates.len() {
+            let difference = (absolute[i] - absolute[0]) - (relative[i] - relative[0]);
+            assert!(difference.abs() < 1e-3, "{}: {difference}", candidates[i]);
+        }
     }
 }

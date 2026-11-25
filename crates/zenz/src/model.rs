@@ -120,10 +120,11 @@ fn layer_norm(x: &[f32], w: &[f32], b: &[f32], eps: f32, out: &mut [f32]) {
 }
 
 fn gelu_new(v: &mut [f32]) {
-    const C: f32 = 0.797_884_6; // sqrt(2/pi)
+    // (1 + tanh(z)) / 2 = 1 / (1 + exp(-2z)).
+    const C: f32 = -1.595_769_2; // -2 * sqrt(2/pi)
     for x in v {
-        let t = (C * (*x + 0.044715 * *x * *x * *x)).tanh();
-        *x = 0.5 * *x * (1.0 + t);
+        let exponent = C * (*x + 0.044715 * *x * *x * *x);
+        *x /= 1.0 + exponent.exp();
     }
 }
 
@@ -242,8 +243,9 @@ impl Model {
                         }
                         let out = &mut att[i * e + off..][..hd];
                         out.fill(0.0);
+                        let inv_sum = sum.recip();
                         for j in 0..n_ctx {
-                            let w = scores[j] / sum;
+                            let w = scores[j] * inv_sum;
                             let v: &[f32] = if j < past {
                                 &vc[j * e + off..][..hd]
                             } else {
@@ -304,4 +306,25 @@ pub fn argmax(logits: &[f32]) -> usize {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gelu_new;
+
+    #[test]
+    fn sigmoid_gelu_matches_tanh_form() {
+        let inputs = [
+            -12.0f32, -6.0, -3.0, -1.0, -0.1, 0.0, 0.1, 1.0, 3.0, 6.0, 12.0,
+        ];
+        let mut actual = inputs;
+        gelu_new(&mut actual);
+        for (x, result) in inputs.into_iter().zip(actual) {
+            let expected = 0.5 * x * (1.0 + (0.797_884_6 * (x + 0.044715 * x * x * x)).tanh());
+            assert!(
+                (result - expected).abs() < 1e-6,
+                "{x}: {result} vs {expected}"
+            );
+        }
+    }
 }
