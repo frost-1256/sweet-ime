@@ -76,7 +76,9 @@ use **Settings → 情報**, or set `update_check = off`.
 
 ### macOS
 
-Build the test bundle using the steps below and extract `SweetIME-macOS.zip`.
+Download `SweetIME-macOS.zip` from the
+[latest release](https://github.com/frost-1256/sweet-ime/releases/latest)
+and extract it.
 Copy `Sweet IME.app` into `~/Library/Input Methods`, then log out and back in.
 In **System Settings → Keyboard → Text Input → Edit**, add **Sweet IME**
 under Japanese and select it from the input menu. The same menu opens

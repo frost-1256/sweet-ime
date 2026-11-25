@@ -72,7 +72,8 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 
 ### macOS
 
-下記の手順でビルドし、`SweetIME-macOS.zip` を展開します。
+[最新リリース](https://github.com/frost-1256/sweet-ime/releases/latest)から
+`SweetIME-macOS.zip` をダウンロードし、展開します。
 `Sweet IME.app` を `~/Library/Input Methods` に入れて、ログインし直します。
 **システム設定 → キーボード → テキスト入力 → 編集** で「日本語」から
 **Sweet IME** を追加し、入力メニューから選びます。同じメニューの
