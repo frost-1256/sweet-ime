@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "bridge.h"
+#include "candidate_panel.h"
 
 static NSRange NoReplacement(void) {
     return NSMakeRange(NSNotFound, 0);
@@ -73,14 +74,13 @@ static uint16_t VirtualKey(NSEvent *event) {
 }
 
 @interface SweetInputController : IMKInputController
+- (void)selectCandidateRow:(NSUInteger)row;
 @end
 
 @implementation SweetInputController {
     SweetContext *_context;
-    IMKCandidates *_panel;
-    NSArray<NSString *> *_candidates;
+    SweetCandidatePanel *_panel;
     BOOL _marked;
-    BOOL _updatingPanel;
     BOOL _pollScheduled;
 }
 
@@ -88,7 +88,6 @@ static uint16_t VirtualKey(NSEvent *event) {
     self = [super initWithServer:server delegate:delegate client:client];
     if (self) {
         _context = sweet_macos_new();
-        _panel = [[IMKCandidates alloc] initWithServer:server panelType:kIMKSingleColumnScrollingCandidatePanel];
     }
     return self;
 }
@@ -115,7 +114,6 @@ static uint16_t VirtualKey(NSEvent *event) {
 - (void)discardComposition {
     sweet_macos_finish(_context, false);
     [_panel hide];
-    _candidates = nil;
     _marked = NO;
 }
 
@@ -172,6 +170,7 @@ static uint16_t VirtualKey(NSEvent *event) {
     NSDictionary *state = Snapshot(_context);
     NSString *commit = state[@"commit"];
     NSString *preedit = state[@"preedit"];
+    NSUInteger anchorIndex = 0;
     if (commit.length) {
         _marked = NO;
         [client insertText:commit replacementRange:NoReplacement()];
@@ -181,7 +180,9 @@ static uint16_t VirtualKey(NSEvent *event) {
         for (NSArray<NSNumber *> *span in state[@"spans"]) {
             NSUInteger start = span[0].unsignedIntegerValue;
             NSUInteger end = span[1].unsignedIntegerValue;
-            NSInteger style = span[2].boolValue ? NSUnderlineStyleThick : NSUnderlineStyleSingle;
+            BOOL focused = span[2].boolValue;
+            if (focused) anchorIndex = start;
+            NSInteger style = focused ? NSUnderlineStyleThick : NSUnderlineStyleSingle;
             [marked addAttribute:NSUnderlineStyleAttributeName value:@(style) range:NSMakeRange(start, end - start)];
         }
         _marked = YES;
@@ -193,37 +194,39 @@ static uint16_t VirtualKey(NSEvent *event) {
         [client setMarkedText:@"" selectionRange:NSMakeRange(0, 0) replacementRange:NoReplacement()];
     }
     NSArray<NSString *> *candidates = state[@"candidates"];
-    BOOL changed = ![_candidates isEqualToArray:candidates];
-    _candidates = candidates;
-    _updatingPanel = YES;
-    if (_candidates.count) {
-        if (changed || ![_panel isVisible]) [_panel updateCandidates];
-        if (![_panel isVisible]) [_panel show:kIMKLocateCandidatesBelowHint];
-        id selected = state[@"selected"];
-        if ([selected isKindOfClass:NSNumber.class] &&
-            [selected unsignedIntegerValue] < _candidates.count) {
-            NSString *candidate = _candidates[[selected unsignedIntegerValue]];
-            [_panel selectCandidateWithIdentifier:[_panel candidateStringIdentifier:candidate]];
-        }
-    } else {
+    if (!candidates.count) {
         [_panel hide];
+        return;
     }
-    _updatingPanel = NO;
+
+    NSRect anchor = NSZeroRect;
+    [client attributesForCharacterIndex:anchorIndex lineHeightRectangle:&anchor];
+    if (NSWidth(anchor) <= 0 && NSHeight(anchor) <= 0 && anchorIndex != 0) {
+        [client attributesForCharacterIndex:0 lineHeightRectangle:&anchor];
+    }
+    if (NSWidth(anchor) <= 0 && NSHeight(anchor) <= 0) {
+        [_panel hide];
+        return;
+    }
+    if (!_panel) {
+        __weak SweetInputController *controller = self;
+        _panel = [[SweetCandidatePanel alloc] initWithSelection:^(NSUInteger row) {
+            [controller selectCandidateRow:row];
+        }];
+    }
+    id selected = state[@"selected"];
+    NSUInteger row = [selected isKindOfClass:NSNumber.class] ? [selected unsignedIntegerValue] : NSNotFound;
+    [_panel showCandidates:candidates selectedRow:row anchor:anchor];
 }
 
-- (NSArray *)candidates:(id)sender {
-    return _candidates ?: @[];
-}
-
-- (void)candidateSelected:(NSAttributedString *)candidate {
-    if (!_context || !_candidates.count || _updatingPanel) return;
+- (void)selectCandidateRow:(NSUInteger)row {
+    if (!_context) return;
     id client = [self client];
-    if (IsSecureEventInputEnabled()) {
+    if (!client || IsSecureEventInputEnabled()) {
         [self discardComposition];
         return;
     }
-    NSUInteger row = [_candidates indexOfObject:candidate.string];
-    if (row != NSNotFound && sweet_macos_select(_context, row)) [self publishToClient:client];
+    if (sweet_macos_select(_context, row)) [self publishToClient:client];
 }
 
 - (NSMenu *)menu {
@@ -286,6 +289,10 @@ int main(int argc, const char *argv[]) {
         if (argc == 2 && strcmp(argv[1], "--check-input-source") == 0) {
             return CheckInputSource(bundle);
         }
+        if (argc == 3 && strcmp(argv[1], "--candidate-panel-preview") == 0) {
+            return SweetCandidatePanelPreview([NSString stringWithUTF8String:argv[2]])
+                ? EXIT_SUCCESS : EXIT_FAILURE;
+        }
         NSString *dictionary = [bundle pathForResource:@"system" ofType:@"dict"];
         if (!dictionary || !sweet_macos_load(dictionary.fileSystemRepresentation)) {
             NSLog(@"Sweet IME could not load system.dict");
@@ -308,9 +315,29 @@ int main(int argc, const char *argv[]) {
             }
             sweet_macos_key(context, 0x20, ' ', 0);
             NSDictionary *state = Snapshot(context);
-            BOOL converted = [state[@"candidates"] containsObject:@"仮名"];
+            NSArray<NSString *> *candidates = state[@"candidates"];
+            BOOL converted = [candidates containsObject:@"仮名"] &&
+                             [state[@"selected"] isEqual:@0];
+            for (NSUInteger row = 1; converted && row <= 2; row++) {
+                converted = row < candidates.count && sweet_macos_key(context, 0x09, 0, 0);
+                if (!converted) break;
+                NSDictionary *next = Snapshot(context);
+                converted = [next[@"candidates"] isEqual:candidates] &&
+                            [next[@"selected"] isEqual:@(row)] &&
+                            [next[@"preedit"] isEqual:candidates[row]];
+            }
             sweet_macos_free(context);
-            return converted ? EXIT_SUCCESS : EXIT_FAILURE;
+
+            NSRect screen = NSMakeRect(100, 50, 800, 600);
+            NSRect anchor = NSMakeRect(850, 64, 1, 20);
+            NSRect small = SweetCandidatePanelFrame(2, 190, anchor, screen);
+            NSRect large = SweetCandidatePanelFrame(8, 260, anchor, screen);
+            BOOL fitted = NSHeight(small) < NSHeight(large) &&
+                          NSWidth(small) < NSWidth(large) &&
+                          NSMinY(small) >= NSMaxY(anchor) &&
+                          NSContainsRect(screen, small) && NSContainsRect(screen, large);
+            if (!converted || !fitted) fputs("Candidate selection or geometry smoke test failed.\n", stderr);
+            return converted && fitted ? EXIT_SUCCESS : EXIT_FAILURE;
         }
         [NSApplication sharedApplication];
         NSString *connection = [bundle objectForInfoDictionaryKey:@"InputMethodConnectionName"];

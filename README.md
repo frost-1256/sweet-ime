@@ -38,7 +38,7 @@
 | **Windows** | A TSF text service for 64-bit and 32-bit apps, a Direct2D candidate window that follows light/dark mode and the accent color, and an "あ" / "A" mode indicator |
 | **Linux** | An fcitx5 addon for Wayland compositors with `input-method-v2` (niri, Sway, Hyprland, …) and fcitx5's other frontends |
 | **Android** | QWERTY romaji and 12-key kana flick keyboards, a candidate bar, Material 3 themes and on-device AI conversion (Android 10 or later) |
-| **macOS** | InputMethodKit with the system candidate panel and the shared settings app (macOS 15 or later, Intel and Apple Silicon) |
+| **macOS** | InputMethodKit with a compact candidate window and the shared settings app (macOS 15 or later, Intel and Apple Silicon) |
 
 ## Accuracy
 
@@ -93,8 +93,8 @@ check whether macOS recognizes it in the current login session:
 If macOS displays a warning about a downloaded build, see
 [Apple's guidance](https://support.apple.com/en-us/102445).
 
-The first macOS implementation uses the system candidate appearance and
-converts text within the current composition. Its settings, history and optional
+The macOS version converts text within the current composition.
+Its settings, history and optional
 zenz model live in `~/Library/Application Support/SweetIME`. After installing
 or removing a zenz model, log out and back in to reload it. Zenz uses AVX2 and
 FMA when available on Intel and NEON on Apple Silicon.

@@ -35,7 +35,7 @@
 | **Windows** | 64 ビット・32 ビットアプリ用の TSF テキストサービス、ライト/ダークとアクセント色に合わせる Direct2D の候補ウィンドウ、「あ」/「A」の入力モード表示 |
 | **Linux** | `input-method-v2` に対応した Wayland コンポジター(niri、Sway、Hyprland など)や、fcitx5 のほかのフロントエンドで使える fcitx5 アドオン |
 | **Android** | QWERTY ローマ字入力と12キーのかなフリック入力、候補バー、Material 3 のテーマ、端末内で動く AI 変換(Android 10 以上) |
-| **macOS** | InputMethodKit による入力、システム標準の候補ウィンドウ、共通の設定アプリ（macOS 15 以降、Intel・Apple Silicon） |
+| **macOS** | InputMethodKit による入力、候補数に合わせて縮むウィンドウ、共通の設定アプリ（macOS 15 以降、Intel・Apple Silicon） |
 
 ## 変換精度
 
@@ -89,7 +89,7 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 ダウンロードしたアプリについてmacOSが警告を表示した場合は、
 [Appleの案内](https://support.apple.com/ja-jp/102445)を参照してください。
 
-macOS 版はシステム標準の候補表示を使い、編集中の文字列を文脈として変換します。
+macOS 版は編集中の文字列を文脈として変換します。
 設定・学習履歴・任意の zenz モデルは `~/Library/Application Support/SweetIME`
 に保存します。zenz モデルの追加・削除後は、ログインし直すと反映されます。
 Zenz は対応する Intel CPU で AVX2・FMA、Apple Silicon で NEON を使います。

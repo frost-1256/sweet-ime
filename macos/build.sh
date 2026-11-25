@@ -52,8 +52,8 @@ for arch in arm64 x86_64; do
     cargo build --locked --release --target "$target" -p sweet-macos -p sweet-settings -p sweet-zenz
     binaries="$CARGO_TARGET_DIR/$target/release"
     xcrun clang -arch "$arch" -fobjc-arc -Wall -Wextra -Wno-unused-parameter \
-        macos/main.m "$binaries/libsweet_macos.a" -o "$work/SweetIME-$arch" \
-        -framework AppKit -framework Carbon -framework InputMethodKit \
+        macos/main.m macos/candidate_panel.m "$binaries/libsweet_macos.a" -o "$work/SweetIME-$arch" \
+        -framework AppKit -framework Carbon -framework InputMethodKit -framework QuartzCore \
         -liconv -lSystem -lc -lm
     cp "$binaries/sweet-settings" "$work/sweet-settings-$arch"
     cp "$binaries/sweet-zenz-pack" "$work/sweet-zenz-pack-$arch"
