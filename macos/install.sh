@@ -41,7 +41,7 @@ backup="$work/previous.app"
 # Keep the same lock inode across installs. The kernel releases the lock
 # when the last descriptor closes, including after a forced exit or reboot.
 exec 9>>"$methods/.sweet-ime-install.lock"
-/usr/bin/perl -MFcntl=:flock -e 'open(my $lock, ">&=9") && flock($lock, LOCK_EX | LOCK_NB) or exit 1' \
+/usr/bin/perl -MFcntl=:flock -e 'flock(STDIN, LOCK_EX | LOCK_NB) or exit 1' <&9 \
     || fail "別のインストールが実行中か、ロックを取得できません。"
 
 plist_id() {

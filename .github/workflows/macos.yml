@@ -86,7 +86,7 @@ jobs:
           test ! -e "$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install"
           (
             exec 9>>"$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install.lock"
-            /usr/bin/perl -MFcntl=:flock -e 'open(my $lock, ">&=9") && flock($lock, LOCK_EX | LOCK_NB) or exit 1'
+            /usr/bin/perl -MFcntl=:flock -e 'flock(STDIN, LOCK_EX | LOCK_NB) or exit 1' <&9
             if bash macos/install.sh --archive SweetIME-macOS.zip; then
               echo "Installer ignored another process's lock" >&2
               exit 1
