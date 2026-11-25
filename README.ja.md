@@ -6,7 +6,7 @@
 
 <p align="center">
   Rust でゼロから書いた日本語入力。<br>
-  Windows・Linux(fcitx5)・Android で使えます。
+  Windows・Linux(fcitx5)・Android・macOS で使えます。
 </p>
 
 <p align="center">
@@ -35,6 +35,7 @@
 | **Windows** | 64 ビット・32 ビットアプリ用の TSF テキストサービス、ライト/ダークとアクセント色に合わせる Direct2D の候補ウィンドウ、「あ」/「A」の入力モード表示 |
 | **Linux** | `input-method-v2` に対応した Wayland コンポジター(niri、Sway、Hyprland など)や、fcitx5 のほかのフロントエンドで使える fcitx5 アドオン |
 | **Android** | QWERTY ローマ字入力と12キーのかなフリック入力、候補バー、Material 3 のテーマ、端末内で動く AI 変換(Android 10 以上) |
+| **macOS** | InputMethodKit による入力、システム標準の候補ウィンドウ、共通の設定アプリ（macOS 15 以降、Intel・Apple Silicon） |
 
 ## 変換精度
 
@@ -68,6 +69,19 @@ GitHub Releases の新しいバージョンを確認します。更新すると�
 `SweetIME-Setup.exe` をダウンロードして SHA-256 をリリースと照合し、
 `--update` を付けて実行します。確認を止めるには **設定 → 情報** を使うか、
 `update_check = off` にします。
+
+### macOS
+
+下記の手順でビルドし、`SweetIME-macOS.zip` を展開します。
+`Sweet IME.app` を `~/Library/Input Methods` に入れて、ログインし直します。
+**システム設定 → キーボード → テキスト入力 → 編集** で「日本語」から
+**Sweet IME** を追加し、入力メニューから選びます。同じメニューの
+「設定…」から設定アプリを開けます。
+
+macOS 版はシステム標準の候補表示を使い、編集中の文字列を文脈として変換します。
+設定・学習履歴・任意の zenz モデルは `~/Library/Application Support/SweetIME`
+に保存します。zenz モデルの追加・削除後は、ログインし直すと反映されます。
+Zenz は対応する Intel CPU で AVX2・FMA、Apple Silicon で NEON を使います。
 
 ### Android
 
@@ -351,6 +365,23 @@ powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
 ```
 
 APK は `out/SweetIME-Android.apk` にできます。
+
+### macOS 版のビルド
+
+macOS 15 以降で Xcode Command Line Tools、安定版 Rust、PowerShell を用意します。
+Mozc は `.github/workflows/macos.yml` に固定されたリビジョンを
+`third_party/mozc-data` にチェックアウトします。
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+pwsh -File scripts/build-dictionary.ps1 -Output data/system.dict
+bash macos/build.sh
+```
+
+`out/SweetIME-macOS.zip` に、Intel・Apple Silicon 両対応のバンドル、
+システム辞書、設定アプリ、zenz の変換ツールが入ります。既定ではローカル
+動作確認用にアドホック署名します。GitHub Actions では両アーキテクチャで
+変換のスモークテストを実行します。
 
 ### テストとツール
 

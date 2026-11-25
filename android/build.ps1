@@ -29,7 +29,7 @@ if (-not $env:ANDROID_NDK_HOME) {
 foreach ($p in @($platform, $tools)) { if (-not (Test-Path $p)) { throw "missing $p" } }
 
 $version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-$parts = $version.Split('.') | ForEach-Object { [int]$_ }
+$parts = ($version -split '[-+]', 2)[0].Split('.') | ForEach-Object { [int]$_ }
 $versionCode = $parts[0] * 10000 + $parts[1] * 100 + $parts[2]
 
 function Invoke-Tool {

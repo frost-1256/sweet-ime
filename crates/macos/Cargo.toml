@@ -1,0 +1,13 @@
+[package]
+name = "sweet-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+serde_json = "1.0.154"
+sweet-engine = { path = "../engine" }
+sweet-zenz = { path = "../zenz" }

@@ -57,7 +57,11 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     let n = a.len().max(b.len());
     a.resize(n, 0);
     b.resize(n, 0);
-    a > b
+    a > b || (a == b && !is_prerelease(latest) && is_prerelease(current))
+}
+
+fn is_prerelease(version: &str) -> bool {
+    version.split('+').next().unwrap_or_default().contains('-')
 }
 
 fn curl() -> std::process::Command {
@@ -338,6 +342,8 @@ mod tests {
         assert!(!is_newer("v0.1.2", "0.1.2"));
         assert!(!is_newer("0.1.1", "0.1.2"));
         assert!(!is_newer("0.1.2-rc1", "0.1.2"));
+        assert!(is_newer("0.5.0", "0.5.0-alpha.1"));
+        assert!(!is_newer("0.5.0+build-info", "0.5.0"));
     }
 
     #[test]

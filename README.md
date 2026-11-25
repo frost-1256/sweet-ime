@@ -6,7 +6,7 @@
 
 <p align="center">
   A Japanese input method written from scratch in Rust,<br>
-  for Windows, Linux (fcitx5) and Android.
+  for Windows, Linux (fcitx5), Android and macOS.
 </p>
 
 <p align="center">
@@ -38,6 +38,7 @@
 | **Windows** | A TSF text service for 64-bit and 32-bit apps, a Direct2D candidate window that follows light/dark mode and the accent color, and an "あ" / "A" mode indicator |
 | **Linux** | An fcitx5 addon for Wayland compositors with `input-method-v2` (niri, Sway, Hyprland, …) and fcitx5's other frontends |
 | **Android** | QWERTY romaji and 12-key kana flick keyboards, a candidate bar, Material 3 themes and on-device AI conversion (Android 10 or later) |
+| **macOS** | InputMethodKit with the system candidate panel and the shared settings app (macOS 15 or later, Intel and Apple Silicon) |
 
 ## Accuracy
 
@@ -72,6 +73,20 @@ installer registers a check at sign-in (at most once a day). Either one
 offers to update: it downloads `SweetIME-Setup.exe`, checks its SHA-256
 against the release, and runs it with `--update`. To turn the checks off,
 use **Settings → 情報**, or set `update_check = off`.
+
+### macOS
+
+Build the test bundle using the steps below and extract `SweetIME-macOS.zip`.
+Copy `Sweet IME.app` into `~/Library/Input Methods`, then log out and back in.
+In **System Settings → Keyboard → Text Input → Edit**, add **Sweet IME**
+under Japanese and select it from the input menu. The same menu opens
+**設定…** (Settings).
+
+The first macOS implementation uses the system candidate appearance and
+converts text within the current composition. Its settings, history and optional
+zenz model live in `~/Library/Application Support/SweetIME`. After installing
+or removing a zenz model, log out and back in to reload it. Zenz uses AVX2 and
+FMA when available on Intel and NEON on Apple Silicon.
 
 ### Android
 
@@ -365,6 +380,23 @@ powershell -ExecutionPolicy Bypass -File android/build.ps1 -Install
 ```
 
 The APK is written to `out/SweetIME-Android.apk`.
+
+### Build for macOS
+
+On macOS 15 or later, install the Xcode Command Line Tools, stable Rust and
+PowerShell. Check out Mozc under `third_party/mozc-data` at the revision
+pinned in `.github/workflows/macos.yml`.
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+pwsh -File scripts/build-dictionary.ps1 -Output data/system.dict
+bash macos/build.sh
+```
+
+The output is `out/SweetIME-macOS.zip`. The bundle includes both architectures,
+the system dictionary, the settings app and the zenz packing tool. The build
+uses ad-hoc signing by default for local testing. GitHub Actions runs a
+conversion smoke test on both architectures.
 
 ### Tests and tools
 

@@ -210,10 +210,14 @@ jobs:
             cachix push "$CACHIX_CACHE_NAME" ./result
           fi
 
+  macos:
+    name: Test macOS
+    uses: ./.github/workflows/macos.yml
+
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, test, android-smoke, linux]
+    needs: [windows, test, android-smoke, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -236,13 +240,18 @@ jobs:
           name: SweetIME-Android
           path: out
 
-      - name: Attach the installer and the APK to the release
+      - uses: actions/download-artifact@v8
+        with:
+          name: SweetIME-macOS
+          path: out
+
+      - name: Attach the Windows, Android and macOS packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          files=(out/SweetIME-Setup.exe out/SweetIME-Android.apk)
+          files=(out/SweetIME-Setup.exe out/SweetIME-Android.apk out/SweetIME-macOS.zip)
           tag_ref="refs/tags/$RELEASE_TAG"
           notes=""
           if [[ "$(git cat-file -t "$tag_ref")" == tag ]]; then
@@ -268,7 +277,7 @@ jobs:
               args+=(--notes "$notes")
             fi
             if [[ "$RELEASE_TAG" == *-* ]]; then
-              args+=(--prerelease)
+              args+=(--prerelease --latest=false)
             fi
             gh release create "$RELEASE_TAG" "${files[@]}" "${args[@]}"
           fi
