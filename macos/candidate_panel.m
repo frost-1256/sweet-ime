@@ -164,9 +164,13 @@ BOOL SweetCandidatePanelPreview(NSString *path) {
     NSRect anchor = NSMakeRect(NSMidX(screenFrame), NSMidY(screenFrame), 1, 20);
     NSArray<NSString *> *candidates = @[@"仮名", @"かな", @"カナ", @"仮名文字", @"かな文字"];
     [panel showCandidates:candidates selectedRow:0 anchor:anchor];
+    if (!panel.visible || panel.keyWindow) return NO;
     CGFloat initialHeight = NSHeight(panel.frame);
     [panel showCandidates:candidates selectedRow:1 anchor:anchor];
-    NSArray<__kindof NSView *> *rows = panel.contentView.subviews;
+    NSMutableArray<SweetCandidateRow *> *rows = [NSMutableArray array];
+    for (NSView *view in panel.contentView.subviews) {
+        if ([view isKindOfClass:SweetCandidateRow.class]) [rows addObject:(SweetCandidateRow *)view];
+    }
     if (rows.count != candidates.count) return NO;
     SweetCandidateRow *first = rows[0];
     SweetCandidateRow *second = rows[1];

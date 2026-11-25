@@ -12,7 +12,7 @@
     <key>CFBundleVersion</key><string>0</string>
     <key>CFBundleShortVersionString</key><string>0</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
-    <key>LSBackgroundOnly</key><true/>
+    <key>LSUIElement</key><true/>
     <key>InputMethodConnectionName</key><string>io.github.sweetime.inputmethod.japanese_Connection</string>
     <key>InputMethodServerControllerClass</key><string>SweetInputController</string>
     <key>TISIntendedLanguage</key><string>ja</string>
