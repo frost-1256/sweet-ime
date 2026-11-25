@@ -6,6 +6,7 @@ use super::{Composing, Key, Session, explicit_spelling_overrides, transliterate}
 use crate::{Conversion, Converter, english, romaji, special, typo, width};
 
 const TYPO_CONVERSION_BUDGET: Duration = Duration::from_millis(12);
+const KANA_TYPO_CONVERSION_MARGIN: i32 = 3200;
 
 pub(super) struct SegState {
     pub(super) reading: String,
@@ -129,10 +130,21 @@ impl Session {
         let listed = self.options.english_words && conv.english_words_enabled();
         let words = english::covers_letters(&kana, listed);
         let live_reading = self.comp.live_typo.as_ref().map(super::LiveTypo::kana);
-        let correction = if live_reading.is_none() && typo::has_unresolved_romaji(&kana) && !words {
+        let unresolved = typo::has_unresolved_romaji(&kana);
+        let correction = if live_reading.is_none() && !words {
+            // Valid kana needs more context and a stronger score difference.
+            // After Escape, let the user convert that reading as typed.
             self.comp
                 .typo_input(&kana)
-                .and_then(|raw| typo::correct(conv, raw, 0, TYPO_CONVERSION_BUDGET))
+                .filter(|raw| unresolved || (!self.comp.live_off && raw.len() >= 8))
+                .and_then(|raw| {
+                    let margin = if unresolved {
+                        0
+                    } else {
+                        KANA_TYPO_CONVERSION_MARGIN
+                    };
+                    typo::correct(conv, raw, margin, TYPO_CONVERSION_BUDGET)
+                })
         } else {
             None
         };
@@ -141,7 +153,7 @@ impl Session {
             .is_some_and(|fix| explicit_spelling_overrides(conv, &kana, &fix.reading));
         let correction = correction.filter(|_| !explicit_spelling);
         let corrected = live_reading.is_some() || correction.is_some();
-        if !explicit_spelling && typo::has_unresolved_romaji(&kana) {
+        if !explicit_spelling && unresolved {
             if let Some(word) = self.comp.english(&kana, corrected, listed) {
                 // Keys that are not romaji: the word as typed, capitalized,
                 // then the kana reading's conversion.

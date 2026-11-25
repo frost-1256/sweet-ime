@@ -314,9 +314,8 @@ impl Composing {
     }
 }
 
-/// Whether a repair would overwrite a spelling selected or registered by
-/// the user. Find the affected span in the original reading so a spelling
-/// elsewhere in the sentence does not block the repair.
+/// Whether a repair would overwrite a registered word or an English spelling.
+/// Only the words overlapping the affected span count.
 fn explicit_spelling_overrides(conv: &Converter, original: &str, repaired: &str) -> bool {
     if original == repaired {
         return false;
@@ -345,8 +344,9 @@ fn explicit_spelling_overrides(conv: &Converter, original: &str, repaired: &str)
                 offset += word.reading.len();
                 word_start < end
                     && start < offset
-                    && (word.learned || word.user)
-                    && english::typed_word(&word.reading, &word.surface)
+                    && (word.user
+                        || english::is_spelling(&word.reading, &word.surface)
+                        || (word.learned && english::typed_word(&word.reading, &word.surface)))
             })
     })
 }

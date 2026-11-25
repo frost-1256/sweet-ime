@@ -1058,6 +1058,20 @@ fn corrects_early_typos_even_when_the_wrong_reading_is_all_kana() {
 }
 
 #[test]
+fn space_applies_confident_typos_that_produce_valid_kana() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    let keys = "kaiginnoshiryou";
+    type_str(&mut s, &c, keys);
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "会議の資料");
+    assert!(s.handle(&c, Key::Escape));
+    assert_eq!(s.typed_input(), keys);
+    assert!(s.handle(&c, Key::Space));
+    assert_ne!(s.preedit().text, "会議の資料");
+}
+
+#[test]
 fn learns_the_corrected_reading_only_when_the_user_picks_it() {
     for (use_tab, private) in [(false, false), (true, false), (true, true)] {
         let Some(c) = converter() else { return };
@@ -1257,6 +1271,8 @@ fn english_words_typed_by_spelling_show_as_words() {
         // Inside a sentence.
         ("vrchatdeasobu", "VRChatで遊ぶ"),
         ("githubnipusshusuru", "GitHubにプッシュする"),
+        ("githubnoissuewomita", "GitHubのissueを見た"),
+        ("githubnodeploywosuru", "GitHubのdeployをする"),
         ("kyouhanvidianokabu", "今日はNVIDIAの株"),
         ("kyouhadiscorddehanasu", "今日はDiscordで話す"),
         // Japanese is unchanged, typos included.
@@ -1775,4 +1791,18 @@ fn casual_reactions_keep_their_hiragana_spelling() {
         assert!(c.convert(reading, &[], 12).iter().any(|item| item.surface() == katakana));
     }
     assert_eq!(c.convert("りょうかい", &[], 1)[0].surface(), "了解");
+    assert!(
+        c.convert("もうそろいこう", &[], 1)[0]
+            .surface()
+            .starts_with("もうそろ")
+    );
+    assert!(
+        c.convert_best("もうそろいこう", &[], "")[0]
+            .surface()
+            .starts_with("もうそろ")
+    );
+    assert_eq!(
+        c.convert("もうそろでうたう", &[], 1)[0].surface(),
+        "もうソロで歌う"
+    );
 }

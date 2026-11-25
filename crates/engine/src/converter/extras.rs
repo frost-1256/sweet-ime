@@ -102,13 +102,22 @@ fn spelled_out(reading: &str) -> Vec<String> {
 
 /// Casual readings that are usually written as typed on their own.
 pub(super) fn casual_phrase(text: &str) -> Option<(&'static str, &'static str)> {
-    [("もうそろ", "そろそろ"), ("あーね", "ああ"), ("りょ", "ああ")]
-        .into_iter()
-        .find(|(reading, _)| {
-            text.strip_prefix(reading).is_some_and(|tail| {
-                tail.is_empty() || tail.starts_with(['、', '。', '！', '？', '…', '!', '?'])
-            })
+    [
+        ("もうそろ", "そろそろ"),
+        ("あーね", "ああ"),
+        ("りょ", "ああ"),
+    ]
+    .into_iter()
+    .find(|(reading, _)| {
+        text.strip_prefix(reading).is_some_and(|tail| {
+            tail.is_empty()
+                || tail.starts_with(['、', '。', '！', '？', '…', '!', '?'])
+                || (*reading == "もうそろ"
+                    && ["いこう", "いく", "かえ", "ねる", "でかけ", "はじめ", "おわ"]
+                        .iter()
+                        .any(|head| tail.starts_with(head)))
         })
+    })
 }
 
 impl Converter {
@@ -354,7 +363,11 @@ impl Converter {
         // anywhere when no Japanese word starts like them (nvidia reads
         // んゔぃぢあ).
         for (reading, spelling) in crate::english::kana_spelled_readings() {
-            let anywhere = reading.starts_with(['ん', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ']);
+            // The romaji spelling of issue reads いっすえ, even inside
+            // Japanese sentences. This reading is distinct from 一末.
+            let anywhere = *spelling == "issue"
+                || reading
+                    .starts_with(['ん', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ']);
             let starts: Vec<usize> = if anywhere {
                 text.match_indices(reading.as_str()).map(|(i, _)| i).collect()
             } else if text.starts_with(reading.as_str()) {
