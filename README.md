@@ -200,6 +200,8 @@ text cursor.
 - **A known word ends by itself.** `Googlehakensaku` commits `Google` and
   goes on with `は検索`; `Googleha` then Enter commits `Googleは`
   (`shift_one_word = off` keeps English until Space or Enter).
+  A comma can introduce Japanese too. For example, start `Anthropic` with
+  Shift and continue with `,kyouhadousuru` to type `Anthropic、今日はどうする`.
 - **Technical terms.** Type `ime`, `ieee` or `github` and press Space for
   `IME`, `IEEE` or `GitHub`. Japanese readings such as `あいえむいー` work
   too.
@@ -209,6 +211,8 @@ text cursor.
   the spelling); others keep their spelling (`software`). The words come
   from a bundled SCOWL list, and other words you commit, such as one fixed
   with F10, are learned. `english_words = off` turns this off.
+- **Addresses in Japanese mode.** Type a URL, `dev@example.com`, or
+  `localhost:3000` in a regular text field and press Enter to keep it in ASCII.
 
 ### Android keyboard
 
@@ -229,12 +233,20 @@ On Windows, open the settings app, `sweet-settings.exe`, from:
 - a right-click on the "あ" / "A" indicator in the taskbar;
 - Windows language settings: Sweet IME → Keyboard options.
 
-Changes are saved right away and apply the next time an app gets focus. In
-the app you can:
+Reopening Windows settings brings the existing window forward and restores
+it if minimized. Changes are saved right away and apply the next time an app
+gets focus. In the app you can:
 
 - turn live conversion, suggestions and the "あ" / "A" indicator on or off;
+- turn on **入力した文字を表示** under **入力** on Windows to see the typed
+  romaji beside the composition. It also works without suggestions and
+  disappears when you commit or cancel. After an edit, the preview uses the
+  current reading in romaji if the original keystrokes no longer match.
+  The preview stays hidden in password and private fields, and when the IME
+  cannot determine the input scope;
 - choose a color theme for the candidate window (on Linux, as an fcitx5
-  theme);
+  theme), or enable the animated rainbow border under **テーマ** →
+  **ゲーミングモード** on Windows;
 - change key bindings;
 - turn AI conversion on or off, and download or remove the zenz model;
 - turn learning on or off, review, delete or clear learned words, or forget
@@ -262,9 +274,11 @@ When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is unset, Linux uses
 ```
 live_conversion = on   # show converted text while typing
 suggestions = on       # show predictions while typing
+show_typed_input = off # show romaji beside the composition (Windows)
 neural = on            # rerank with the zenz model when installed
 learning = on          # learn from chosen candidates
 theme = default        # default, light, dark, sakura, matcha, midnight, lavender, dracula, adwaita
+gaming_mode = off      # animate a rainbow border on the candidate window (Windows)
 update_check = on      # look for new releases on GitHub
 dates = on             # きょう / いま -> dates and times
 emoji = on             # えがお -> 😊, かお -> kaomoji
@@ -343,14 +357,16 @@ The APK is written to `out/SweetIME-Android.apk`.
 
 ### Tests and tools
 
-- `cargo test --workspace` runs the unit and integration tests. Copy
-  `dist\system.dict` to `data\system.dict` first for the dictionary-backed
-  tests.
+- To run the same unit and integration tests as CI, put the system dictionary
+  at `data/system.dict` and run
+  `cargo test --locked --workspace --all-targets -- --test-threads=1`.
+  Running serially avoids contention in the time-limited typo correction tests.
 - `target\release\examples\harness.exe` drives the real TSF core
   (`sweet_tsf_core.dll`) in-process without registering it, and checks that
   the entry DLL (`sweet_tsf.dll`) switches cores on focus.
-- `crates/fcitx5/tests/run-dbus-harness.sh result` drives the fcitx5 addon
-  through a private fcitx5 over D-Bus (Linux, after `nix build`).
+- After `nix build` on Linux,
+  `nix develop --command sh crates/fcitx5/tests/run-dbus-harness.sh result`
+  drives the addon through a private fcitx5 instance over D-Bus.
 - `sweet-cli data\system.dict eval <evaluation.tsv>` measures accuracy. Set
   `SWEET_ZENZ=data\zenz-v3.1-xsmall.swz` to include the reranker.
   `crates\cli\data\terms.tsv` checks technical terms, internet slang and
@@ -375,23 +391,29 @@ they get focus, without a restart.
 ### Branches, CI and releases
 
 - Make changes on `develop`, and open a pull request into `main` for
-  CodeRabbit review and CI.
+  CodeRabbit review and CI. Enable auto-merge on that PR if you want GitHub
+  to merge it once the seven required checks pass.
 - GitHub Actions runs the workspace tests and the Windows TSF harness,
   checks in an emulator that the Android APK starts with its bundled
   dictionary, and builds and tests the fcitx5 package on x86-64 and ARM64
   Linux. The installer and the APK are kept as the `SweetIME-Windows` and
   `SweetIME-Android` artifacts. Runs can also be started from the Actions
-  tab.
+  tab. Download the artifacts from the run to test a build without compiling
+  it locally.
 - To cache Linux builds, set the repository Actions variable
   `CACHIX_CACHE_NAME` to a public Cachix cache. Pull requests can read the
   cache. Set `CACHIX_AUTH_TOKEN` as an Actions secret with write access to
   let push workflows publish the tested x86-64 and ARM64 packages.
-- To release, raise `version` in `Cargo.toml` and `nix/package.nix`, merge
-  into `main`, and wait for the `Release eligibility` check on that commit.
+- Release timing is a manual decision. For the `0.x` series, use patch
+  versions for fixes and minor versions for compatible new features.
+  To release, update `Cargo.toml`, the workspace entries in `Cargo.lock`,
+  and `nix/package.nix`. Merge into `main` and wait for `Release eligibility`
+  to pass for the merged commit.
   Create an annotated tag with `git tag -a vX.Y.Z <main-commit>`. Enter a
   release title, a blank line, and Markdown bullets describing what users
   will notice since the previous release. Push the tag to publish the
   installer and APK with the summary above GitHub's generated changelog.
+  Verify the summary and both download files on GitHub Releases.
 
 ## Licenses
 
