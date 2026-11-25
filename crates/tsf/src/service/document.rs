@@ -293,7 +293,11 @@ pub(super) fn refresh_candidates(
         // when it has: keep a showing list where it is and look again
         // shortly, then fall back to where the list was last shown.
         if st.window.is_none() {
-            st.window = make_window(this, Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
+            st.window = make_window(
+                this,
+                Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()),
+                st.opaque_candidates,
+            );
         }
         if let Some(w) = &st.window {
             st.relayout_tries += 1;
@@ -313,7 +317,7 @@ pub(super) fn refresh_candidates(
     st.relayout_tries = 0;
     let owner = owner.or_else(|| Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
     if st.window.is_none() {
-        st.window = make_window(this, owner);
+        st.window = make_window(this, owner, st.opaque_candidates);
     }
     if let Some(w) = &st.window {
         if let Some(owner) = owner {

@@ -15,6 +15,7 @@ pub(super) enum Origin {
     LongVowel,
     ReleasePhrase,
     Greeting,
+    CasualPhrase,
 }
 
 /// A word placed into the lattice in addition to the system dictionary.
@@ -97,6 +98,17 @@ fn spelled_out(reading: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Casual readings that are usually written as typed on their own.
+pub(super) fn casual_phrase(text: &str) -> Option<(&'static str, &'static str)> {
+    [("もうそろ", "そろそろ"), ("あーね", "ああ")]
+        .into_iter()
+        .find(|(reading, _)| {
+            text.strip_prefix(reading).is_some_and(|tail| {
+                tail.chars().all(|ch| matches!(ch, '、' | '。' | '！' | '？' | '…' | '!' | '?'))
+            })
+        })
 }
 
 impl Converter {
@@ -185,7 +197,40 @@ impl Converter {
         self.long_vowel_extras(text, &mut out);
         self.release_phrase_extra(text, &mut out);
         self.greeting_extra(text, &mut out);
+        self.casual_phrase_extra(text, &mut out);
         out
+    }
+
+    fn casual_phrase_extra(&self, text: &str, out: &mut Vec<Extra>) {
+        let Some((reading, reference)) = casual_phrase(text) else {
+            return;
+        };
+        // A registered or learned spelling can override the default.
+        if out.iter().any(|entry| {
+            entry.start == 0
+                && entry.end == reading.len()
+                && matches!(entry.origin, Origin::Learned | Origin::User)
+        }) {
+            return;
+        }
+        let Some(word) = self
+            .dict
+            .lookup(reference)
+            .into_iter()
+            .filter(|entry| entry.surface == reference)
+            .min_by_key(|entry| entry.cost)
+        else {
+            return;
+        };
+        out.push(Extra {
+            start: 0,
+            end: reading.len(),
+            lid: word.lid,
+            rid: word.rid,
+            cost: i32::from(word.cost).min(1500),
+            surface: reading.into(),
+            origin: Origin::CasualPhrase,
+        });
     }
 
     fn greeting_extra(&self, text: &str, out: &mut Vec<Extra>) {

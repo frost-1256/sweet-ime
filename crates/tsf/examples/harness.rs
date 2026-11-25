@@ -751,11 +751,19 @@ fn main() -> Result<()> {
         pump();
         {
             use windows::Win32::UI::HiDpi::GetDpiForWindow;
-            use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_LBUTTONUP};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GWL_EXSTYLE, GetWindowLongPtrW, IsWindowVisible, SendMessageW, WM_LBUTTONUP,
+                WS_EX_LAYERED,
+            };
             let hwnd = own_candidate_window().expect("candidate window in this process");
             let owner = windows::Win32::UI::WindowsAndMessaging::GetWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::GW_OWNER)
                 .unwrap_or_default();
             check("candidate window owner", format!("{:?}", owner.0), &format!("{:?}", app_hwnd.0), &mut fails);
+            if std::env::var_os("SWEET_TEST_SEARCH_HOST").is_some() {
+                let styles = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+                check("Search candidate window visible", IsWindowVisible(hwnd).as_bool().to_string(), "true", &mut fails);
+                check("Search candidate window is opaque", (styles & WS_EX_LAYERED.0 == 0).to_string(), "true", &mut fails);
+            }
             let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
             // Rows start after the padding and optional input line.
             let padding = if options.gaming_mode { 10.0 } else { 4.0 };

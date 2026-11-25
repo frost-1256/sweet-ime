@@ -157,6 +157,11 @@ impl Converter {
             self.convert(text, boundaries, 1)
         };
         if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
+            if let Some((reading, _)) = super::extras::casual_phrase(text)
+                && res.first().is_some_and(|candidate| candidate.surface().starts_with(reading))
+            {
+                return res;
+            }
             // After a version number, でたね is usually a release
             // announcement. Keep the lattice's release phrase when present.
             if super::release_phrase::follows_version(text, left_context)

@@ -37,8 +37,42 @@ esac
 
 /bin/mkdir -p "$methods"
 work="$methods/.sweet-ime-install"
-/bin/mkdir "$work" || fail "別のインストールが実行中か、一時フォルダーに書き込めません。"
 backup="$work/previous.app"
+# Keep the same lock inode across installs. The kernel releases the lock
+# when the last descriptor closes, including after a forced exit or reboot.
+exec 9>>"$methods/.sweet-ime-install.lock"
+/usr/bin/perl -MFcntl=:flock -e 'open(my $lock, ">&=9") && flock($lock, LOCK_EX | LOCK_NB) or exit 1' \
+    || fail "別のインストールが実行中か、ロックを取得できません。"
+
+plist_id() {
+    /usr/bin/plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist"
+}
+
+check_existing_app() {
+    [[ -d $1 && ! -L $1 ]] || fail "アプリ以外のファイルがあります: $1"
+    local id
+    id=$(plist_id "$1") || fail "既存のアプリの識別子を確認できません: $1"
+    case "$id" in
+        "$bundle_id"|io.github.sweetime.inputmethod) ;;
+        *) fail "別のアプリがあります: $1" ;;
+    esac
+}
+
+if [[ -e $target || -L $target ]]; then
+    check_existing_app "$target"
+fi
+if [[ -e $work || -L $work ]]; then
+    [[ -d $work && ! -L $work ]] || fail "一時フォルダーを確認できません: $work"
+    if [[ -e $backup || -L $backup ]]; then
+        check_existing_app "$backup"
+        if [[ ! -e $target ]]; then
+            /bin/mv "$backup" "$target"
+            printf '%s\n' '中断された更新から以前の Sweet IME を復元しました。'
+        fi
+    fi
+    /bin/rm -rf "$work"
+fi
+/bin/mkdir "$work"
 installed=false
 cleanup() {
     if [[ $installed == false && -e $backup ]]; then
@@ -52,19 +86,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-plist_id() {
-    /usr/bin/plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist"
-}
-
-if [[ -e $target || -L $target ]]; then
-    [[ -d $target && ! -L $target ]] || fail "インストール先に別のファイルがあります。"
-    installed_id=$(plist_id "$target") || fail "既存のアプリの識別子を確認できません。"
-    case "$installed_id" in
-        "$bundle_id"|io.github.sweetime.inputmethod) ;;
-        *) fail "インストール先に別のアプリがあります。" ;;
-    esac
-fi
 
 if [[ -z $source_bundle ]]; then
     if [[ -z $archive ]]; then

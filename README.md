@@ -88,6 +88,9 @@ add **Sweet IME** under Japanese in **System Settings → Keyboard → Text Inpu
 (Settings). For future updates, go to **情報 → アップデート** and select **更新する**
 when a new version is available. Your settings, history and models stay in
 their existing locations.
+If a v0.5.1 update was interrupted and cannot be retried in Settings, run
+the installer from the latest ZIP. It restores the previous app if it was
+moved aside, then installs the new version.
 
 You can also install or update from Terminal:
 

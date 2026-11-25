@@ -1749,3 +1749,24 @@ fn colloquial_long_vowels_stay_hiragana() {
     let candidates = c.segment_candidates("ちょーだい", 5);
     assert_eq!(candidates[..2], ["ちょーだい", "チョーダイ"]);
 }
+
+#[test]
+fn casual_reactions_keep_their_hiragana_spelling() {
+    let Some(c) = converter() else { return };
+    let c = c.with_reranker(Box::new(PickLast));
+    for (romaji, reading, katakana) in [
+        ("mousoro", "もうそろ", "もうソロ"),
+        ("a-ne", "あーね", "アーネ"),
+    ] {
+        assert_eq!(c.convert(reading, &[], 1)[0].surface(), reading);
+        assert_eq!(c.convert_best(reading, &[], "")[0].surface(), reading);
+        let with_punctuation = format!("{reading}。");
+        assert_eq!(c.convert_best(&with_punctuation, &[], "")[0].surface(), with_punctuation);
+        let mut s = Session::new();
+        type_str(&mut s, &c, romaji);
+        assert_eq!(s.preedit().text, reading, "{romaji}");
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, reading, "{romaji}");
+        assert!(c.convert(reading, &[], 12).iter().any(|item| item.surface() == katakana));
+    }
+}
