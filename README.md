@@ -268,8 +268,9 @@ Tap **abc** for a or flick left, up or down for b, c or 2. The letter keys
 also enter digits with a downward flick. Password fields always open QWERTY.
 
 Enable **変換 → Simejiクラウド変換** to look up kaomoji. While composing kana,
-tap **クラウド** in the candidate bar to send the reading to Simeji, then
-tap a result to commit it. The feature is off by default and unavailable in
+tap the cloud icon in the candidate bar to send the reading to Simeji and
+open the expanded list with the results. Tap a result to commit it.
+The feature is off by default and unavailable in
 password or private fields. [Simeji's privacy policy](https://simeji.me/privacy/)
 
 Use **テーマとフォント** to change the font for key labels, flick guides and

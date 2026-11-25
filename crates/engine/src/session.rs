@@ -425,14 +425,9 @@ impl Session {
         self.conv.is_some()
     }
 
-    /// Returns the current reading before explicit conversion, without any
-    /// preceding editor text or live-converted surface.
-    fn unconverted_reading(&self) -> Option<String> {
-        (self.conv.is_none() && !self.comp.literal && self.is_active()).then(|| self.comp.kana())
-    }
-
+    /// The original kana reading, including while the candidate list is open.
     pub fn simeji_reading(&self) -> Option<String> {
-        self.unconverted_reading().filter(|reading| {
+        (!self.comp.literal && self.is_active()).then(|| self.comp.kana()).filter(|reading| {
             (2..=32).contains(&reading.chars().count())
                 && reading.chars().all(|ch| matches!(ch, 'ぁ'..='ゖ' | 'ー'))
         })

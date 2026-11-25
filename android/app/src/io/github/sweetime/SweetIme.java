@@ -59,7 +59,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private View expandButton;
     private View clipboardButton;
     private View undoButton;
-    private TextView cloudButton;
+    private View cloudButton;
     private boolean cloudEnabled;
     private final ExecutorService cloudWorker = Executors.newSingleThreadExecutor();
     private Future<?> cloudLookup;
@@ -299,13 +299,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         toolbar.addView(panelTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
         undoButton = iconButton(() -> Icons.UNDO, "確定を取り消して読みに戻す", this::onUndo);
         toolbar.addView(undoButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        cloudButton = new TextView(this);
-        cloudButton.setTextSize(13);
-        cloudButton.setGravity(Gravity.CENTER);
-        cloudButton.setTextColor(theme.text);
-        cloudButton.setContentDescription("Simejiで顔文字を検索");
-        cloudButton.setOnClickListener(v -> requestCloud());
-        toolbar.addView(cloudButton, new LinearLayout.LayoutParams(dp(64), dp(48)));
+        cloudButton = iconButton(() -> Icons.CLOUD, "Simejiで顔文字を検索", this::requestCloud);
+        cloudButton.setVisibility(View.GONE);
         expandButton = iconButton(() -> candidatesExpanded ? Icons.COLLAPSE : Icons.EXPAND,
                 "候補を展開", () -> {
                     candidatesExpanded = !candidatesExpanded;
@@ -323,6 +318,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                     updatePanelVisibility();
                 });
         toolbar.addView(expandButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        toolbar.addView(cloudButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         clipboardButton = iconButton(() -> clipboardOpen || emojiOpen ? Icons.BACK : Icons.CLIPBOARD,
                 "クリップボード", () -> {
                     if (emojiOpen) {
@@ -402,7 +398,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         theme = Theme.of(this);
         inputRoot.setBackgroundColor(theme.background);
         panelTitle.setTextColor(theme.text);
-        cloudButton.setTextColor(theme.text);
+        cloudButton.invalidate();
         undoButton.invalidate();
         clipboardButton.invalidate();
         expandButton.invalidate();
@@ -694,7 +690,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     @Override
     public void onKey(int code) {
-        cancelCloud();
+        if (code != Native.KEY_SPACE) cancelCloud();
         finishEnter(pendingEnter, null);
         clearUndo();
         if (!english && engine()) {
@@ -912,15 +908,27 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
 
     private String cloudReading() {
         return cloudEnabled && !privateField && !english && composing && ctx != 0
-                && pendingEnter == null && !clipboardOpen && !emojiOpen && !candidatesExpanded
+                && pendingEnter == null && !clipboardOpen && !emojiOpen
                 ? Native.cloudReading(ctx) : null;
     }
 
     private void updateCloudButton() {
         if (cloudButton == null) return;
-        cloudButton.setVisibility(cloudReading() != null ? View.VISIBLE : View.GONE);
-        cloudButton.setEnabled(cloudLookup == null);
-        cloudButton.setText(cloudLookup == null ? "クラウド" : "検索中");
+        boolean visible = cloudReading() != null;
+        int visibility = visible ? View.VISIBLE : View.GONE;
+        if (cloudButton.getVisibility() != visibility) {
+            cloudButton.setVisibility(visibility);
+            int adjacentWidth = dp(visible ? 36 : 48);
+            for (View neighbor : new View[]{expandButton, clipboardButton}) {
+                ViewGroup.LayoutParams params = neighbor.getLayoutParams();
+                params.width = adjacentWidth;
+                neighbor.setLayoutParams(params);
+            }
+        }
+        boolean searching = cloudLookup != null;
+        cloudButton.setEnabled(!searching);
+        cloudButton.setAlpha(searching ? 0.5f : 1f);
+        cloudButton.setContentDescription(searching ? "Simejiで顔文字を検索中" : "Simejiで顔文字を検索");
     }
 
     private void cancelCloud() {
@@ -963,6 +971,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         String snapshot = Native.applyCloud(ctx, reading, result);
         if (snapshot != null) {
             Native.State state = Native.State.parse(snapshot);
+            candidatesExpanded = true;
             showCandidates(state.candidates, state.selected, state.suggestions);
         }
     }
@@ -970,10 +979,17 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private View iconButton(java.util.function.IntSupplier icon, String label, Runnable action) {
         Icons icons = new Icons();
         android.graphics.RectF bounds = new android.graphics.RectF();
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         View button = new View(this) {
             @Override protected void onDraw(android.graphics.Canvas canvas) {
                 bounds.set(0, 0, getWidth(), getHeight());
-                icons.draw(canvas, icon.getAsInt(), bounds, dp(22), theme.subText);
+                int glyph = icon.getAsInt();
+                if (glyph == Icons.CLOUD) {
+                    paint.setColor(theme.specialKey);
+                    canvas.drawRoundRect(bounds.centerX() - dp(14), bounds.centerY() - dp(18),
+                            bounds.centerX() + dp(14), bounds.centerY() + dp(18), dp(12), dp(12), paint);
+                }
+                icons.draw(canvas, glyph, bounds, dp(22), glyph == Icons.CLOUD ? theme.text : theme.subText);
             }
 
             @Override public CharSequence getAccessibilityClassName() {

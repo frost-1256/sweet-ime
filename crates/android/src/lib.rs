@@ -218,7 +218,9 @@ impl Context {
         if !self.session.handle(conv, key) {
             return None;
         }
-        self.cloud.clear();
+        if key != Key::Space {
+            self.cloud.clear();
+        }
         // A touch keyboard shows the candidates as soon as it converts.
         self.session.open_candidates(conv);
         Some(self.snapshot())
@@ -409,10 +411,10 @@ impl Context {
             .collect();
         let (kind, selected, session_items) = match self.session.candidates() {
             Some(list) => match list.kind {
-                ListKind::Conversion => (0, list.selected as i64, list.items),
-                ListKind::Suggestion => (1, -1, list.items),
+                ListKind::Conversion => (0, Some(list.selected), list.items),
+                ListKind::Suggestion => (1, None, list.items),
             },
-            None => (1, -1, Vec::new()),
+            None => (1, None, Vec::new()),
         };
         self.listed = (0..session_items.len())
             .filter(|&i| {
@@ -426,6 +428,10 @@ impl Context {
             .chain(&self.cloud)
             .chain(self.listed.iter().map(|&i| &session_items[i]))
             .collect();
+        let selected = selected
+            .and_then(|index| session_items.get(index))
+            .and_then(|item| items.iter().position(|shown| *shown == item))
+            .map_or(-1, |index| index as i64);
         let clean = |s: &str| s.replace([FIELD, ITEM], "");
         let items: Vec<String> = items.iter().map(|s| clean(s)).collect();
         [
@@ -464,8 +470,22 @@ mod tests {
         assert!(context.apply_cloud("かおう", "(^^)").is_none());
         let snapshot = context.apply_cloud("かお", "(^^)\u{1e}(^^)").unwrap();
         assert_eq!(snapshot.split(FIELD).nth(6), Some("かお\u{1e}(^^)"));
-        let snapshot = context.select(1);
-        assert_eq!(snapshot.split(FIELD).next(), Some("(^^)"));
+
+        let snapshot = context.key(KEY_EXPAND).unwrap();
+        let fields: Vec<_> = snapshot.split(FIELD).collect();
+        let items: Vec<_> = fields[6].split(ITEM).collect();
+        assert_eq!(fields[4], "0");
+        assert_eq!(items[0], "(^^)");
+        let selected: usize = fields[5].parse().unwrap();
+        assert_eq!(items[selected], fields[1]);
+
+        // A request can finish after the normal candidate list opens.
+        let snapshot = context.apply_cloud("かお", "(・ω・)").unwrap();
+        assert_eq!(snapshot.split(FIELD).nth(6).unwrap().split(ITEM).next(), Some("(・ω・)"));
+        let snapshot = context.key(KEY_SPACE).unwrap();
+        assert!(snapshot.split(FIELD).nth(6).unwrap().contains("(・ω・)"));
+        let snapshot = context.select(0);
+        assert_eq!(snapshot.split(FIELD).next(), Some("(・ω・)"));
         for ch in "かお".chars() {
             context.key(ch as i32).unwrap();
         }
