@@ -61,3 +61,12 @@ jobs:
           ditto -x -k SweetIME-macOS.zip .
           codesign --verify --deep --strict "Sweet IME.app"
           "Sweet IME.app/Contents/MacOS/SweetIME" --smoke-test
+      - name: Verify native candidate rows and capture the panel
+        if: matrix.runner == 'macos-15'
+        run: '"Sweet IME.app/Contents/MacOS/SweetIME" --candidate-panel-preview macOS-candidates.png'
+      - uses: actions/upload-artifact@v7
+        if: matrix.runner == 'macos-15'
+        with:
+          name: macOS-candidate-panel
+          path: macOS-candidates.png
+          if-no-files-found: error
