@@ -296,7 +296,7 @@ pub(super) fn refresh_candidates(
             st.window = make_window(
                 this,
                 Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()),
-                st.opaque_candidates,
+                st.bitmap_candidates,
             );
         }
         if let Some(w) = &st.window {
@@ -317,7 +317,7 @@ pub(super) fn refresh_candidates(
     st.relayout_tries = 0;
     let owner = owner.or_else(|| Some(unsafe { GetFocus() }).filter(|h| !h.is_invalid()));
     if st.window.is_none() {
-        st.window = make_window(this, owner, st.opaque_candidates);
+        st.window = make_window(this, owner, st.bitmap_candidates);
     }
     if let Some(w) = &st.window {
         if let Some(owner) = owner {

@@ -10,9 +10,11 @@ use std::time::Instant;
 
 use sweet_engine::theme::Rgb;
 use sweet_engine::{CandidateList, ListKind};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, E_FAIL, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_GRADIENT_STOP,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_GRADIENT_STOP,
     D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
@@ -20,8 +22,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
-    D2D1CreateFactory, ID2D1Factory,
-    ID2D1HwndRenderTarget, ID2D1LinearGradientBrush, ID2D1StrokeStyle,
+    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1HwndRenderTarget,
+    ID2D1LinearGradientBrush, ID2D1RenderTarget, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -34,8 +36,10 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, InvalidateRect, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromPoint, PAINTSTRUCT, ValidateRect,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ,
+    InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, PAINTSTRUCT,
+    SelectObject, ValidateRect,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -44,9 +48,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
     PostMessageW, SetTimer, SetWindowLongPtrW, GWLP_HWNDPARENT, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    ULW_OPAQUE, UpdateLayeredWindow, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
-use windows_core::{HSTRING, PCWSTR, Result, w};
+use windows_core::{Error, HSTRING, Interface, PCWSTR, Result, w};
 
 const CLASS_NAME: PCWSTR = w!("SweetImeCandidateWindow");
 const TIMER_ID: usize = 1;
@@ -191,8 +196,8 @@ fn palette() -> Palette {
 struct State {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
-    target: Option<ID2D1HwndRenderTarget>,
-    opaque: bool,
+    target: Option<RenderBackend>,
+    bitmap_popup: bool,
     format: IDWriteTextFormat,
     font_family: String,
     small: IDWriteTextFormat,
@@ -347,18 +352,12 @@ impl CandidateWindow {
     /// text is in). Owned windows stay above their owner, including in
     /// immersive hosts such as Windows Search, where an unowned topmost
     /// window would end up behind the host's UI.
-    pub fn new(owner: Option<HWND>, opaque: bool) -> Result<Self> {
+    pub fn new(owner: Option<HWND>, bitmap_popup: bool) -> Result<Self> {
         register_class();
         let owner = owner.map(root_owner);
         unsafe {
-            // The Windows Search compositor can show a black surface for
-            // a layered Direct2D popup. Use an ordinary owned popup there.
-            let mut style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-            if !opaque {
-                style |= WS_EX_LAYERED;
-            }
             let hwnd = CreateWindowExW(
-                style,
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 CLASS_NAME,
                 PCWSTR::null(),
                 WS_POPUP,
@@ -390,7 +389,7 @@ impl CandidateWindow {
                 d2d,
                 dwrite,
                 target: None,
-                opaque,
+                bitmap_popup,
                 format,
                 font_family: String::new(),
                 small,
@@ -540,7 +539,7 @@ impl CandidateWindow {
             let mut fade = false;
             if !was_visible {
                 st.pal = palette();
-                fade = !st.opaque
+                fade = !st.bitmap_popup
                     && st.hidden_at.is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
                 st.shown_at = if fade {
                     Instant::now()
@@ -571,10 +570,12 @@ impl CandidateWindow {
                 (padding + text_offset) * st.scale,
                 was_visible,
                 fade,
-                st.opaque,
+                st.bitmap_popup,
             )
         });
-        let Some((w, h, text_x, was_visible, fade, opaque)) = geom else { return };
+        let Some((w, h, text_x, was_visible, fade, bitmap_popup)) = geom else {
+            return;
+        };
         unsafe {
             let _ = KillTimer(Some(self.hwnd), HIDE_TIMER_ID);
             // Align candidate text with the composition text.
@@ -590,7 +591,7 @@ impl CandidateWindow {
                 x = x.clamp(wa.left, (wa.right - w).max(wa.left));
                 y = y.max(wa.top);
             }
-            if !was_visible && !opaque {
+            if !was_visible && !bitmap_popup {
                 let alpha = if fade { 0 } else { 255 };
                 let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
             }
@@ -694,7 +695,7 @@ struct RainbowBorder {
     glint: ID2D1LinearGradientBrush,
 }
 
-fn make_rainbow_border(rt: &ID2D1HwndRenderTarget) -> Result<RainbowBorder> {
+fn make_rainbow_border(rt: &ID2D1RenderTarget) -> Result<RainbowBorder> {
     // Match the first and last color so the repeating gradient has no seam.
     let colors = [
         (255, 20, 103),
@@ -740,7 +741,7 @@ fn make_rainbow_border(rt: &ID2D1HwndRenderTarget) -> Result<RainbowBorder> {
 }
 
 fn draw_rainbow_border(
-    rt: &ID2D1HwndRenderTarget,
+    rt: &ID2D1RenderTarget,
     brushes: &RainbowBorder,
     width: f32,
     height: f32,
@@ -787,27 +788,140 @@ fn draw_rainbow_border(
     }
 }
 
+enum RenderBackend {
+    Window(ID2D1HwndRenderTarget),
+    Bitmap(ID2D1DCRenderTarget, LayeredBitmap),
+}
+
+/// The Search compositor can leave an HWND render target blank. An owned
+/// layered popup can receive the complete candidate image in one update.
+struct LayeredBitmap {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    size: D2D_SIZE_U,
+}
+
+impl LayeredBitmap {
+    fn new(size: D2D_SIZE_U) -> Result<Self> {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: size.width as i32,
+                biHeight: -(size.height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                return Err(Error::new(
+                    E_FAIL,
+                    "Could not create the candidate bitmap DC",
+                ));
+            }
+            let mut bits = std::ptr::null_mut();
+            let bitmap = match CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
+            {
+                Ok(bitmap) => bitmap,
+                Err(error) => {
+                    let _ = DeleteDC(dc);
+                    return Err(error);
+                }
+            };
+            let previous = SelectObject(dc, HGDIOBJ(bitmap.0));
+            if previous.is_invalid() {
+                let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                let _ = DeleteDC(dc);
+                return Err(Error::new(E_FAIL, "Could not select the candidate bitmap"));
+            }
+            Ok(Self {
+                dc,
+                bitmap,
+                previous,
+                size,
+            })
+        }
+    }
+
+    fn present(&self, hwnd: HWND) -> Result<()> {
+        let size = SIZE {
+            cx: self.size.width as i32,
+            cy: self.size.height as i32,
+        };
+        unsafe {
+            UpdateLayeredWindow(
+                hwnd,
+                None,
+                None,
+                Some(&size),
+                Some(self.dc),
+                Some(&POINT::default()),
+                COLORREF(0),
+                None,
+                ULW_OPAQUE,
+            )
+        }
+    }
+}
+
+impl Drop for LayeredBitmap {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.previous);
+            let _ = DeleteObject(HGDIOBJ(self.bitmap.0));
+            let _ = DeleteDC(self.dc);
+        }
+    }
+}
+
 fn render(hwnd: HWND, st: &mut State) -> Result<()> {
     unsafe {
         let mut rc = RECT::default();
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc);
+        windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc)?;
         let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
+        if size.width == 0 || size.height == 0 {
+            return Ok(());
+        }
+        if matches!(&st.target, Some(RenderBackend::Bitmap(_, bitmap)) if bitmap.size != size) {
+            st.rainbow_border = None;
+            st.target = None;
+        }
         if st.target.is_none() {
             let mut props = D2D1_RENDER_TARGET_PROPERTIES {
                 pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_UNKNOWN },
                 ..Default::default()
             };
-            if st.opaque {
+            st.target = Some(if st.bitmap_popup {
                 props.r#type = D2D1_RENDER_TARGET_TYPE_SOFTWARE;
-            }
-            let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY };
-            st.target = Some(st.d2d.CreateHwndRenderTarget(&props, &hprops)?);
+                props.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
+                let bitmap = LayeredBitmap::new(size)?;
+                let target = st.d2d.CreateDCRenderTarget(&props)?;
+                target.BindDC(bitmap.dc, &rc)?;
+                RenderBackend::Bitmap(target, bitmap)
+            } else {
+                let hprops = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                    hwnd,
+                    pixelSize: size,
+                    presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY,
+                };
+                RenderBackend::Window(st.d2d.CreateHwndRenderTarget(&props, &hprops)?)
+            });
         }
-        let rt = st.target.clone().unwrap();
+        let rt: ID2D1RenderTarget = match st.target.as_ref().unwrap() {
+            RenderBackend::Window(target) => {
+                target.Resize(&size)?;
+                target.cast()?
+            }
+            RenderBackend::Bitmap(target, _) => target.cast()?,
+        };
         if st.gaming_mode && st.rainbow_border.is_none() {
             st.rainbow_border = make_rainbow_border(&rt).ok();
         }
-        rt.Resize(&size)?;
         let dpi = 96.0 * st.scale;
         rt.SetDpi(dpi, dpi);
         rt.BeginDraw();
@@ -918,8 +1032,9 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             st.rainbow_border = None;
             return Err(e);
         }
-        // Fade-in.
-        if !st.opaque {
+        if let Some(RenderBackend::Bitmap(_, bitmap)) = &st.target {
+            bitmap.present(hwnd)?;
+        } else {
             let t = (st.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), (255.0 * t) as u8, LWA_ALPHA);
         }
@@ -944,7 +1059,9 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 BeginPaint(hwnd, &mut ps);
                 if GetWindowLongPtrW(hwnd, GWLP_USERDATA) != 0 {
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        with_state(hwnd, |st| render(hwnd, st));
+                        if let Some(Err(error)) = with_state(hwnd, |st| render(hwnd, st)) {
+                            crate::debug_log!("render candidate window: {error}");
+                        }
                     }));
                 }
                 let _ = EndPaint(hwnd, &ps);
@@ -982,7 +1099,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             WM_APP_WARM_UP => {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     with_state(hwnd, |st| {
-                        if st.target.is_none() {
+                        if st.target.is_none() && !st.bitmap_popup {
                             let _ = render(hwnd, st);
                         }
                     });
@@ -1027,6 +1144,43 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitmap_popup_draws_candidate_text_and_presents_it() {
+        use windows::Win32::Graphics::Gdi::GetPixel;
+
+        let popup = CandidateWindow::new(None, true).unwrap();
+        let candidates = CandidateList {
+            items: vec!["候補".into()],
+            selected: 0,
+            page_size: 9,
+            kind: ListKind::Suggestion,
+        };
+        let anchor = RECT {
+            left: 80,
+            top: 80,
+            right: 120,
+            bottom: 100,
+        };
+        popup.show(Some(&candidates), None, anchor, false, "");
+        with_state(popup.hwnd, |state| {
+            render(popup.hwnd, state).unwrap();
+            let Some(RenderBackend::Bitmap(_, bitmap)) = &state.target else {
+                panic!("expected a bitmap render target");
+            };
+            let background = unsafe { GetPixel(bitmap.dc, 0, 0) };
+            assert_ne!(background, COLORREF(u32::MAX));
+            let top = (state.padding() * state.scale) as i32;
+            let bottom = ((state.padding() + ROW_H) * state.scale) as i32;
+            assert!((top..bottom).any(|y| {
+                (0..bitmap.size.width as i32).any(|x| {
+                    let color = unsafe { GetPixel(bitmap.dc, x, y) };
+                    color != background && color != COLORREF(u32::MAX)
+                })
+            }));
+        })
+        .unwrap();
+    }
 
     #[test]
     fn uses_installed_candidate_font_and_falls_back_when_missing() {
