@@ -7,16 +7,19 @@
 #
 # model:  Miwa-Keita/zenz-v3.1-xsmall (default, ~100 MB, fastest) or
 #         Miwa-Keita/zenz-v3.1-small (~380 MB, more accurate, ~4x slower)
-# output: $XDG_DATA_HOME/sweet-ime/zenz.swz (picked up by the IME on the next
-#         start of fcitx5)
+# output: the Sweet IME data directory for the current platform
 set -eu
 
 model=${1:-Miwa-Keita/zenz-v3.1-xsmall}
-out=${2:-${XDG_DATA_HOME:-$HOME/.local/share}/sweet-ime/zenz.swz}
+case $(uname -s) in
+    Darwin) data="$HOME/Library/Application Support/SweetIME" ;;
+    *) data="${XDG_DATA_HOME:-$HOME/.local/share}/sweet-ime" ;;
+esac
+out=${2:-"$data/zenz.swz"}
 
 here=$(cd "$(dirname "$0")" && pwd)
 tool=
-for t in "$here/../../bin/sweet-zenz-pack" "$here/../target/release/sweet-zenz-pack" "$(command -v sweet-zenz-pack || true)"; do
+for t in "$here/../MacOS/sweet-zenz-pack" "$here/../../bin/sweet-zenz-pack" "$here/../target/release/sweet-zenz-pack" "$(command -v sweet-zenz-pack || true)"; do
     if [ -n "$t" ] && [ -x "$t" ]; then
         tool=$t
         break

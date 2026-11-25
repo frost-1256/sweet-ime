@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>ja</string>
+    <key>CFBundleExecutable</key><string>SweetIME</string>
+    <key>CFBundleIdentifier</key><string>io.github.sweetime.inputmethod</string>
+    <key>CFBundleName</key><string>Sweet IME</string>
+    <key>CFBundleDisplayName</key><string>Sweet IME</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>SweetIME.icns</string>
+    <key>CFBundleVersion</key><string>0</string>
+    <key>CFBundleShortVersionString</key><string>0</string>
+    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSBackgroundOnly</key><true/>
+    <key>InputMethodConnectionName</key><string>io.github.sweetime.inputmethod_Connection</string>
+    <key>InputMethodServerControllerClass</key><string>SweetInputController</string>
+    <key>TISInputSourceID</key><string>io.github.sweetime.inputmethod</string>
+    <key>TISIntendedLanguage</key><string>ja</string>
+    <key>tsInputMethodIconFileKey</key><string>SweetIME.icns</string>
+    <key>tsInputMethodCharacterRepertoireKey</key>
+    <array><string>Hira</string><string>Kana</string><string>Hani</string><string>Latn</string></array>
+</dict>
+</plist>

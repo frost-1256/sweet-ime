@@ -47,13 +47,14 @@ const GET_ZENZ: &str = "get-zenz.ps1";
 const GET_ZENZ: &str = "get-zenz.sh";
 
 /// The model download script: next to this program (Windows install), in
-/// `../share/sweet-ime` (Linux install) or in scripts/ (development).
+/// the app resources (macOS), `../share/sweet-ime` (Linux), or in scripts/.
 fn get_zenz_script() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     [
         dir.join(GET_ZENZ),
         dir.join("../share/sweet-ime").join(GET_ZENZ),
+        dir.join("../Resources").join(GET_ZENZ),
         dir.join("../../scripts").join(GET_ZENZ),
     ]
     .into_iter()
@@ -186,6 +187,9 @@ impl App {
                         });
                     }
                     Some(true) => {
+                        #[cfg(target_os = "macos")]
+                        ui.label("完了しました。次回のログインから使われます。");
+                        #[cfg(not(target_os = "macos"))]
                         ui.label("完了しました。アプリを切り替えると使われます。");
                     }
                     Some(false) => {

@@ -57,9 +57,18 @@ fn system_fonts() -> Vec<(String, String, u32)> {
     ]
 }
 
+#[cfg(target_os = "macos")]
+fn system_fonts() -> Vec<(String, String, u32)> {
+    vec![(
+        "hiragino".into(),
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc".into(),
+        0,
+    )]
+}
+
 /// Japanese UI fonts to try, as (name, file, face index): the best match
 /// fontconfig has that covers Japanese.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn system_fonts() -> Vec<(String, String, u32)> {
     let out = std::process::Command::new("fc-match")
         .args(["-s", "-f", "%{file}\t%{index}\t%{lang}\n", "sans-serif:lang=ja"])

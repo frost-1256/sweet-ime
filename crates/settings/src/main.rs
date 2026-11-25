@@ -8,6 +8,7 @@
 
 mod apps_page;
 mod dict_page;
+#[cfg(not(target_os = "macos"))]
 mod fcitx_theme;
 mod keys_page;
 mod learning_page;
@@ -15,8 +16,11 @@ mod neural_page;
 mod reports_page;
 #[cfg(windows)]
 mod single_instance;
+#[cfg(not(target_os = "macos"))]
 mod theme_page;
+#[cfg(not(target_os = "macos"))]
 mod update;
+#[cfg(not(target_os = "macos"))]
 mod update_ui;
 
 use eframe::egui::{self, RichText, Vec2};
@@ -27,11 +31,13 @@ use sweet_ui::eframe;
 use sweet_ui::{card, card_frame, toggle};
 
 fn main() -> eframe::Result<()> {
+    #[cfg(not(target_os = "macos"))]
     if std::env::args().any(|a| a == "--check-update") {
         return update_ui::check_at_sign_in();
     }
     // Packaging: `--write-fcitx-themes <dir>` writes every fcitx5 theme.
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(not(target_os = "macos"))]
     if let Some(i) = args.iter().position(|a| a == "--write-fcitx-themes") {
         let dir = args.get(i + 1).expect("--write-fcitx-themes <dir>");
         fcitx_theme::write_themes(std::path::Path::new(dir), &fcitx_theme::all_themes())
@@ -68,6 +74,7 @@ enum Page {
     Input,
     Keys,
     Apps,
+    #[cfg(not(target_os = "macos"))]
     Theme,
     Neural,
     Learning,
@@ -80,14 +87,17 @@ impl Page {
     const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Apps, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
     /// Elsewhere the input method framework picks the program's mode, and
     /// the theme is written as an fcitx5 theme.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
+    #[cfg(target_os = "macos")]
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
 
     fn from_arg(page: Option<&str>) -> Self {
         match page {
             Some("neural") => Self::Neural,
             Some("keys") => Self::Keys,
             Some("apps") => Self::Apps,
+            #[cfg(not(target_os = "macos"))]
             Some("theme") => Self::Theme,
             Some("learning") => Self::Learning,
             Some("dictionary") => Self::Dictionary,
@@ -101,6 +111,7 @@ impl Page {
             Page::Input => "入力",
             Page::Keys => "キー",
             Page::Apps => "アプリ",
+            #[cfg(not(target_os = "macos"))]
             Page::Theme => "テーマ",
             Page::Neural => "AI 変換",
             Page::Learning => "学習",
@@ -126,6 +137,7 @@ struct App {
     apps: apps_page::AppsPage,
     dict: dict_page::DictPage,
     reports: reports_page::ReportsSection,
+    #[cfg(not(target_os = "macos"))]
     updater: update::Updater,
 }
 
@@ -137,10 +149,14 @@ impl App {
         sweet_ui::setup(&cc.egui_ctx);
         let history = paths::history_file().map(UserHistory::with_file);
         let opts = paths::load_options();
-        let mut updater = update::Updater::new();
-        if opts.update_check {
-            updater.check(&cc.egui_ctx);
-        }
+        #[cfg(not(target_os = "macos"))]
+        let updater = {
+            let mut updater = update::Updater::new();
+            if opts.update_check {
+                updater.check(&cc.egui_ctx);
+            }
+            updater
+        };
         let mut app = Self {
             page,
             #[cfg(windows)]
@@ -157,6 +173,7 @@ impl App {
             apps: apps_page::AppsPage::new(),
             dict: dict_page::DictPage::new(),
             reports: reports_page::ReportsSection::new(),
+            #[cfg(not(target_os = "macos"))]
             updater,
         };
         app.reload_history();
@@ -188,7 +205,9 @@ impl App {
 fn open_folder(dir: &std::path::Path) {
     #[cfg(windows)]
     let opener = "explorer.exe";
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(any(windows, target_os = "macos")))]
     let opener = "xdg-open";
     let _ = std::process::Command::new(opener).arg(dir).spawn();
 }
@@ -199,10 +218,13 @@ impl eframe::App for App {
         if let Some(page) = self.activation.take_page() {
             self.select_page(page);
         }
-        self.updater.poll(ui.ctx());
-        if matches!(self.updater.state, update::State::Launched) {
-            // Let the installer replace this program.
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.updater.poll(ui.ctx());
+            if matches!(self.updater.state, update::State::Launched) {
+                // Let the installer replace this program.
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
         if let Some(download) = &mut self.download {
             download.poll();
@@ -225,6 +247,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(14.0);
+                #[cfg(not(target_os = "macos"))]
                 if self.page != Page::About {
                     update_ui::banner(ui, &mut self.updater);
                 }
@@ -234,6 +257,7 @@ impl eframe::App for App {
                     Page::Input => self.input_page(ui),
                     Page::Keys => self.keys.ui(ui, &mut self.status),
                     Page::Apps => self.apps.ui(ui, &mut self.status),
+                    #[cfg(not(target_os = "macos"))]
                     Page::Theme => {
                         if theme_page::ui(ui, &mut self.opts.theme) {
                             self.save();
@@ -327,6 +351,7 @@ impl App {
 impl App {
 fn about_page(&mut self, ui: &mut egui::Ui) {
     card(ui, "Sweet IME", concat!("バージョン ", env!("CARGO_PKG_VERSION")), |_| {});
+    #[cfg(not(target_os = "macos"))]
     if update_ui::section(ui, &mut self.updater, &mut self.opts.update_check) {
         self.save();
     }
@@ -339,7 +364,7 @@ fn about_page(&mut self, ui: &mut egui::Ui) {
         ui.label("AI 変換モデル(任意・別途ダウンロード): zenz by Miwa Keita, CC BY-SA 4.0");
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
         let licenses = exe_dir.and_then(|d| {
-            [d.join("licenses"), d.join("../share/sweet-ime/licenses")].into_iter().find(|p| p.exists())
+            [d.join("licenses"), d.join("../share/sweet-ime/licenses"), d.join("../Resources/licenses")].into_iter().find(|p| p.exists())
         });
         if let Some(dir) = licenses {
             if ui.button("ライセンス文書を開く").clicked() {

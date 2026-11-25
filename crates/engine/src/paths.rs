@@ -8,7 +8,7 @@ fn env_dir(var: &str) -> Option<PathBuf> {
 }
 
 /// `$var/sweet-ime`, or `$HOME/<fallback>/sweet-ime` (XDG base directories).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     let base = std::env::var_os(var)
         .map(PathBuf::from)
@@ -18,20 +18,25 @@ fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
 }
 
 /// Settings directory: `%APPDATA%\SweetIME` on Windows,
-/// `$XDG_CONFIG_HOME/sweet-ime` elsewhere.
+/// `~/Library/Application Support/SweetIME` on macOS, XDG elsewhere.
 pub fn config_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     return env_dir("APPDATA");
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    return std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Application Support/SweetIME"));
+    #[cfg(not(any(windows, target_os = "macos")))]
     return xdg_dir("XDG_CONFIG_HOME", ".config");
 }
 
 /// Directory for large per-user data (the neural model):
-/// `%LOCALAPPDATA%\SweetIME` on Windows, `$XDG_DATA_HOME/sweet-ime` elsewhere.
+/// `%LOCALAPPDATA%\SweetIME` on Windows, the settings directory on macOS, XDG elsewhere.
 pub fn data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     return env_dir("LOCALAPPDATA");
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    return config_dir();
+    #[cfg(not(any(windows, target_os = "macos")))]
     return xdg_dir("XDG_DATA_HOME", ".local/share");
 }
 
