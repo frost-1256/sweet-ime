@@ -1757,6 +1757,7 @@ fn casual_reactions_keep_their_hiragana_spelling() {
     for (romaji, reading, katakana) in [
         ("mousoro", "もうそろ", "もうソロ"),
         ("a-ne", "あーね", "アーネ"),
+        ("ryo", "りょ", "リョ"),
     ] {
         assert_eq!(c.convert(reading, &[], 1)[0].surface(), reading);
         assert_eq!(c.convert_best(reading, &[], "")[0].surface(), reading);

@@ -102,7 +102,7 @@ fn spelled_out(reading: &str) -> Vec<String> {
 
 /// Casual readings that are usually written as typed on their own.
 pub(super) fn casual_phrase(text: &str) -> Option<(&'static str, &'static str)> {
-    [("もうそろ", "そろそろ"), ("あーね", "ああ")]
+    [("もうそろ", "そろそろ"), ("あーね", "ああ"), ("りょ", "ああ")]
         .into_iter()
         .find(|(reading, _)| {
             text.strip_prefix(reading).is_some_and(|tail| {
