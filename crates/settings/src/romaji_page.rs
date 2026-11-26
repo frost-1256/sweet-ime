@@ -34,6 +34,26 @@ impl RomajiPage {
     }
 
     fn save(&self) -> (String, bool) {
+        let invalid = self
+            .rules
+            .iter()
+            .filter(|r| romaji::validate_rule(r).is_some())
+            .count();
+        if invalid > 0 {
+            return (
+                format!(
+                    "使えない行が {invalid} 件あるため保存していません。修正するか削除してください。"
+                ),
+                false,
+            );
+        }
+        if self.rules.is_empty() {
+            return (
+                "行が 1 件もないため保存していません。初期設定に戻すか行を追加してください。"
+                    .into(),
+                false,
+            );
+        }
         match paths::save_romaji_rules(&self.rules) {
             Ok(()) => (
                 "保存しました。アプリを切り替えると反映されます。".into(),
@@ -66,7 +86,6 @@ impl RomajiPage {
             if ui.add(sweet_ui::primary_button("行を追加")).clicked() {
                 self.rules.insert(0, Rule::default());
                 self.filter.clear();
-                changed = true;
             }
             if self.confirm_reset {
                 ui.label("表を初期設定に戻しますか?");
@@ -159,7 +178,14 @@ impl RomajiPage {
                                     .desired_width(width);
                                 changed |= ui.add(edit).changed();
                             }
-                            if duplicate {
+                            if let Some(reason) = romaji::validate_rule(r) {
+                                ui.label(
+                                    RichText::new("無効")
+                                        .small()
+                                        .color(ui.visuals().error_fg_color),
+                                )
+                                .on_hover_text(reason);
+                            } else if duplicate {
                                 ui.label(
                                     RichText::new("重複")
                                         .small()
@@ -235,8 +261,13 @@ impl RomajiPage {
                     });
                 }
                 if ui.add_enabled(!path.is_empty(), egui::Button::new("エクスポート")).clicked() {
+                    let valid_count = self
+                        .rules
+                        .iter()
+                        .filter(|r| romaji::validate_rule(r).is_none())
+                        .count();
                     *status = Some(match std::fs::write(&path, romaji::format_rules(&self.rules)) {
-                        Ok(()) => (format!("{} 行を書き出しました。", self.rules.iter().filter(|r| !r.input.is_empty()).count()), true),
+                        Ok(()) => (format!("{valid_count} 行を書き出しました。"), true),
                         Err(e) => (format!("書き出せませんでした: {e}"), false),
                     });
                 }

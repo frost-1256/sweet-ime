@@ -6,3 +6,5 @@
 あん	あん	1000
 # 給料日 is a common noun and should stay intact after a date expression.
 きゅうりょうび	給料日	-1700
+# 歌詞 should win over 化+し for standalone かし.
+かし	歌詞	-700

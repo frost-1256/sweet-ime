@@ -95,9 +95,10 @@ fn saving_a_table_over_the_limit_keeps_the_saved_one() {
 
     let small = vec![Rule::new("ca", "か", "")];
     save_romaji_rules(&small).unwrap();
-    // Two-byte-per-character UTF-16 text that grows to three bytes in UTF-8.
-    let row = Rule::new("ka", &"漢".repeat(1000), "");
-    let large = vec![row; (romaji::MAX_TABLE_BYTES as usize / 3000) + 1];
+    // Valid rows whose combined UTF-8 size exceeds MAX_TABLE_BYTES.
+    let row = Rule::new("ka", &"漢".repeat(romaji::MAX_OUTPUT_CHARS), "");
+    let row_bytes = romaji::format_rules(std::slice::from_ref(&row)).len();
+    let large = vec![row; (romaji::MAX_TABLE_BYTES as usize / row_bytes) + 1];
     assert!(save_romaji_rules(&large).is_err());
     assert_eq!(load_romaji_rules().unwrap(), Some(small));
     let leftovers: Vec<_> = std::fs::read_dir(romaji_table_file().unwrap().parent().unwrap())

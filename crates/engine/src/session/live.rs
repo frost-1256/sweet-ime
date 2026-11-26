@@ -265,6 +265,17 @@ impl Session {
                     }
                 }
             }
+            // When live conversion turns hiragana into kanji, keep the plain
+            // hiragana reading available in suggestions so users can pick it directly.
+            if !reading.is_empty()
+                && shown != reading
+                && !c.suggestions.iter().any(|s| s == reading)
+            {
+                if c.suggestions.len() >= SUGGESTION_LIMIT {
+                    c.suggestions.pop();
+                }
+                c.suggestions.push(reading.to_string());
+            }
         }
     }
 }

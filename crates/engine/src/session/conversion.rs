@@ -232,6 +232,7 @@ impl Session {
             let cv = self.conv.as_ref().unwrap();
             self.special_candidates(&cv.segs[cv.focus].reading)
         };
+        let page_size = self.page_size.max(1);
         let cv = self.conv.as_mut().unwrap();
         let s = &mut cv.segs[cv.focus];
         if s.expanded {
@@ -256,6 +257,31 @@ impl Session {
             }
         }
         conv.append_exact_candidates(&s.reading, &mut s.cands);
+        // Keep the plain reading reachable on page 1 even when many homophones
+        // or special candidates precede it.
+        if !s.reading.is_empty() {
+            let target = (page_size - 1).min(6).min(s.cands.len());
+            match s.cands.iter().position(|c| c == &s.reading) {
+                Some(idx) if idx >= page_size => {
+                    let plain = s.cands.remove(idx);
+                    s.cands.insert(target, plain);
+                    s.selected = if s.selected == idx {
+                        target
+                    } else if (target..idx).contains(&s.selected) {
+                        s.selected + 1
+                    } else {
+                        s.selected
+                    };
+                }
+                None => {
+                    s.cands.insert(target, s.reading.clone());
+                    if s.selected >= target {
+                        s.selected += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     pub(super) fn commit_conversion(&mut self, conv: &Converter) {

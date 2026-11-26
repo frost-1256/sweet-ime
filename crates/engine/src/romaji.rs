@@ -102,13 +102,43 @@ pub fn default_rules() -> Vec<Rule> {
 /// stores every prefix of every input, so long keys would cost memory.
 pub const MAX_KEY_CHARS: usize = 32;
 
+/// Longest `output` a table row may have, in characters. Prevents a single
+/// keystroke from expanding into an unbounded preedit string.
+pub const MAX_OUTPUT_CHARS: usize = 64;
+
 /// Largest romaji table file that is read, in bytes.
 pub const MAX_TABLE_BYTES: u64 = 1 << 20;
 
+/// Returns a short Japanese reason if `rule` cannot be loaded by [`parse_rules_counted`],
+/// or `None` when the row is valid.
+pub fn validate_rule(rule: &Rule) -> Option<&'static str> {
+    if rule.input.is_empty() {
+        return Some("入力が空です");
+    }
+    for field in [&rule.input, &rule.output, &rule.next] {
+        if field.contains(['\0', '\t', '\r', '\n']) {
+            return Some("タブ・改行・NUL は使えません");
+        }
+    }
+    if rule.input.starts_with('\u{feff}') {
+        return Some("入力の先頭に BOM (U+FEFF) は使えません");
+    }
+    if rule.input.chars().count() > MAX_KEY_CHARS {
+        return Some("入力は 32 文字以内にしてください");
+    }
+    if rule.output.chars().count() > MAX_OUTPUT_CHARS {
+        return Some("出力は 64 文字以内にしてください");
+    }
+    if rule.next.chars().count() > MAX_KEY_CHARS {
+        return Some("次の入力は 32 文字以内にしてください");
+    }
+    None
+}
+
 /// Reads tab-separated rows (`input`, `output`, optional `next`), the format
 /// Mozc and Google Japanese Input export. Lines without a tab are ignored.
-/// Rows with an empty `input`, an `input` or `next` longer than
-/// [`MAX_KEY_CHARS`], or a NUL character (a misread file) are skipped.
+/// Rows rejected by [`validate_rule`] (empty `input`, `input`/`next` longer than
+/// [`MAX_KEY_CHARS`], `output` longer than [`MAX_OUTPUT_CHARS`], or NUL) are skipped.
 pub fn parse_rules(text: &str) -> Vec<Rule> {
     parse_rules_counted(text).0
 }
@@ -124,10 +154,10 @@ pub fn parse_rules_counted(text: &str) -> (Vec<Rule>, usize) {
             let input = cols.next()?;
             let output = cols.next()?;
             let next = cols.next().unwrap_or("");
-            let fits = |s: &str| s.chars().count() <= MAX_KEY_CHARS;
-            let ok = !input.is_empty() && fits(input) && fits(next) && !line.contains('\0');
+            let rule = Rule::new(input, output, next);
+            let ok = !line.contains('\0') && validate_rule(&rule).is_none();
             skipped += usize::from(!ok);
-            ok.then(|| Rule::new(input, output, next))
+            ok.then_some(rule)
         })
         .collect();
     (rules, skipped)
@@ -136,7 +166,7 @@ pub fn parse_rules_counted(text: &str) -> (Vec<Rule>, usize) {
 /// Writes rows in the format [`parse_rules`] reads.
 pub fn format_rules(rules: &[Rule]) -> String {
     let mut out = String::new();
-    for r in rules.iter().filter(|r| !r.input.is_empty()) {
+    for r in rules.iter().filter(|r| validate_rule(r).is_none()) {
         out.push_str(&r.input);
         out.push('\t');
         out.push_str(&r.output);
@@ -506,8 +536,9 @@ mod tests {
         let mozc = "\u{feff}a\tあ\r\nkk\tっ\tk\r\n\r\nno tab\n";
         assert_eq!(parse_rules(mozc), vec![Rule::new("a", "あ", ""), Rule::new("kk", "っ", "k")]);
         let long = "k".repeat(MAX_KEY_CHARS + 1);
-        let text = format!("{long}\tか\nka\tか\t{long}\na\0\tあ\n\tえ\nko\tこ\n");
-        assert_eq!(parse_rules_counted(&text), (vec![Rule::new("ko", "こ", "")], 4));
+        let long_out = "あ".repeat(MAX_OUTPUT_CHARS + 1);
+        let text = format!("{long}\tか\nka\tか\t{long}\nka\t{long_out}\na\0\tあ\n\tえ\nko\tこ\n");
+        assert_eq!(parse_rules_counted(&text), (vec![Rule::new("ko", "こ", "")], 5));
     }
 
     #[test]
