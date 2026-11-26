@@ -90,7 +90,7 @@ i18n.inputMethod.fcitx5.addons = [ inputs.sweet-ime.packages.${pkgs.system}.defa
 <details>
 <summary>Cachix setup & manual CMake build on Linux</summary>
 
-On non-NixOS with Nix:
+On non-NixOS with Nix (for building into `./result`; to install on non-NixOS distros, use Option A above):
 ```sh
 cachix use sweet-ime
 nix build github:frost-1256/sweet-ime
@@ -106,7 +106,7 @@ nix.settings = {
 };
 ```
 
-Manual CMake build (requires Rust, CMake, `libfcitx5core-dev`):
+Manual CMake build (requires Rust, CMake, `libfcitx5core-dev`; installs only the fcitx5 addon and `system.dict`—use Option A or the Nix package to also install `sweet-settings` and `get-zenz.sh`):
 ```sh
 git clone --filter=blob:none --no-checkout https://github.com/google/mozc third_party/mozc-data
 git -C third_party/mozc-data sparse-checkout set src/data/dictionary_oss
@@ -134,7 +134,7 @@ Install `SweetIME-Android.apk`, open **Sweet IME** to enable the keyboard, and s
 
 ### AI Conversion Model (Optional)
 Because the zenz model is licensed under CC BY-SA 4.0, it is downloaded separately on demand:
-- **Windows / Linux / macOS**: Open **設定 → AI 変換** and click download (`zenz-v3.1-xsmall` or `small`).
+- **Windows / Linux / macOS**: Open **設定 → AI 変換** and click download (`zenz-v3.1-xsmall` or `small`). On Linux, restart fcitx5 (`fcitx5 -r`) afterward so the running process loads the new model; on macOS, log out and back in.
 - **Android**: Open **AI 変換** in the app (~100 MB for `xsmall`, ~380 MB for `small`).
 
 ---

@@ -90,7 +90,7 @@ i18n.inputMethod.fcitx5.addons = [ inputs.sweet-ime.packages.${pkgs.system}.defa
 <details>
 <summary>Cachix 設定・CMake での手動ビルド手順</summary>
 
-NixOS 以外での Cachix 利用:
+NixOS 以外での Cachix ビルド（`./result` へのビルドのみ。NixOS 以外へのインストールは上の「方法 A」をご利用ください）:
 ```sh
 cachix use sweet-ime
 nix build github:frost-1256/sweet-ime
@@ -106,7 +106,7 @@ nix.settings = {
 };
 ```
 
-CMake での手動ビルド（Rust・CMake・`libfcitx5core-dev` が必要）:
+CMake での手動ビルド（Rust・CMake・`libfcitx5core-dev` が必要。fcitx5 アドオンと `system.dict` のみを導入します。設定アプリ `sweet-settings` と `get-zenz.sh` も含める場合は方法 A または Nix パッケージをご利用ください）:
 ```sh
 git clone --filter=blob:none --no-checkout https://github.com/google/mozc third_party/mozc-data
 git -C third_party/mozc-data sparse-checkout set src/data/dictionary_oss
@@ -134,7 +134,7 @@ installer=$(mktemp -t sweet-ime-install) &&
 
 ### AI 変換モデル（任意）
 zenz モデルは CC BY-SA 4.0 ライセンスのため同梱していません。
-- **Windows / Linux / macOS**: **設定 → AI 変換** からワンクリックでダウンロードできます（`zenz-v3.1-xsmall` / `small`）。
+- **Windows / Linux / macOS**: **設定 → AI 変換** からワンクリックでダウンロードできます（`zenz-v3.1-xsmall` / `small`）。Linux ではダウンロード後に `fcitx5 -r` で再起動、macOS では再ログインすると反映されます。
 - **Android**: アプリ内の **AI 変換** からダウンロードできます（`xsmall` 約 100 MB、`small` 約 380 MB）。
 
 ---
