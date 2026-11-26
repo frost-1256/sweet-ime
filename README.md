@@ -24,8 +24,8 @@
 ## Highlights
 
 - **Sub-millisecond dictionary engine.** Lattice Viterbi & N-best search over the Mozc OSS dictionary + SudachiDict vocabulary, converting in **~0.1 ms**.
-- **Sub-10 ms on-device AI reranking (optional).** Native Rust [zenz](https://huggingface.co/Miwa-Keita/zenz-v3.1-xsmall) (GPT-2) inference with K-blocked AVX2/NEON kernels and shared-KV tree attention reranks candidates using preceding context in **~6 ms** (`xsmall`) on a background thread—typing never waits.
-- **Comfortable everyday typing.** Live conversion, mid-sentence predictive suggestions, romaji typo correction, English words inside Japanese (`korehabestdesu` → `これはベストです`), kana numbers (`さんぜんえん` → `三千円` / `3000円`), date/time & calculator candidates (excluded from learning history), bunsetsu resizing, and F6–F10 transliteration.
+- **Ultra-fast on-device AI conversion (optional).** Native Rust [zenz](https://huggingface.co/Miwa-Keita/zenz-v3.1-xsmall) (GPT-2) inference with per-column **INT8 (Q8) quantized matmul**, AVX2+FMA / NEON kernels, prompt prefix KV caching, and a **reading-guarded neural generation hybrid** reranks candidates and recovers rare/proper nouns in **~3.4 ms** (`xsmall`) or **~12.4 ms** (`small`) on a background thread—typing never waits.
+- **Comfortable everyday typing.** Live conversion (with optional debounce), mid-sentence predictive suggestions, romaji typo correction (including long inputs and punctuation), mixed Japanese-English conversion (`korehabestdesu` → `これはベストです`, `pcha` → `PCは`), kana numbers (`さんぜんえん` → `三千円` / `3000円`), date/time & calculator candidates (excluded from learning history), bunsetsu resizing, and F6–F10 transliteration.
 - **Customizable appearance.** Built-in themes (Default following system light/dark & accent, Light, Dark, Sakura, Matcha, Midnight, Lavender, Dracula, GTK Adwaita) plus a **User Theme** editor with custom colors, **background transparency**, and **named saved presets**.
 - **Private by default.** Everything runs locally; settings, learning history, and reports stay on your device. Password fields and private windows never learn (Windows, Android).
 
@@ -34,22 +34,35 @@
 | Platform | Download | Highlights |
 |---|---|---|
 | **Windows** | `SweetIME-Setup.exe` | 64-bit & 32-bit TSF text service, Direct2D candidate window (follows Windows light/dark & accent color, transparent user themes, optional rainbow border), live "あ"/"A" badge, hot-swap updates without restarting apps |
-| **Linux (fcitx5)** | `SweetIME-Linux-{x86_64,aarch64}.tar.gz` / Nix Flake | fcitx5 addon for Wayland (`input-method-v2`: niri, Sway, Hyprland, …) & X11, transparent classicui themes with blur, customizable font size / padding / vertical-horizontal layout |
+| **Linux (fcitx5)** | `SweetIME-Linux-{x86_64,aarch64}.tar.gz` / Nix Flake | fcitx5 addon for Wayland (`input-method-v2` native caret popup: niri, Sway, Hyprland, …) & X11, transparent classicui themes with blur, customizable font size / padding / vertical-horizontal layout |
 | **macOS** | `SweetIME-macOS.zip` | Universal (Apple Silicon & Intel) InputMethodKit IME for macOS 15+, compact candidate window, shared Settings app, in-app updates |
 | **Android** | `SweetIME-Android.apk` | QWERTY & 12-key kana/alphanumeric flick keyboards, Material 3 / Expressive wallpaper colors, custom TTF/OTF fonts, on-device AI conversion (Android 10+) |
 
+## System Requirements
+
+| | Minimum | Recommended (AI + Live Conversion) |
+|---|---|---|
+| **Windows** | Windows 10 (64-bit `x86_64`; supports 64-bit & 32-bit apps) | Windows 11 (64-bit `x86_64`) |
+| **Linux** | 64-bit (`x86_64` / `aarch64`) with fcitx5 (Wayland or X11) | Recent distro with fcitx5 + Wayland (`input-method-v2`) |
+| **macOS** | macOS 15 (Sequoia) or later (Apple Silicon / Intel) | macOS 15+ on Apple Silicon |
+| **Android** | Android 10 (API 29) or later (`arm64-v8a` / `x86_64`) | Android 12+ (`arm64-v8a`) |
+| **CPU** | 64-bit processor (`x86_64` or `aarch64`) | 4+ cores with **AVX2 + FMA** (`x86_64`) or **NEON** (`aarch64`) |
+| **RAM** | ~100 MB free (dictionary only) / ~250 MB free (`xsmall`) | 4 GB+ total (512 MB+ free for `zenz-v3.1-small`) |
+| **Storage** | ~100 MB free (~200 MB with `xsmall`) | ~500 MB free (with `zenz-v3.1-small` + user history) |
+
+> **Note:** AI conversion (`zenz`) runs on any supported CPU using a portable fallback, but **AVX2 + FMA** (Intel Haswell / AMD Excavator or newer) or **ARM64 NEON** is strongly recommended for single-digit-millisecond live conversion.
+
 ## Accuracy & Speed
 
-Measured on Mozc's `evaluation.tsv` (397 cases) on Windows:
+Measured on Windows (`x86_64` AVX2+FMA) with Q8 quantized `zenz` inference:
 
-| Configuration | Top-1 | Mean latency |
-|---|---|---|
-| Lattice only | 76.8% | ~0.1 ms |
-| **+ zenz v3.1 xsmall (default)** | **89.7%** | **~6.0 ms** |
-| + zenz v3.1 small | 89.7% | ~25 ms |
-| Mozc OSS (reference) | 74.6% | — |
+| Configuration | `eval/everyday.tsv` (169 cases) | Mean latency | Max latency |
+|---|---|---|---|
+| Lattice only | 95.9% | ~0.13 ms | ~4.7 ms |
+| **+ zenz v3.1 xsmall (default)** | **95.9%** | **~3.4 ms** | **~11.6 ms** |
+| **+ zenz v3.1 small** | **97.6%** | **~12.4 ms** | **~41.9 ms** |
 
-You can also benchmark against [AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench) with `sweet-cli data/system.dict eval-ajimee <evaluation_items.json>` (set `SWEET_ZENZ` to evaluate with a model).
+On Mozc's `evaluation.tsv` (397 cases), Sweet IME scores **89.7%** Top-1 with `zenz` vs **76.8%** lattice-only (**74.6%** for Mozc OSS reference). You can also benchmark against [AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench) with `sweet-cli data/system.dict eval-ajimee <evaluation_items.json>` (set `SWEET_ZENZ` to evaluate with a model).
 
 ---
 
