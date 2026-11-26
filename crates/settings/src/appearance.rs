@@ -68,11 +68,7 @@ pub(super) fn apply(ui: &mut Ui, theme: Theme) -> Appearance {
         widget.fg_stroke.color = text;
     }
     visuals.selection.bg_fill = accent;
-    visuals.selection.stroke.color = if colors.dark {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    };
+    visuals.selection.stroke.color = sweet_ui::contrasting_ink(accent);
 
     Appearance {
         background,
@@ -178,8 +174,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn selected_text_and_switch_thumbs_contrast_with_the_accent() {
+        for system_theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                system_theme: Some(system_theme),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                for theme in Theme::ALL {
+                    apply(ui, theme);
+                    let selection = ui.visuals().selection;
+                    let accent = selection.bg_fill;
+                    for ink in [selection.stroke.color, sweet_ui::contrasting_ink(accent)] {
+                        let contrast = contrast(luminance(ink), luminance(accent));
+                        assert!(
+                            contrast >= 4.5,
+                            "{theme:?} on {system_theme:?}: {contrast:.2}"
+                        );
+                    }
+                }
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    fn contrast(a: f32, b: f32) -> f32 {
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
     fn luminance(color: Color32) -> f32 {
-        let linear = egui::Rgba::from(color);
-        0.2126 * linear.r() + 0.7152 * linear.g() + 0.0722 * linear.b()
+        sweet_ui::relative_luminance(color)
     }
 }
