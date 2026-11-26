@@ -25,12 +25,7 @@ pub trait Reranker: Send + Sync {
     -> Option<usize>;
     /// Optional neural-generated conversion when the lattice candidates look
     /// uncertain (e.g. proper nouns or rare compounds outside the N-best pool).
-    fn generate(
-        &self,
-        _reading: &str,
-        _left_context: &str,
-        _best: &Conversion,
-    ) -> Option<String> {
+    fn generate(&self, _reading: &str, _left_context: &str, _best: &Conversion) -> Option<String> {
         None
     }
 }
@@ -186,7 +181,11 @@ fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
                 .iter()
                 .enumerate()
                 .skip(n)
-                .find(|(idx, c)| !picked.contains(idx) && keeps_personal_words(c, &personal) && c.surface() == target)
+                .find(|(idx, c)| {
+                    !picked.contains(idx)
+                        && keeps_personal_words(c, &personal)
+                        && c.surface() == target
+                })
                 .map(|(idx, _)| idx)
             {
                 picked.push(found);
@@ -213,7 +212,7 @@ fn homophone_pool(
             ((repeats < repetitions || (repeats == 0 && repetitions == 0))
                 && keeps_personal_words(candidate, &personal)
                 && !original.contains(&candidate.surface()))
-                .then_some((repeats, candidate))
+            .then_some((repeats, candidate))
         })
         .collect();
     combinations.sort_by_key(|(repeats, candidate)| (*repeats, candidate.cost));
@@ -229,6 +228,10 @@ fn homophone_pool(
 /// Reranker key: (reading, left context, candidate surfaces).
 type RerankKey = (String, String, Vec<String>);
 
+/// Generation cache key: (reading, left context, best total cost, best words'
+/// `(reading, surface, cost, learned, user)`).
+type GenerateKey = (String, String, i32, Vec<(String, String, i32, bool, bool)>);
+
 #[derive(Default)]
 pub(super) struct RerankState {
     decisions: Mutex<Decisions>,
@@ -241,6 +244,10 @@ struct Decisions {
     cache: Vec<(RerankKey, Option<usize>)>,
     /// Runs in progress on some thread.
     running: Vec<RerankKey>,
+    /// Recent generation outcomes (including `None`), oldest first.
+    gen_cache: Vec<(GenerateKey, Option<String>)>,
+    /// Generation runs in progress on some thread.
+    gen_running: Vec<GenerateKey>,
 }
 
 /// How long a conversion waits for another thread's identical reranker run
@@ -320,7 +327,9 @@ impl Converter {
                 && let Some(best) = res.first()
                 && personal_spans(best).is_empty()
                 && super::extras::casual_phrase(text).is_none()
-                && let Some(surface) = r.generate(text, left_context, best)
+                && let Some(surface) =
+                    self.rerank
+                        .cached_generate(r.as_ref(), text, left_context, best)
                 && !res.iter().any(|c| c.surface() == surface)
             {
                 let generated = Conversion {
@@ -357,9 +366,11 @@ impl Converter {
         }
         let mut protected = personal_spans(&candidates[0]);
         if let Some((phrase, _)) = super::extras::casual_phrase(reading)
-            && spans(&candidates[0]).next().is_some_and(|(start, end, word)| {
-                start == 0 && end == phrase.len() && word.surface == phrase
-            })
+            && spans(&candidates[0])
+                .next()
+                .is_some_and(|(start, end, word)| {
+                    start == 0 && end == phrase.len() && word.surface == phrase
+                })
         {
             protected.push((0, phrase.len(), phrase));
         }
@@ -460,6 +471,218 @@ impl RerankState {
         let choice = r.choose(text, left_context, res);
         done.2 = Some(choice);
         choice
+    }
+
+    /// `Reranker::generate`, memoized (including `None`) and coalesced across
+    /// concurrent identical requests so background live conversion + Space
+    /// does not run neural generation twice.
+    fn cached_generate(
+        &self,
+        r: &dyn Reranker,
+        text: &str,
+        left_context: &str,
+        best: &Conversion,
+    ) -> Option<String> {
+        let words = best
+            .segments
+            .iter()
+            .flat_map(|s| &s.words)
+            .map(|w| {
+                (
+                    w.reading.clone(),
+                    w.surface.clone(),
+                    w.cost,
+                    w.learned,
+                    w.user,
+                )
+            })
+            .collect();
+        let key: GenerateKey = (text.to_string(), left_context.to_string(), best.cost, words);
+        let mut st = self.decisions.lock().unwrap_or_else(|e| e.into_inner());
+        let deadline = std::time::Instant::now() + RERANK_WAIT;
+        loop {
+            if let Some(hit) = st
+                .gen_cache
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+            {
+                return hit;
+            }
+            let now = std::time::Instant::now();
+            if !st.gen_running.contains(&key) || now >= deadline {
+                break;
+            }
+            st = self
+                .done
+                .wait_timeout(st, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        st.gen_running.push(key.clone());
+        drop(st);
+        struct Done<'a>(&'a RerankState, &'a GenerateKey, Option<Option<String>>);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                let mut st = self.0.decisions.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(pos) = st.gen_running.iter().position(|k| k == self.1) {
+                    st.gen_running.swap_remove(pos);
+                }
+                if let Some(outcome) = self.2.take() {
+                    let (t, l, _, _) = self.1;
+                    st.gen_cache
+                        .retain(|((ct, cl, _, _), _)| !(ct == t && cl == l));
+                    st.gen_cache.push((self.1.clone(), outcome));
+                    if st.gen_cache.len() > RERANK_CACHE {
+                        st.gen_cache.remove(0);
+                    }
+                }
+                drop(st);
+                self.0.done.notify_all();
+            }
+        }
+        let mut done = Done(self, &key, None);
+        let generated = r.generate(text, left_context, best);
+        done.2 = Some(generated.clone());
+        generated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    use super::*;
+    use crate::converter::Segment;
+
+    fn sample_conversion(surface: &str, cost: i32, word_cost: i32) -> Conversion {
+        Conversion {
+            segments: vec![Segment {
+                reading: "あずみの".into(),
+                surface: surface.into(),
+                words: vec![Word {
+                    reading: "あずみの".into(),
+                    surface: surface.into(),
+                    lid: 0,
+                    rid: 0,
+                    cost: word_cost,
+                    learned: false,
+                    user: false,
+                }],
+            }],
+            cost,
+        }
+    }
+
+    struct CountingReranker {
+        calls: Arc<AtomicUsize>,
+        result: Option<String>,
+        barrier: Option<Arc<Barrier>>,
+    }
+
+    impl Reranker for CountingReranker {
+        fn choose(&self, _: &str, _: &str, _: &[Conversion]) -> Option<usize> {
+            None
+        }
+
+        fn generate(&self, _: &str, _: &str, _: &Conversion) -> Option<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(b) = &self.barrier {
+                b.wait();
+            }
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn cached_generate_memoizes_some_and_none_and_invalidates_on_cost_change() {
+        let state = RerankState::default();
+        let best = sample_conversion("阿曇野", 12000, 9000);
+
+        let calls_some = Arc::new(AtomicUsize::new(0));
+        let r_some = CountingReranker {
+            calls: calls_some.clone(),
+            result: Some("安曇野".into()),
+            barrier: None,
+        };
+        assert_eq!(
+            state
+                .cached_generate(&r_some, "あずみの", "", &best)
+                .as_deref(),
+            Some("安曇野")
+        );
+        assert_eq!(
+            state
+                .cached_generate(&r_some, "あずみの", "", &best)
+                .as_deref(),
+            Some("安曇野")
+        );
+        assert_eq!(calls_some.load(Ordering::SeqCst), 1);
+
+        // Changing word cost invalidates the cached outcome.
+        let changed = sample_conversion("阿曇野", 12000, 9500);
+        assert_eq!(
+            state
+                .cached_generate(&r_some, "あずみの", "", &changed)
+                .as_deref(),
+            Some("安曇野")
+        );
+        assert_eq!(calls_some.load(Ordering::SeqCst), 2);
+
+        // `None` results are cached as well.
+        let calls_none = Arc::new(AtomicUsize::new(0));
+        let r_none = CountingReranker {
+            calls: calls_none.clone(),
+            result: None,
+            barrier: None,
+        };
+        assert_eq!(state.cached_generate(&r_none, "ほげ", "", &best), None);
+        assert_eq!(state.cached_generate(&r_none, "ほげ", "", &best), None);
+        assert_eq!(calls_none.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cached_generate_coalesces_concurrent_requests() {
+        let state = Arc::new(RerankState::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Barrier::new(2));
+
+        struct SlowReranker {
+            calls: Arc<AtomicUsize>,
+            started: Arc<Barrier>,
+        }
+        impl Reranker for SlowReranker {
+            fn choose(&self, _: &str, _: &str, _: &[Conversion]) -> Option<usize> {
+                None
+            }
+            fn generate(&self, _: &str, _: &str, _: &Conversion) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.started.wait();
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                Some("安曇野".into())
+            }
+        }
+
+        let reranker = Arc::new(SlowReranker {
+            calls: calls.clone(),
+            started: started.clone(),
+        });
+        let best = sample_conversion("阿曇野", 12000, 9000);
+
+        let s1 = state.clone();
+        let r1 = reranker.clone();
+        let b1 = best.clone();
+        let t1 = std::thread::spawn(move || s1.cached_generate(r1.as_ref(), "あずみの", "", &b1));
+
+        // Wait until t1 has entered `generate` (so key is in `gen_running`), then invoke t2.
+        started.wait();
+        let res2 = state.cached_generate(reranker.as_ref(), "あずみの", "", &best);
+        let res1 = t1.join().unwrap();
+
+        assert_eq!(res1.as_deref(), Some("安曇野"));
+        assert_eq!(res2.as_deref(), Some("安曇野"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 
