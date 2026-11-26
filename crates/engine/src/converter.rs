@@ -117,6 +117,10 @@ pub struct Converter {
     /// POS ids for numbers in kanji and in Arabic digits, when the
     /// dictionary records POS features.
     number_pos: Option<(u16, u16)>,
+    /// Cached POS id for `名詞,一般,*,*,*,*,*` (falls back to `unknown_id`).
+    noun_pos: u16,
+    /// Cached POS ids for the release-announcement phrase (`でたね`).
+    release_phrase_pos: Option<(u16, u16)>,
     /// Runtime switches (see [`Converter::configure`]).
     rerank_on: AtomicBool,
     learning_on: AtomicBool,
@@ -137,12 +141,20 @@ impl Converter {
         let number_pos = dict
             .pos_id("名詞,数,*,*,*,*,*")
             .zip(dict.pos_id("名詞,数,アラビア数字,*,*,*,*"));
+        let noun_pos = dict
+            .pos_id("名詞,一般,*,*,*,*,*")
+            .unwrap_or_else(|| dict.unknown_id());
+        let release_phrase_pos = dict
+            .pos_id("動詞,自立,*,*,一段,連用形,出る")
+            .zip(dict.pos_id("助詞,終助詞,*,*,*,*,ね"));
         Self {
             dict,
             reranker: None,
             history: Mutex::new(UserHistory::new()),
             user_dict: Mutex::new(UserDictionary::new()),
             number_pos,
+            noun_pos,
+            release_phrase_pos,
             rerank_on: AtomicBool::new(true),
             learning_on: AtomicBool::new(true),
             english_on: AtomicBool::new(true),

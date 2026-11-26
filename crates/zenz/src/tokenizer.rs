@@ -4,11 +4,13 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
+const MISSING_ID: u32 = u32::MAX;
+
 pub struct Tokenizer {
-    encoder: HashMap<String, u32>,
     decoder: Vec<String>,
-    ranks: HashMap<(String, String), u32>,
-    byte_to_char: [char; 256],
+    /// Merge table keyed by `(left_id, right_id) -> (rank, merged_id)`.
+    merges: HashMap<(u32, u32), (u32, u32)>,
+    byte_to_id: [u32; 256],
     char_to_byte: HashMap<char, u8>,
     pub bos: u32,
     pub eos: u32,
@@ -110,13 +112,21 @@ impl Tokenizer {
         )
     }
 
-    pub fn from_strings(vocab_json: &str, merges: &str) -> io::Result<Self> {
+    pub fn from_strings(vocab_json: &str, merges_text: &str) -> io::Result<Self> {
         let vocab: HashMap<String, u32> =
             serde_json::from_str(vocab_json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let mut ranks = HashMap::new();
-        for (r, line) in merges.lines().filter(|l| !l.starts_with("#version")).enumerate() {
+        let mut merges = HashMap::new();
+        let mut merged_buf = String::new();
+        for (r, line) in merges_text.lines().filter(|l| !l.starts_with("#version")).enumerate() {
             if let Some((a, b)) = line.split_once(' ') {
-                ranks.insert((a.to_string(), b.to_string()), r as u32);
+                if let (Some(&la), Some(&rb)) = (vocab.get(a), vocab.get(b)) {
+                    merged_buf.clear();
+                    merged_buf.push_str(a);
+                    merged_buf.push_str(b);
+                    if let Some(&merged_id) = vocab.get(&merged_buf) {
+                        merges.insert((la, rb), (r as u32, merged_id));
+                    }
+                }
             }
         }
         let mut decoder = vec![String::new(); vocab.values().max().map_or(0, |m| *m as usize + 1)];
@@ -124,50 +134,59 @@ impl Tokenizer {
             decoder[*v as usize] = k.clone();
         }
         let byte_to_char = bytes_to_unicode();
+        let mut byte_to_id = [MISSING_ID; 256];
+        let mut ch_buf = [0u8; 4];
+        for (b, &ch) in byte_to_char.iter().enumerate() {
+            let s = ch.encode_utf8(&mut ch_buf);
+            if let Some(&id) = vocab.get(s) {
+                byte_to_id[b] = id;
+            }
+        }
         let char_to_byte = byte_to_char.iter().enumerate().map(|(b, c)| (*c, b as u8)).collect();
         let bos = *vocab.get("<s>").unwrap_or(&1);
         let eos = *vocab.get("</s>").unwrap_or(&2);
-        Ok(Self { encoder: vocab, decoder, ranks, byte_to_char, char_to_byte, bos, eos })
+        Ok(Self {
+            decoder,
+            merges,
+            byte_to_id,
+            char_to_byte,
+            bos,
+            eos,
+        })
     }
 
     pub fn vocab_size(&self) -> usize {
         self.decoder.len()
     }
 
-    fn bpe(&self, word: &str, out: &mut Vec<u32>) {
-        let mut parts: Vec<String> = word.chars().map(|c| c.to_string()).collect();
+    fn bpe_bytes(&self, bytes: &[u8], parts: &mut Vec<u32>, out: &mut Vec<u32>) {
+        parts.clear();
+        parts.extend(bytes.iter().map(|&b| self.byte_to_id[b as usize]));
         loop {
-            let mut best: Option<(u32, usize)> = None;
+            let mut best: Option<(u32, usize, u32)> = None;
             for i in 0..parts.len().saturating_sub(1) {
-                if let Some(&r) = self.ranks.get(&(parts[i].clone(), parts[i + 1].clone())) {
-                    if best.is_none_or(|(br, _)| r < br) {
-                        best = Some((r, i));
+                let (l, r) = (parts[i], parts[i + 1]);
+                if l == MISSING_ID || r == MISSING_ID {
+                    continue;
+                }
+                if let Some(&(rank, merged)) = self.merges.get(&(l, r)) {
+                    if best.is_none_or(|(br, _, _)| rank < br) {
+                        best = Some((rank, i, merged));
                     }
                 }
             }
-            let Some((_, i)) = best else { break };
-            let merged = format!("{}{}", parts[i], parts[i + 1]);
+            let Some((_, i, merged)) = best else { break };
             parts[i] = merged;
             parts.remove(i + 1);
         }
-        for p in parts {
-            match self.encoder.get(&p) {
-                Some(&id) => out.push(id),
-                None => {
-                    // Fall back to single byte-chars; unknown -> [UNK] (0).
-                    for c in p.chars() {
-                        out.push(*self.encoder.get(&c.to_string()).unwrap_or(&0));
-                    }
-                }
-            }
-        }
+        out.extend(parts.iter().map(|&id| if id == MISSING_ID { 0 } else { id }));
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(text.len() / 2 + 4);
+        let mut parts = Vec::with_capacity(32);
         for piece in pre_tokenize(text) {
-            let mapped: String = piece.bytes().map(|b| self.byte_to_char[b as usize]).collect();
-            self.bpe(&mapped, &mut out);
+            self.bpe_bytes(piece.as_bytes(), &mut parts, &mut out);
         }
         out
     }

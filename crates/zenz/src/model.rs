@@ -1,8 +1,43 @@
 //! GPT-2 forward pass with a KV cache, loading HF safetensors (F32/BF16/F16).
 
+use std::cell::RefCell;
+
 use crate::kernels::{axpy_f32, dot_f32, matmul, matmul_bias};
 
 mod weights;
+
+#[derive(Default)]
+struct ForwardScratch {
+    x: Vec<f32>,
+    h: Vec<f32>,
+    qkv: Vec<f32>,
+    att: Vec<f32>,
+    ff: Vec<f32>,
+    scores: Vec<f32>,
+    hf: Vec<f32>,
+}
+
+impl ForwardScratch {
+    fn trim(&mut self, max_elems: usize) {
+        for buf in [
+            &mut self.x,
+            &mut self.h,
+            &mut self.qkv,
+            &mut self.att,
+            &mut self.ff,
+            &mut self.hf,
+        ] {
+            if buf.capacity() > max_elems {
+                buf.clear();
+                buf.shrink_to(max_elems);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static FORWARD_SCRATCH: RefCell<ForwardScratch> = RefCell::new(ForwardScratch::default());
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
@@ -199,98 +234,117 @@ impl Model {
         }
         let d = self.store.data();
         let (wte, wpe) = (&d[self.wte.clone()], &d[self.wpe.clone()]);
-        let mut x = vec![0f32; t * e];
-        for (i, &tok) in tokens.iter().enumerate() {
-            let pos = (past + anc[i].len() - 1).min(self.cfg.n_positions - 1);
-            let te = &wte[tok as usize * e..][..e];
-            let pe = &wpe[pos * e..][..e];
-            for j in 0..e {
-                x[i * e + j] = te[j] + pe[j];
-            }
-        }
-        let mut h = vec![0f32; t * e];
-        let mut qkv = vec![0f32; t * 3 * e];
-        let mut att = vec![0f32; t * e];
-        let mut ff = vec![0f32; t * 4 * e];
         let max_ctx = past + anc.iter().map(|a| a.len()).max().unwrap_or(0);
-        let mut scores = vec![0f32; max_ctx];
-        for (li, lr) in self.layers.iter().enumerate() {
-            let l = self.view(d, lr);
-            layer_norm(&x, &l.ln1_w, &l.ln1_b, eps, &mut h);
-            matmul_bias(&h, &l.attn_w, Some(&l.attn_b), &mut qkv, t, e, 3 * e, false);
-            {
-                let kc = &cache.k[li];
-                let vc = &cache.v[li];
-                let run_row = |i: usize, att_row: &mut [f32], scores: &mut [f32]| {
-                    let n_ctx = past + anc[i].len();
-                    for hh in 0..nh {
-                        let off = hh * hd;
-                        let q = &qkv[i * 3 * e + off..][..hd];
-                        let mut mx = f32::NEG_INFINITY;
-                        for j in 0..n_ctx {
-                            let k: &[f32] = if j < past {
-                                &kc[j * e + off..][..hd]
-                            } else {
-                                &qkv[anc[i][j - past] * 3 * e + e + off..][..hd]
-                            };
-                            let s = dot_f32(q, k) * scale;
-                            scores[j] = s;
-                            mx = mx.max(s);
-                        }
-                        let mut sum = 0.0;
-                        for s in &mut scores[..n_ctx] {
-                            *s = (*s - mx).exp();
-                            sum += *s;
-                        }
-                        let out = &mut att_row[off..][..hd];
-                        out.fill(0.0);
-                        let inv_sum = sum.recip();
-                        for j in 0..n_ctx {
-                            let w = scores[j] * inv_sum;
-                            let v: &[f32] = if j < past {
-                                &vc[j * e + off..][..hd]
-                            } else {
-                                &qkv[anc[i][j - past] * 3 * e + 2 * e + off..][..hd]
-                            };
-                            axpy_f32(out, v, w);
-                        }
-                    }
-                };
-                if t >= 12 {
-                    use rayon::prelude::*;
-                    att.par_chunks_exact_mut(e)
-                        .enumerate()
-                        .for_each_init(
-                            || vec![0f32; max_ctx],
-                            |row_scores, (i, att_row)| run_row(i, att_row, row_scores),
-                        );
-                } else {
-                    for (i, att_row) in att.chunks_exact_mut(e).enumerate() {
-                        run_row(i, att_row, &mut scores);
-                    }
+        let rows = t - logits_from.min(t - 1);
+        let mut logits = vec![0f32; rows * vsz];
+        // Take scratch out of the TLS cell for the duration of this call so
+        // Rayon work-stealing can safely run nested inferences on this thread.
+        let mut scratch = FORWARD_SCRATCH.with(|cell| cell.take());
+        {
+            let ForwardScratch {
+                x,
+                h,
+                qkv,
+                att,
+                ff,
+                scores,
+                hf,
+            } = &mut scratch;
+            x.resize(t * e, 0.0);
+            h.resize(t * e, 0.0);
+            qkv.resize(t * 3 * e, 0.0);
+            att.resize(t * e, 0.0);
+            ff.resize(t * 4 * e, 0.0);
+            scores.resize(max_ctx, 0.0);
+            hf.resize(rows * e, 0.0);
+            for (i, &tok) in tokens.iter().enumerate() {
+                let pos = (past + anc[i].len() - 1).min(self.cfg.n_positions - 1);
+                let te = &wte[tok as usize * e..][..e];
+                let pe = &wpe[pos * e..][..e];
+                for j in 0..e {
+                    x[i * e + j] = te[j] + pe[j];
                 }
             }
-            if append {
-                for i in 0..t {
-                    cache.k[li].extend_from_slice(&qkv[i * 3 * e + e..i * 3 * e + 2 * e]);
-                    cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
+            for (li, lr) in self.layers.iter().enumerate() {
+                let l = self.view(d, lr);
+                layer_norm(x, &l.ln1_w, &l.ln1_b, eps, h);
+                matmul_bias(h, &l.attn_w, Some(&l.attn_b), qkv, t, e, 3 * e, false);
+                {
+                    let kc = &cache.k[li];
+                    let vc = &cache.v[li];
+                    let run_row = |i: usize, att_row: &mut [f32], row_scores: &mut [f32]| {
+                        let n_ctx = past + anc[i].len();
+                        for hh in 0..nh {
+                            let off = hh * hd;
+                            let q = &qkv[i * 3 * e + off..][..hd];
+                            let mut mx = f32::NEG_INFINITY;
+                            for j in 0..n_ctx {
+                                let k: &[f32] = if j < past {
+                                    &kc[j * e + off..][..hd]
+                                } else {
+                                    &qkv[anc[i][j - past] * 3 * e + e + off..][..hd]
+                                };
+                                let s = dot_f32(q, k) * scale;
+                                row_scores[j] = s;
+                                mx = mx.max(s);
+                            }
+                            let mut sum = 0.0;
+                            for s in &mut row_scores[..n_ctx] {
+                                *s = (*s - mx).exp();
+                                sum += *s;
+                            }
+                            let out = &mut att_row[off..][..hd];
+                            out.fill(0.0);
+                            let inv_sum = sum.recip();
+                            for j in 0..n_ctx {
+                                let w = row_scores[j] * inv_sum;
+                                let v: &[f32] = if j < past {
+                                    &vc[j * e + off..][..hd]
+                                } else {
+                                    &qkv[anc[i][j - past] * 3 * e + 2 * e + off..][..hd]
+                                };
+                                axpy_f32(out, v, w);
+                            }
+                        }
+                    };
+                    if t >= 12 {
+                        use rayon::prelude::*;
+                        att.par_chunks_exact_mut(e)
+                            .enumerate()
+                            .for_each_init(
+                                || vec![0f32; max_ctx],
+                                |row_scores, (i, att_row)| run_row(i, att_row, row_scores),
+                            );
+                    } else {
+                        for (i, att_row) in att.chunks_exact_mut(e).enumerate() {
+                            run_row(i, att_row, scores);
+                        }
+                    }
                 }
+                if append {
+                    for i in 0..t {
+                        cache.k[li].extend_from_slice(&qkv[i * 3 * e + e..i * 3 * e + 2 * e]);
+                        cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
+                    }
+                }
+                matmul_bias(att, &l.proj_w, Some(&l.proj_b), x, t, e, e, true);
+                layer_norm(x, &l.ln2_w, &l.ln2_b, eps, h);
+                matmul_bias(h, &l.fc_w, Some(&l.fc_b), ff, t, e, 4 * e, false);
+                gelu_new(ff);
+                matmul_bias(ff, &l.fc2_w, Some(&l.fc2_b), x, t, 4 * e, e, true);
             }
-            matmul_bias(&att, &l.proj_w, Some(&l.proj_b), &mut x, t, e, e, true);
-            layer_norm(&x, &l.ln2_w, &l.ln2_b, eps, &mut h);
-            matmul_bias(&h, &l.fc_w, Some(&l.fc_b), &mut ff, t, e, 4 * e, false);
-            gelu_new(&mut ff);
-            matmul_bias(&ff, &l.fc2_w, Some(&l.fc2_b), &mut x, t, 4 * e, e, true);
+            let src = &x[(t - rows) * e..];
+            layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, hf);
+            matmul(hf, &d[self.wte_t.clone()], &mut logits, rows, e, vsz, false);
         }
+        // Keep steady-state memory bounded after unusually large batches.
+        scratch.trim(256 * 4 * e);
+        FORWARD_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
+        });
         if append {
             cache.len = past + t;
         }
-        let rows = t - logits_from.min(t - 1);
-        let src = &x[(t - rows) * e..];
-        let mut hf = vec![0f32; rows * e];
-        layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, &mut hf);
-        let mut logits = vec![0f32; rows * vsz];
-        matmul(&hf, &d[self.wte_t.clone()], &mut logits, rows, e, vsz, false);
         logits
     }
 }
