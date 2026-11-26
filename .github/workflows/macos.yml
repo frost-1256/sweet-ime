@@ -41,9 +41,7 @@ jobs:
         shell: pwsh
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
       - run: cargo test --locked -p sweet-macos -p sweet-settings -p sweet-zenz -- --test-threads=1
-      - env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(github.ref, 'refs/tags/v') && 'thin' || 'off' }}
-        run: bash macos/build.sh
+      - run: bash macos/build.sh
       - uses: actions/upload-artifact@v7
         with:
           name: SweetIME-macOS

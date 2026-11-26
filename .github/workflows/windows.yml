@@ -56,8 +56,6 @@ jobs:
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
 
       - name: Build and verify the installer
-        env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(github.ref, 'refs/tags/v') && 'thin' || 'off' }}
         run: ./scripts/build.ps1 -Dictionary data/system.dict
 
       - name: Cache the zenz model
@@ -68,8 +66,6 @@ jobs:
           key: zenz-v1-xsmall-${{ hashFiles('scripts/get-zenz.ps1', 'crates/zenz/**') }}
 
       - name: Run the Windows TSF harness
-        env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(github.ref, 'refs/tags/v') && 'thin' || 'off' }}
         run: |
           $env:SWEET_IME_DICT = (Resolve-Path dist/system.dict).Path
           $env:SWEET_IME_ZENZ = Join-Path $env:RUNNER_TEMP 'zenz.swz'
@@ -171,7 +167,6 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.SWEET_ANDROID_KEYSTORE_B64 }}
           SWEET_ANDROID_KEYSTORE_PASS: ${{ secrets.SWEET_ANDROID_KEYSTORE_PASS }}
-          CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(github.ref, 'refs/tags/v') && 'thin' || 'off' }}
         run: |
           # Kept in the Rust cache (~/.cargo/bin): installed once.
           if (-not (Get-Command cargo-ndk -ErrorAction SilentlyContinue)) {
