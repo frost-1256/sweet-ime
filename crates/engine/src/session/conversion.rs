@@ -265,8 +265,20 @@ impl Session {
                 Some(idx) if idx >= page_size => {
                     let plain = s.cands.remove(idx);
                     s.cands.insert(target, plain);
+                    s.selected = if s.selected == idx {
+                        target
+                    } else if (target..idx).contains(&s.selected) {
+                        s.selected + 1
+                    } else {
+                        s.selected
+                    };
                 }
-                None => s.cands.insert(target, s.reading.clone()),
+                None => {
+                    s.cands.insert(target, s.reading.clone());
+                    if s.selected >= target {
+                        s.selected += 1;
+                    }
+                }
                 _ => {}
             }
         }
