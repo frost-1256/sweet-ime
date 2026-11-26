@@ -1,6 +1,6 @@
-use sweet_ui::card;
+use sweet_ui::setting_row;
 #[cfg(not(windows))]
-use sweet_ui::toggle;
+use sweet_ui::{setting_divider, toggle};
 use sweet_ui::eframe::egui;
 
 pub struct FontPicker {
@@ -43,8 +43,8 @@ impl FontPicker {
         #[cfg(windows)]
         let note = "インストール済みのフォントを選びます。アプリを切り替えると候補ウィンドウに反映されます。";
         #[cfg(not(windows))]
-        let note = "fcitx5 の Classic UI の候補に適用されます。Classic UI を使う他の入力メソッドにも反映されます。";
-        card(ui, "候補のフォント", note, |ui| {
+        let note = "fcitx5 の候補ウィンドウに適用されます。";
+        setting_row(ui, "候補のフォント", note, |ui| {
             let current = if self.family.is_empty() {
                 "標準"
             } else {
@@ -104,7 +104,8 @@ impl FontPicker {
 
         #[cfg(not(windows))]
         {
-            card(
+            setting_divider(ui);
+            setting_row(
                 ui,
                 "候補の文字サイズ",
                 "fcitx5 の候補ウィンドウの文字サイズを変えます。",
@@ -121,10 +122,11 @@ impl FontPicker {
                     }
                 },
             );
-            card(
+            setting_divider(ui);
+            setting_row(
                 ui,
                 "候補を縦に並べる",
-                "オフにすると候補を横並びで表示します (fcitx5 の Classic UI)。",
+                "オフにすると候補を横並びで表示します。",
                 |ui| {
                     if toggle(ui, &mut self.vertical).changed() {
                         *status = Some(

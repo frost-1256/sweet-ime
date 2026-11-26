@@ -30,7 +30,7 @@ use neural_page::{Download, MODELS};
 use sweet_engine::learning::Learned;
 use sweet_engine::{Options, UserHistory, paths};
 use sweet_ui::eframe;
-use sweet_ui::{card, card_frame, toggle};
+use sweet_ui::{card, card_frame, card_group, section_header, setting_divider, setting_row, toggle};
 
 fn main() -> eframe::Result<()> {
     #[cfg(not(target_os = "macos"))]
@@ -273,11 +273,26 @@ impl eframe::App for App {
                     egui::Frame::new()
                         .inner_margin(egui::Margin { left: 14, top: 3, ..egui::Margin::ZERO })
                         .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
                             ui.label(RichText::new("Sweet IME").size(20.0).strong());
+                            ui.label(
+                                RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                                    .size(12.0)
+                                    .weak(),
+                            );
                         });
-                    ui.add_space(9.0);
+                    ui.add_space(10.0);
                     ui.spacing_mut().item_spacing.y = 4.0;
                     for &p in Page::ALL {
+                        #[cfg(not(target_os = "macos"))]
+                        let split_before = matches!(p, Page::Theme | Page::About);
+                        #[cfg(target_os = "macos")]
+                        let split_before = matches!(p, Page::Neural | Page::About);
+                        if split_before {
+                            ui.add_space(6.0);
+                            setting_divider(ui);
+                            ui.add_space(6.0);
+                        }
                         if theme.navigation_item(ui, p.label(), self.page == p).clicked() {
                             self.select_page(p);
                         }
@@ -305,9 +320,31 @@ impl eframe::App for App {
                     Page::Apps => self.apps.ui(ui, &mut self.status),
                     #[cfg(not(target_os = "macos"))]
                     Page::Theme => {
-                        self.font_picker
-                            .get_or_insert_with(font_picker::FontPicker::new)
-                            .ui(ui, &mut self.status);
+                        section_header(ui, "候補ウィンドウの表示");
+                        let mut gaming_changed = false;
+                        card_group(ui, |ui| {
+                            self.font_picker
+                                .get_or_insert_with(font_picker::FontPicker::new)
+                                .ui(ui, &mut self.status);
+                            setting_divider(ui);
+                            setting_row(
+                                ui,
+                                "ゲーミングモード",
+                                "候補ウィンドウの縁を流れる虹色で光らせます。",
+                                |ui| {
+                                    gaming_changed = toggle(ui, &mut self.opts.gaming_mode).changed();
+                                },
+                            );
+                        });
+                        if gaming_changed {
+                            self.save();
+                            #[cfg(not(windows))]
+                            if self.status.as_ref().is_none_or(|(_, ok)| *ok) {
+                                fcitx_theme::reload_sweetui();
+                            }
+                        }
+
+                        section_header(ui, "カラーテーマ");
                         let theme_change = theme_page::ui(
                             ui,
                             &mut self.opts.theme,
@@ -354,27 +391,15 @@ impl eframe::App for App {
                                 );
                             }
                         }
-                        #[cfg(not(target_os = "macos"))]
-                        card(
-                            ui,
-                            "ゲーミングモード",
-                            "候補ウィンドウの縁を流れる虹色で光らせます。",
-                            |ui| {
-                                if toggle(ui, &mut self.opts.gaming_mode).changed() {
-                                    self.save();
-                                    #[cfg(not(windows))]
-                                    if self.status.as_ref().is_none_or(|(_, ok)| *ok) {
-                                        fcitx_theme::reload_sweetui();
-                                    }
-                                }
-                            },
-                        );
                         #[cfg(not(windows))]
-                        if ui.button("fcitx5 の標準テーマに戻す").clicked() {
-                            self.status = Some(match fcitx_theme::restore() {
-                                Ok(()) => ("fcitx5 の標準テーマに戻しました。".into(), true),
-                                Err(e) => (e, false),
-                            });
+                        {
+                            ui.add_space(4.0);
+                            if ui.button("fcitx5 の標準テーマに戻す").clicked() {
+                                self.status = Some(match fcitx_theme::restore() {
+                                    Ok(()) => ("fcitx5 の標準テーマに戻しました。".into(), true),
+                                    Err(e) => (e, false),
+                                });
+                            }
                         }
                     }
                     Page::Neural => self.neural_page(ui),
@@ -395,45 +420,152 @@ impl eframe::App for App {
 impl App {
     fn input_page(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
-        card(ui, "ライブ変換", "入力しながら漢字に変換して表示します。Enter でそのまま確定、Esc で読みに戻ります。", |ui| {
-            changed |= toggle(ui, &mut self.opts.live_conversion).changed();
+
+        section_header(ui, "変換");
+        card_group(ui, |ui| {
+            setting_row(
+                ui,
+                "ライブ変換",
+                "入力しながら漢字に変換して表示します。Enter で確定、Esc で読みに戻ります。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.live_conversion).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "ライブ変換の待機時間（デバウンス）",
+                "高速入力時のちらつきを抑えるため、AI ライブ変換を始める前に少し待ちます。0 ms でオフ。",
+                |ui| {
+                    ui.add_enabled_ui(self.opts.live_conversion, |ui| {
+                        ui.spacing_mut().slider_width = 140.0;
+                        let resp = ui.add(
+                            egui::Slider::new(&mut self.opts.live_debounce_ms, 0..=300)
+                                .step_by(10.0)
+                                .suffix(" ms"),
+                        );
+                        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                            changed = true;
+                        }
+                        if self.opts.live_debounce_ms == 0 {
+                            ui.label(RichText::new("オフ").small().weak());
+                        }
+                    });
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "予測変換",
+                "入力中に続きの候補を表示します。Tab キーで選択できます。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.suggestions).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "Simeji クラウド変換",
+                "スペース変換時にひと文節のかなを Simeji へ送信し、顔文字を候補に追加します。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.simeji_cloud).changed();
+                },
+            );
         });
-        card(ui, "予測変換", "入力中に続きの候補を表示します。Tab キーで選択できます。", |ui| {
-            changed |= toggle(ui, &mut self.opts.suggestions).changed();
+
+        section_header(ui, "英字入力");
+        card_group(ui, |ui| {
+            setting_row(
+                ui,
+                "英単語の判定",
+                "文の途中でもローマ字にならない英単語を変換します（例: softwarewo → softwareを）。F10 で直した単語も覚えます。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.english_words).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "Shift の英字入力を 1 単語で戻す",
+                "Shift で始めた英字のあとにローマ字が続くと自動で日本語入力に戻します（例: Googlehakensaku → Google検索）。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.shift_one_word).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "英単語をカタカナで出す",
+                "「best」→「ベスト」のようにカタカナ語を先に出します（英字は次の候補）。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.english_katakana).changed();
+                },
+            );
         });
-        card(ui, "Simejiクラウド変換", "オンにすると、スペースで変換を始めたときに、ひと文節のかなの読みをSimejiに送信し、顔文字を候補に追加します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.simeji_cloud).changed();
+
+        section_header(ui, "特殊候補");
+        card_group(ui, |ui| {
+            setting_row(
+                ui,
+                "日付と時刻",
+                "「きょう」「あした」で日付、「いま」で時刻を候補に出します。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.dates).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "絵文字と顔文字",
+                "「えがお」「ねこ」で絵文字、「かお」で顔文字を候補に出します。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.emoji).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "計算",
+                "「1+2*3=」のように = で終わる式を打つと答えを候補に出します。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.calculator).changed();
+                },
+            );
         });
+
         #[cfg(windows)]
-        card(ui, "入力した文字を表示", "「こんにちは」の近くに、打ったローマ字（konnnitiha）を表示します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.show_typed_input).changed();
-        });
-        card(ui, "英単語の判定", "「korehabestdesu」→「これはベストです」、「softwarewo」→「softwareを」のように、ローマ字にならない英単語を文の途中でも変換します。F10 で英字に直した単語も覚えます。", |ui| {
-            changed |= toggle(ui, &mut self.opts.english_words).changed();
-        });
-        card(ui, "Shift の英字入力を1単語で戻す", "Shift を押しながら打ち始めた英字は、知っている単語のあとにローマ字が続くと、そこで確定して日本語入力に戻ります (「Googlehakensaku」→「Google」+「検索」)。オフにすると Space か Enter まで英字のままです。", |ui| {
-            changed |= toggle(ui, &mut self.opts.shift_one_word).changed();
-        });
-        card(ui, "英単語をカタカナで出す", "「best」→「ベスト」のように、よく使うカタカナ語がある英単語はカタカナを先に出します。英字は次の候補になります。", |ui| {
-            changed |= toggle(ui, &mut self.opts.english_katakana).changed();
-        });
-        card(ui, "日付と時刻","「きょう」「あした」で日付、「いま」で時刻を候補に出します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.dates).changed();
-        });
-        card(ui, "絵文字と顔文字", "「えがお」「ねこ」で絵文字、「かお」で顔文字を候補に出します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.emoji).changed();
-        });
-        card(ui, "計算", "「1+2*3=」のように = で終わる式を打つと、答えを候補に出します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.calculator).changed();
-        });
-        #[cfg(windows)]
-        card(ui, "確定の取り消し", "確定した直後に Ctrl+Backspace を押すと、確定前の読みに戻します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.undo_commit).changed();
-        });
-        #[cfg(windows)]
-        card(ui, "入力モードを表示", "IME のオン/オフを切り替えたとき、文字カーソルの近くに「あ」「A」を表示します。", |ui| {
-            changed |= toggle(ui, &mut self.opts.mode_indicator).changed();
-        });
+        {
+            section_header(ui, "表示と操作");
+            card_group(ui, |ui| {
+                setting_row(
+                    ui,
+                    "入力した文字を表示",
+                    "「こんにちは」の近くに、打ったローマ字（konnnitiha）を表示します。",
+                    |ui| {
+                        changed |= toggle(ui, &mut self.opts.show_typed_input).changed();
+                    },
+                );
+                setting_divider(ui);
+                setting_row(
+                    ui,
+                    "確定の取り消し",
+                    "確定した直後に Ctrl+Backspace を押すと、確定前の読みに戻します。",
+                    |ui| {
+                        changed |= toggle(ui, &mut self.opts.undo_commit).changed();
+                    },
+                );
+                setting_divider(ui);
+                setting_row(
+                    ui,
+                    "入力モードを表示",
+                    "IME のオン/オフを切り替えたとき、文字カーソルの近くに「あ」「A」を表示します。",
+                    |ui| {
+                        changed |= toggle(ui, &mut self.opts.mode_indicator).changed();
+                    },
+                );
+            });
+        }
+
         if changed {
             self.save();
         }

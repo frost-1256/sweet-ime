@@ -6,9 +6,8 @@ use std::time::{Duration, Instant};
 
 use crate::Converter;
 
-/// Short settle window before running neural live refinement so rapid typing
-/// does not flicker the composition text on intermediate keystrokes.
-const LIVE_DEBOUNCE: Duration = Duration::from_millis(80);
+/// Default settle window before running neural live refinement (0 = off).
+const DEFAULT_LIVE_DEBOUNCE: Duration = Duration::ZERO;
 
 type Completion = Box<dyn FnOnce(String, String) + Send>;
 
@@ -16,6 +15,7 @@ struct Job {
     converter: &'static Converter,
     reading: String,
     left_context: String,
+    debounce: Duration,
     done: Completion,
     submitted_at: Instant,
 }
@@ -50,13 +50,26 @@ impl LiveConversionWorker {
         }
     }
 
-    /// Replaces any pending request. The callback receives the reading and
-    /// refined surface on the worker thread.
+    /// Replaces any pending request using the default debounce window. The
+    /// callback receives the reading and refined surface on the worker thread.
     pub fn submit(
         &'static self,
         converter: &'static Converter,
         reading: String,
         left_context: String,
+        done: impl FnOnce(String, String) + Send + 'static,
+    ) {
+        self.submit_with_debounce(converter, reading, left_context, DEFAULT_LIVE_DEBOUNCE, done);
+    }
+
+    /// Replaces any pending request with a caller-chosen settle delay.
+    /// `Duration::ZERO` runs immediately without waiting.
+    pub fn submit_with_debounce(
+        &'static self,
+        converter: &'static Converter,
+        reading: String,
+        left_context: String,
+        debounce: Duration,
         done: impl FnOnce(String, String) + Send + 'static,
     ) {
         self.started.call_once(|| {
@@ -71,6 +84,7 @@ impl LiveConversionWorker {
                 converter,
                 reading,
                 left_context,
+                debounce,
                 done: Box::new(done),
                 submitted_at: Instant::now(),
             })
@@ -89,8 +103,13 @@ impl LiveConversionWorker {
                         .wait_while(state, |s| s.job.is_none())
                         .unwrap_or_else(|e| e.into_inner());
                     let generation = state.generation;
-                    let elapsed = state.job.as_ref().unwrap().submitted_at.elapsed();
-                    if let Some(wait) = LIVE_DEBOUNCE.checked_sub(elapsed) {
+                    let (debounce, elapsed) = {
+                        let job = state.job.as_ref().unwrap();
+                        (job.debounce, job.submitted_at.elapsed())
+                    };
+                    if !debounce.is_zero()
+                        && let Some(wait) = debounce.checked_sub(elapsed)
+                    {
                         let (next_state, _) = self
                             .ready
                             .wait_timeout_while(state, wait, |s| s.generation == generation)

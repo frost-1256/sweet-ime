@@ -26,6 +26,8 @@
 #include <fcitx/userinterfacemanager.h>
 
 #ifdef SWEET_HAVE_WAYLAND
+#include <fcitx-utils/misc.h>
+#include <fcitx-utils/signals.h>
 #include <linux/input-event-codes.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -36,11 +38,16 @@
 #define namespace wl_namespace
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #undef namespace
-#ifdef SWEET_HAVE_WAYLANDIM
-#include <fcitx-utils/misc.h>
-#include <fcitx-utils/signals.h>
-#include <waylandim_public.h>
-#endif
+
+// Upstream fcitx5 does not install waylandim_public.h / Fcitx5ModuleWaylandIM
+// in standard packages, so declare the header-only addon call signature directly
+// (matching src/frontend/waylandim/waylandim_public.h).
+namespace fcitx::wayland {
+class ZwpInputMethodV2;
+}
+FCITX_ADDON_DECLARE_FUNCTION(
+    WaylandIMModule, getInputMethodV2,
+    fcitx::wayland::ZwpInputMethodV2 *(fcitx::InputContext *));
 #endif
 
 #ifdef SWEET_HAVE_XCB
@@ -792,7 +799,6 @@ private:
 // Wayland (wlr-layer-shell-v1 + double-buffered wl_shm + ext-background-effect-v1)
 // ---------------------------------------------------------------------------
 #ifdef SWEET_HAVE_WAYLAND
-#ifdef SWEET_HAVE_WAYLANDIM
 // Fcitx5's waylandim module exports getInputMethodV2(InputContext *) returning
 // fcitx::wayland::ZwpInputMethodV2 *, whose header is internal to fcitx5.
 // Mirror its layout and verify both version_ == 1 and wl_proxy_get_class() ==
@@ -821,7 +827,6 @@ static zwp_input_method_v2 *extractRawInputMethodV2(fcitx::wayland::ZwpInputMeth
     }
     return m->data;
 }
-#endif
 
 class WaylandPopup {
 public:
@@ -1731,14 +1736,12 @@ private:
         if (kind == BackendKind::Wayland) {
             if (auto it = wlPopups_.find(name); it != wlPopups_.end()) {
                 zwp_input_method_v2 *rawIm = nullptr;
-#ifdef SWEET_HAVE_WAYLANDIM
                 if (auto *ic = activeIC_.get(); ic && ic->frontendName() == "wayland_v2") {
                     if (auto *waylandim = instance_->addonManager().addon("waylandim", true)) {
                         auto *im = waylandim->call<fcitx::IWaylandIMModule::getInputMethodV2>(ic);
                         rawIm = extractRawInputMethodV2(im);
                     }
                 }
-#endif
                 const auto res = it->second->present(renderer_, activeCursor_, rawIm);
                 ok = (res == WaylandPopup::PresentResult::Ok ||
                       res == WaylandPopup::PresentResult::PendingConfigure);
