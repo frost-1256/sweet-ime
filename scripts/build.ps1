@@ -13,7 +13,8 @@
   it themselves with get-zenz.ps1.
 #>
 param(
-    [string]$MozcData = "$PSScriptRoot\..\third_party\mozc-data\src\data\dictionary_oss"
+    [string]$MozcData = "$PSScriptRoot\..\third_party\mozc-data\src\data\dictionary_oss",
+    [string]$Dictionary = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot\..").Path
@@ -21,8 +22,25 @@ $dist = Join-Path $root 'dist'
 $env:Path += ";$env:USERPROFILE\.cargo\bin"
 
 Push-Location $root
+$stagedDict = $null
 try {
-    cargo build --locked --release -p sweet-tsf -p sweet-tsf-shim -p sweet-dictc -p sweet-zenz -p sweet-settings -p sweet-installer
+    $dictSource = $null
+    if ($Dictionary) {
+        if (-not (Test-Path -LiteralPath $Dictionary)) { throw "Dictionary not found: $Dictionary" }
+        $dictSource = (Resolve-Path -LiteralPath $Dictionary).Path
+        $distPrefix = $dist.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if ($dictSource.StartsWith($distPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $stagedDict = Join-Path ([IO.Path]::GetTempPath()) ("sweet-ime-dict-" + [Guid]::NewGuid() + '.dict')
+            Copy-Item -LiteralPath $dictSource -Destination $stagedDict
+            $dictSource = $stagedDict
+        }
+    }
+
+    $x64Packages = @('-p', 'sweet-tsf', '-p', 'sweet-tsf-shim', '-p', 'sweet-zenz', '-p', 'sweet-settings', '-p', 'sweet-installer')
+    if (-not $dictSource) {
+        $x64Packages += @('-p', 'sweet-dictc')
+    }
+    cargo build --locked --release @x64Packages
     if ($LASTEXITCODE) { throw 'x64 build failed' }
     cargo build --locked --release -p sweet-tsf -p sweet-tsf-shim --target i686-pc-windows-msvc
     if ($LASTEXITCODE) { throw 'x86 build failed' }
@@ -52,7 +70,11 @@ try {
     Copy-Item target\release\sweet-settings.exe "$dist\"
     Copy-Item scripts\get-zenz.ps1 "$dist\"
 
-    & "$PSScriptRoot\build-dictionary.ps1" -MozcData $MozcData -Output "$dist\system.dict"
+    if ($dictSource) {
+        Copy-Item -LiteralPath $dictSource "$dist\system.dict"
+    } else {
+        & "$PSScriptRoot\build-dictionary.ps1" -MozcData $MozcData -Output "$dist\system.dict"
+    }
     Copy-Item LICENSE "$dist\licenses\sweet-ime.txt"
     Copy-Item (Join-Path $MozcData 'README.txt') "$dist\licenses\dictionary-oss.txt"
     Copy-Item assets\licenses\english-words.txt "$dist\licenses\english-words.txt"
@@ -69,5 +91,8 @@ try {
     if ($LASTEXITCODE) { throw 'installer verification failed' }
     Write-Host "Installer: $root\out\SweetIME-Setup.exe"
 } finally {
+    if ($stagedDict -and (Test-Path -LiteralPath $stagedDict)) {
+        Remove-Item -LiteralPath $stagedDict -Force -ErrorAction SilentlyContinue
+    }
     Pop-Location
 }

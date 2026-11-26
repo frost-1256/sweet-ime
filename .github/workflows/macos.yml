@@ -29,7 +29,15 @@ jobs:
           persist-credentials: false
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      - name: Cache the system dictionary
+        id: dict-cache
+        uses: actions/cache@v4
+        with:
+          path: data/system.dict
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
       - name: Build the system dictionary
+        if: steps.dict-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
       - run: cargo test --locked -p sweet-macos -p sweet-settings -p sweet-zenz -- --test-threads=1
@@ -53,6 +61,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p sweet-zenz --lib
       - uses: actions/download-artifact@v8
         with:

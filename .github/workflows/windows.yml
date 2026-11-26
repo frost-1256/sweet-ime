@@ -2,11 +2,15 @@ name: Build, test and release
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     tags: ['v[0-9]*']
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -39,14 +43,35 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Cache the system dictionary
+        id: dict-cache
+        uses: actions/cache@v4
+        with:
+          path: data/system.dict
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
+
+      - name: Build the system dictionary
+        if: steps.dict-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-dictionary.ps1 -Output data/system.dict
+
       - name: Build and verify the installer
-        run: ./scripts/build.ps1
+        run: ./scripts/build.ps1 -Dictionary data/system.dict
+
+      - name: Cache the zenz model
+        id: zenz-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/zenz.swz
+          key: zenz-v1-xsmall-${{ hashFiles('scripts/get-zenz.ps1', 'crates/zenz/**') }}
 
       - name: Run the Windows TSF harness
         run: |
           $env:SWEET_IME_DICT = (Resolve-Path dist/system.dict).Path
           $env:SWEET_IME_ZENZ = Join-Path $env:RUNNER_TEMP 'zenz.swz'
-          ./scripts/get-zenz.ps1 -Out $env:SWEET_IME_ZENZ
+          if (-not (Test-Path -LiteralPath $env:SWEET_IME_ZENZ)) {
+            ./scripts/get-zenz.ps1 -Out $env:SWEET_IME_ZENZ
+          }
           cargo run --locked --release -p sweet-tsf --example harness
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $searchHarness = Join-Path $env:RUNNER_TEMP 'SearchHost.exe'
@@ -70,7 +95,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Cache the system dictionary
+        id: dict-cache
+        uses: actions/cache@v4
+        with:
+          path: data/system.dict
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
+
       - name: Check out the Mozc dictionary
+        if: steps.dict-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
         with:
           repository: google/mozc
@@ -85,6 +119,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the system dictionary
+        if: steps.dict-cache.outputs.cache-hit != 'true'
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
 
       - name: Test the workspace with the system dictionary
@@ -101,7 +136,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Cache the system dictionary
+        id: dict-cache
+        uses: actions/cache@v4
+        with:
+          path: data/system.dict
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
+
       - name: Check out the Mozc dictionary
+        if: steps.dict-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
         with:
           repository: google/mozc
@@ -115,15 +159,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build the system dictionary
+        if: steps.dict-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-dictionary.ps1 -Output data/system.dict
+
       - name: Build the Android APK
         env:
           KEYSTORE_B64: ${{ secrets.SWEET_ANDROID_KEYSTORE_B64 }}
           SWEET_ANDROID_KEYSTORE_PASS: ${{ secrets.SWEET_ANDROID_KEYSTORE_PASS }}
         run: |
           # Kept in the Rust cache (~/.cargo/bin): installed once.
-          cargo install cargo-ndk --locked --version 4.1.2
-          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
-          & $sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' | Out-Null
+          if (-not (Get-Command cargo-ndk -ErrorAction SilentlyContinue)) {
+            cargo install cargo-ndk --locked --version 4.1.2
+          }
+          $platform = Join-Path $env:ANDROID_HOME 'platforms\android-36\android.jar'
+          $buildTools = Join-Path $env:ANDROID_HOME 'build-tools\36.0.0'
+          if (-not ((Test-Path -LiteralPath $platform) -and (Test-Path -LiteralPath $buildTools))) {
+            $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+            & $sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' | Out-Null
+          }
           $env:ANDROID_NDK_HOME = $env:ANDROID_NDK_LATEST_HOME
           $env:JAVA_HOME = $env:JAVA_HOME_17_X64
           if ($env:KEYSTORE_B64) {
@@ -131,7 +185,7 @@ jobs:
             [IO.File]::WriteAllBytes($ks, [Convert]::FromBase64String($env:KEYSTORE_B64))
             $env:SWEET_ANDROID_KEYSTORE = $ks
           }
-          ./android/build.ps1
+          ./android/build.ps1 -Dictionary data/system.dict
 
       - name: Store the APK
         uses: actions/upload-artifact@v7
