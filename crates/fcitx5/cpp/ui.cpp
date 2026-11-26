@@ -1587,6 +1587,7 @@ public:
     }
 
     void reloadConfig() override {
+        ++snapshotGen_;
         renderer_.reloadConfig();
         if (!suspended_ && renderer_.visible()) {
             renderNow();
