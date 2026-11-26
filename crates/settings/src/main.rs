@@ -26,7 +26,7 @@ mod update;
 mod update_ui;
 
 use eframe::egui::{self, RichText};
-use neural_page::{Download, MODELS};
+use neural_page::Download;
 use sweet_engine::learning::Learned;
 use sweet_engine::{Options, UserHistory, paths};
 use sweet_ui::eframe;
@@ -145,7 +145,6 @@ struct App {
     learned: Vec<(String, Learned)>,
     filter: String,
     confirm_clear: bool,
-    model: &'static str,
     download: Option<Download>,
     keys: keys_page::KeysPage,
     romaji: romaji_page::RomajiPage,
@@ -195,7 +194,6 @@ impl App {
             learned: Vec::new(),
             filter: String::new(),
             confirm_clear: false,
-            model: MODELS[0].0,
             download: None,
             keys: keys_page::KeysPage::new(),
             romaji: romaji_page::RomajiPage::new(),
@@ -252,9 +250,7 @@ impl eframe::App for App {
             // Let the installer replace this program.
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if let Some(download) = &mut self.download {
-            download.poll();
-        }
+        self.poll_download();
 
         let theme = appearance::apply(ui, self.opts.theme, &self.user_theme);
         let nav_frame = egui::Frame::new()
