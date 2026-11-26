@@ -146,48 +146,161 @@ unsafe fn matmul_avx2(
     j1: usize,
     accumulate: bool,
 ) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
     // Register-blocked micro-kernel: R rows x 16 columns of y live in
-    // registers while k streams. Column blocks are the outer loop so the
-    // k x 16 slice of w stays in cache across all row blocks.
+    // registers while k streams. For multi-block m, pack each KB x 16
+    // strip of w into a contiguous L1 buffer once so power-of-2 row
+    // strides (e.g. n = 512, 2048) never cause L1 set-conflict misses.
+    const KB: usize = 128;
     unsafe {
         let bp = bias.map_or(std::ptr::null(), |b| b.as_ptr());
         let jend = j0 + (j1 - j0) / 16 * 16;
         let mut j = j0;
-        while j < jend {
-            let mut i = 0;
-            // x86_64 has 16 YMM registers (6 rows x 2 accumulators + 2 w +
-            // 1 broadcast); 32-bit x86 only has 8, so use 2 rows there.
-            #[cfg(target_arch = "x86_64")]
-            while i < m {
-                match (m - i, accumulate) {
-                    (1, false) => micro::<1, false>(x, w, bp, y, i, j, k, n),
-                    (2, false) => micro::<2, false>(x, w, bp, y, i, j, k, n),
-                    (3, false) => micro::<3, false>(x, w, bp, y, i, j, k, n),
-                    (4, false) => micro::<4, false>(x, w, bp, y, i, j, k, n),
-                    (5, false) => micro::<5, false>(x, w, bp, y, i, j, k, n),
-                    (_, false) => micro::<6, false>(x, w, bp, y, i, j, k, n),
-                    (1, true) => micro::<1, true>(x, w, bp, y, i, j, k, n),
-                    (2, true) => micro::<2, true>(x, w, bp, y, i, j, k, n),
-                    (3, true) => micro::<3, true>(x, w, bp, y, i, j, k, n),
-                    (4, true) => micro::<4, true>(x, w, bp, y, i, j, k, n),
-                    (5, true) => micro::<5, true>(x, w, bp, y, i, j, k, n),
-                    (_, true) => micro::<6, true>(x, w, bp, y, i, j, k, n),
+        #[cfg(target_arch = "x86_64")]
+        let pack_threshold = 6;
+        #[cfg(target_arch = "x86")]
+        let pack_threshold = 2;
+        if m > pack_threshold {
+            let mut wpack = [0f32; KB * 16];
+            while j < jend {
+                let mut k0 = 0;
+                while k0 < k {
+                    let kb = (k - k0).min(KB);
+                    let mut wp = w.as_ptr().add(k0 * n + j);
+                    let mut pp = wpack.as_mut_ptr();
+                    for _ in 0..kb {
+                        _mm256_storeu_ps(pp, _mm256_loadu_ps(wp));
+                        _mm256_storeu_ps(pp.add(8), _mm256_loadu_ps(wp.add(8)));
+                        wp = wp.add(n);
+                        pp = pp.add(16);
+                    }
+                    let first_k = k0 == 0;
+                    let load_y = accumulate || !first_k;
+                    let bp_k = if first_k { bp } else { std::ptr::null() };
+                    let mut i = 0;
+                    #[cfg(target_arch = "x86_64")]
+                    while i < m {
+                        match (m - i, load_y) {
+                            (1, false) => micro_packed::<1, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (2, false) => micro_packed::<2, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (3, false) => micro_packed::<3, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (4, false) => micro_packed::<4, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (5, false) => micro_packed::<5, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (_, false) => micro_packed::<6, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (1, true) => micro_packed::<1, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (2, true) => micro_packed::<2, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (3, true) => micro_packed::<3, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (4, true) => micro_packed::<4, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (5, true) => micro_packed::<5, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (_, true) => micro_packed::<6, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                        }
+                        i += 6;
+                    }
+                    #[cfg(target_arch = "x86")]
+                    while i < m {
+                        match (m - i, load_y) {
+                            (1, false) => micro_packed::<1, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (_, false) => micro_packed::<2, false>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (1, true) => micro_packed::<1, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                            (_, true) => micro_packed::<2, true>(x, wpack.as_ptr(), bp_k, y, i, j, k0, kb, k, n),
+                        }
+                        i += 2;
+                    }
+                    k0 += kb;
                 }
-                i += 6;
+                j += 16;
             }
-            #[cfg(target_arch = "x86")]
-            while i < m {
-                match (m - i, accumulate) {
-                    (1, false) => micro::<1, false>(x, w, bp, y, i, j, k, n),
-                    (_, false) => micro::<2, false>(x, w, bp, y, i, j, k, n),
-                    (1, true) => micro::<1, true>(x, w, bp, y, i, j, k, n),
-                    (_, true) => micro::<2, true>(x, w, bp, y, i, j, k, n),
+        } else {
+            while j < jend {
+                let mut i = 0;
+                #[cfg(target_arch = "x86_64")]
+                while i < m {
+                    match (m - i, accumulate) {
+                        (1, false) => micro::<1, false>(x, w, bp, y, i, j, k, n),
+                        (2, false) => micro::<2, false>(x, w, bp, y, i, j, k, n),
+                        (3, false) => micro::<3, false>(x, w, bp, y, i, j, k, n),
+                        (4, false) => micro::<4, false>(x, w, bp, y, i, j, k, n),
+                        (5, false) => micro::<5, false>(x, w, bp, y, i, j, k, n),
+                        (_, false) => micro::<6, false>(x, w, bp, y, i, j, k, n),
+                        (1, true) => micro::<1, true>(x, w, bp, y, i, j, k, n),
+                        (2, true) => micro::<2, true>(x, w, bp, y, i, j, k, n),
+                        (3, true) => micro::<3, true>(x, w, bp, y, i, j, k, n),
+                        (4, true) => micro::<4, true>(x, w, bp, y, i, j, k, n),
+                        (5, true) => micro::<5, true>(x, w, bp, y, i, j, k, n),
+                        (_, true) => micro::<6, true>(x, w, bp, y, i, j, k, n),
+                    }
+                    i += 6;
                 }
-                i += 2;
+                #[cfg(target_arch = "x86")]
+                while i < m {
+                    match (m - i, accumulate) {
+                        (1, false) => micro::<1, false>(x, w, bp, y, i, j, k, n),
+                        (_, false) => micro::<2, false>(x, w, bp, y, i, j, k, n),
+                        (1, true) => micro::<1, true>(x, w, bp, y, i, j, k, n),
+                        (_, true) => micro::<2, true>(x, w, bp, y, i, j, k, n),
+                    }
+                    i += 2;
+                }
+                j += 16;
             }
-            j += 16;
         }
         matmul_generic(x, w, bias, y, m, k, n, jend, j1, accumulate);
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn micro_packed<const R: usize, const ACCUM: bool>(
+    x: &[f32],
+    wpack: *const f32,
+    bp: *const f32,
+    y: *mut f32,
+    i: usize,
+    j: usize,
+    k0: usize,
+    kb: usize,
+    k: usize,
+    n: usize,
+) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    unsafe {
+        let (b0, b1) = if bp.is_null() {
+            (_mm256_setzero_ps(), _mm256_setzero_ps())
+        } else {
+            (_mm256_loadu_ps(bp.add(j)), _mm256_loadu_ps(bp.add(j + 8)))
+        };
+        let mut acc0 = [b0; R];
+        let mut acc1 = [b1; R];
+        let xp = x.as_ptr().add(i * k + k0);
+        let mut wp = wpack;
+        for kk in 0..kb {
+            let w0 = _mm256_loadu_ps(wp);
+            let w1 = _mm256_loadu_ps(wp.add(8));
+            for r in 0..R {
+                let a = _mm256_broadcast_ss(&*xp.add(r * k + kk));
+                acc0[r] = _mm256_fmadd_ps(a, w0, acc0[r]);
+                acc1[r] = _mm256_fmadd_ps(a, w1, acc1[r]);
+            }
+            wp = wp.add(16);
+        }
+        for r in 0..R {
+            let yp = y.add((i + r) * n + j);
+            if ACCUM {
+                _mm256_storeu_ps(yp, _mm256_add_ps(_mm256_loadu_ps(yp), acc0[r]));
+                _mm256_storeu_ps(yp.add(8), _mm256_add_ps(_mm256_loadu_ps(yp.add(8)), acc1[r]));
+            } else {
+                _mm256_storeu_ps(yp, acc0[r]);
+                _mm256_storeu_ps(yp.add(8), acc1[r]);
+            }
+        }
     }
 }
 
