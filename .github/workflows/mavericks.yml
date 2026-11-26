@@ -3,6 +3,7 @@ name: Build Mavericks backport
 on:
   push:
     branches: [backport/macos-10.9]
+    tags: [backport/macos-10.9]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/backport/macos-10.9'
+    if: github.ref == 'refs/heads/backport/macos-10.9' || github.ref == 'refs/tags/backport/macos-10.9'
     runs-on: macos-15-intel
     timeout-minutes: 25
     env:
@@ -52,8 +53,62 @@ jobs:
       - name: Archive the executable with its permissions
         run: tar -czf target/mavericks/SweetIME-Mavericks-x86_64.tar.gz -C target/mavericks SweetIME
 
+      - name: Package and smoke-test the Mavericks input method
+        run: |
+          work=$(mktemp -d)
+          curl --fail --location --retry 3 -o "$work/base.zip" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/v0.5.4/SweetIME-macOS.zip"
+          ditto -x -k "$work/base.zip" "$work/base"
+          app="$work/payload/Sweet IME.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          install -m 755 target/mavericks/SweetIME "$app/Contents/MacOS/SweetIME"
+          cp macos/Info.plist "$app/Contents/Info.plist"
+          plist="$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :LSMinimumSystemVersion 10.9' "$plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 0.5.4' "$plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 0.5.4' "$plist"
+          plutil -lint "$plist"
+          cp "$work/base/Sweet IME.app/Contents/Resources/"{system.dict,SweetIME.icns} "$app/Contents/Resources/"
+          install -m 755 macos/install-mavericks.sh "$work/payload/Install Sweet IME.command"
+          codesign --force --sign - "$app"
+          codesign --verify --strict "$app"
+          "$app/Contents/MacOS/SweetIME" --smoke-test
+          ditto -c -k "$work/payload" target/mavericks/SweetIME-Mavericks.zip
+
       - uses: actions/upload-artifact@v7
         with:
           name: SweetIME-Mavericks-x86_64
           path: target/mavericks/SweetIME-Mavericks-x86_64.tar.gz
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SweetIME-Mavericks-package
+          path: target/mavericks/SweetIME-Mavericks.zip
+          if-no-files-found: error
+
+  publish:
+    if: github.ref == 'refs/tags/backport/macos-10.9'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: SweetIME-Mavericks-package
+      - name: Publish the Mavericks prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" SweetIME-Mavericks.zip \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title 'Sweet IME v0.5.4 – OS X 10.9 Mavericks (Preview)' --notes-file - <<'NOTES'
+          v0.5.4 をベースにした Intel Mac 向けの Mavericks バックポートです。
+
+          1. `SweetIME-Mavericks.zip` を展開します。
+          2. `Install Sweet IME.command` を実行します。
+          3. ログアウトして入り直し、システム環境設定の「キーボード」→「入力ソース」で Sweet IME を追加します。
+
+          OS X 10.9 SDK でリンクし、Intel CI で基本変換を確認しました。Mavericks 実機での動作は未確認です。
+          NOTES
