@@ -120,6 +120,9 @@ pub fn validate_rule(rule: &Rule) -> Option<&'static str> {
             return Some("タブ・改行・NUL は使えません");
         }
     }
+    if rule.input.starts_with('\u{feff}') {
+        return Some("入力の先頭に BOM (U+FEFF) は使えません");
+    }
     if rule.input.chars().count() > MAX_KEY_CHARS {
         return Some("入力は 32 文字以内にしてください");
     }

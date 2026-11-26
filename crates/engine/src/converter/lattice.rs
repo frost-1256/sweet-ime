@@ -848,9 +848,16 @@ impl Converter {
             }
         }
         add(crate::romaji::to_katakana(reading), &mut out);
-        if !reading.is_empty() && !out.iter().any(|s| s == reading) {
-            let pos = 6.min(out.len());
-            out.insert(pos, reading.to_string());
+        if !reading.is_empty() {
+            let target = 6.min(out.len());
+            match out.iter().position(|s| s == reading) {
+                Some(idx) if idx >= 9 => {
+                    let plain = out.remove(idx);
+                    out.insert(target, plain);
+                }
+                None => out.insert(target, reading.to_string()),
+                _ => {}
+            }
         }
         out
     }
