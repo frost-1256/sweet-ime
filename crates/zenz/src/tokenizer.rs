@@ -1,15 +1,41 @@
 //! GPT-2 byte-level BPE tokenizer (vocab.json + merges.txt).
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::io;
 use std::path::Path;
 
 const MISSING_ID: u32 = u32::MAX;
 
+/// Fast non-cryptographic hasher for internal `(u32, u32)` BPE merge keys.
+#[derive(Default)]
+struct PairHasher(u64);
+
+impl Hasher for PairHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(0x517cc1b727220a95);
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(i)).wrapping_mul(0x517cc1b727220a95);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type PairMap<K, V> = HashMap<K, V, BuildHasherDefault<PairHasher>>;
+
 pub struct Tokenizer {
     decoder: Vec<String>,
     /// Merge table keyed by `(left_id, right_id) -> (rank, merged_id)`.
-    merges: HashMap<(u32, u32), (u32, u32)>,
+    merges: PairMap<(u32, u32), (u32, u32)>,
     byte_to_id: [u32; 256],
     char_to_byte: HashMap<char, u8>,
     pub bos: u32,
@@ -115,7 +141,7 @@ impl Tokenizer {
     pub fn from_strings(vocab_json: &str, merges_text: &str) -> io::Result<Self> {
         let vocab: HashMap<String, u32> =
             serde_json::from_str(vocab_json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let mut merges = HashMap::new();
+        let mut merges = PairMap::default();
         let mut merged_buf = String::new();
         for (r, line) in merges_text.lines().filter(|l| !l.starts_with("#version")).enumerate() {
             if let Some((a, b)) = line.split_once(' ') {

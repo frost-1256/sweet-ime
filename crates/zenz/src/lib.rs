@@ -57,16 +57,29 @@ impl Zenz {
 
     /// Builds the v3 conversion prompt (up to and including the output tag).
     pub fn prompt(reading: &str, left_context: &str) -> String {
-        let mut p = String::new();
-        let ctx = normalize(left_context);
-        let n = ctx.chars().count();
-        let ctx: String = ctx.chars().skip(n.saturating_sub(MAX_CONTEXT_CHARS)).collect();
-        if !ctx.is_empty() {
-            p.push(CONTEXT_TAG);
-            p.push_str(&ctx);
+        let mut p = String::with_capacity(reading.len() + left_context.len().min(MAX_CONTEXT_CHARS * 3) + 12);
+        if !left_context.is_empty() {
+            let ctx = normalize(left_context);
+            let n = ctx.chars().count();
+            let start = ctx
+                .char_indices()
+                .nth(n.saturating_sub(MAX_CONTEXT_CHARS))
+                .map_or(ctx.len(), |(i, _)| i);
+            let tail = &ctx[start..];
+            if !tail.is_empty() {
+                p.push(CONTEXT_TAG);
+                p.push_str(tail);
+            }
         }
         p.push(INPUT_TAG);
-        p.push_str(&sweet_engine::romaji::to_katakana(&normalize(reading)));
+        for c in reading.chars() {
+            match c {
+                ' ' => p.push('\u{3000}'),
+                '\n' | '\r' => {}
+                'ぁ'..='ゖ' => p.push(char::from_u32(c as u32 + 0x60).unwrap_or(c)),
+                _ => p.push(c),
+            }
+        }
         p.push(OUTPUT_TAG);
         p
     }
@@ -152,36 +165,35 @@ impl Zenz {
         }
         // Logits are only needed from the last prompt token on.
         let from = p - 1;
-        let logits = self.model.forward_tree(&nodes, &parents, &mut cache, from);
-        let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
-        // A branch can score several child tokens and EOS from the same logits.
-        let normalizers: Vec<_> = if logits.len() >= 4 * v {
-            use rayon::prelude::*;
-            kernels::pool().install(|| {
+        self.model.forward_tree_with(&nodes, &parents, &mut cache, from, |logits| {
+            let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
+            // A branch can score several child tokens and EOS from the same logits.
+            let normalizers: Vec<_> = if logits.len() >= 16 * v {
+                use rayon::prelude::*;
                 logits
                     .par_chunks_exact(v)
                     .map(model::log_normalizer)
                     .collect()
-            })
-        } else {
-            logits.chunks_exact(v).map(model::log_normalizer).collect()
-        };
-        let log_prob = |i, token| {
-            let (mx, log_sum) = normalizers[i - from];
-            row(i)[token] - mx - log_sum
-        };
-        // Cumulative log-prob of the candidate part of the path to each node.
-        let mut cum = vec![0f32; nodes.len()];
-        for i in p..nodes.len() {
-            let par = parents[i].expect("candidate nodes have a parent");
-            cum[i] = cum[par] + log_prob(par, nodes[i] as usize);
-        }
-        ends.iter()
-            .map(|&end| {
-                let end = end.expect("non-empty prompt");
-                cum[end] + log_prob(end, eos)
-            })
-            .collect()
+            } else {
+                logits.chunks_exact(v).map(model::log_normalizer).collect()
+            };
+            let log_prob = |i, token| {
+                let (mx, log_sum) = normalizers[i - from];
+                row(i)[token] - mx - log_sum
+            };
+            // Cumulative log-prob of the candidate part of the path to each node.
+            let mut cum = vec![0f32; nodes.len()];
+            for i in p..nodes.len() {
+                let par = parents[i].expect("candidate nodes have a parent");
+                cum[i] = cum[par] + log_prob(par, nodes[i] as usize);
+            }
+            ends.iter()
+                .map(|&end| {
+                    let end = end.expect("non-empty prompt");
+                    cum[end] + log_prob(end, eos)
+                })
+                .collect()
+        })
     }
 }
 

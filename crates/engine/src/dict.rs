@@ -215,6 +215,25 @@ impl Dictionary {
         i16::from_le_bytes([self.map[o], self.map[o + 1]]) as i32
     }
 
+    /// Contiguous connection-cost row for `rid` on little-endian platforms when
+    /// properly aligned, enabling cache-friendly inner loops over `lid`.
+    #[inline]
+    pub(crate) fn connection_row_le(&self, rid: u16) -> Option<&[i16]> {
+        #[cfg(target_endian = "little")]
+        {
+            let start = self.conn_off + rid as usize * self.dim * 2;
+            let bytes = self.map.get(start..start + self.dim * 2)?;
+            if (bytes.as_ptr() as usize) % std::mem::align_of::<i16>() == 0 {
+                // SAFETY: length is `self.dim * 2` bytes, pointer is aligned to `i16`,
+                // and target endianness matches the little-endian dictionary layout.
+                return Some(unsafe {
+                    std::slice::from_raw_parts(bytes.as_ptr() as *const i16, self.dim)
+                });
+            }
+        }
+        None
+    }
+
     #[inline]
     pub fn pos_class(&self, id: u16) -> PosClass {
         PosClass::from_u8(self.map[self.class_off + id as usize])
