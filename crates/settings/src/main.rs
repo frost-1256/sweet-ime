@@ -131,6 +131,8 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     saved_user_themes: Vec<sweet_engine::theme::SavedUserTheme>,
     #[cfg(not(target_os = "macos"))]
+    saved_user_themes_error: Option<String>,
+    #[cfg(not(target_os = "macos"))]
     user_theme_name: String,
     #[cfg(not(target_os = "macos"))]
     font_picker: Option<font_picker::FontPicker>,
@@ -158,7 +160,10 @@ impl App {
         let opts = paths::load_options();
         let user_theme = paths::load_user_theme();
         #[cfg(not(target_os = "macos"))]
-        let saved_user_themes = paths::load_saved_user_themes();
+        let (saved_user_themes, saved_user_themes_error) = match paths::load_saved_user_themes() {
+            Ok(list) => (list, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
         let updater = {
             let mut updater = update::Updater::new();
             if opts.update_check {
@@ -174,6 +179,8 @@ impl App {
             user_theme,
             #[cfg(not(target_os = "macos"))]
             saved_user_themes,
+            #[cfg(not(target_os = "macos"))]
+            saved_user_themes_error,
             #[cfg(not(target_os = "macos"))]
             user_theme_name: String::new(),
             #[cfg(not(target_os = "macos"))]
@@ -293,10 +300,13 @@ impl eframe::App for App {
                             &mut self.opts.theme,
                             &mut self.user_theme,
                             &mut self.saved_user_themes,
+                            self.saved_user_themes_error.as_deref(),
                             &mut self.user_theme_name,
                         );
                         let mut save_ok = true;
-                        if theme_change.saved_themes_changed {
+                        if theme_change.saved_themes_changed
+                            && self.saved_user_themes_error.is_none()
+                        {
                             if let Err(e) = paths::save_saved_user_themes(&self.saved_user_themes) {
                                 self.status = Some((format!("保存できませんでした: {e}"), false));
                                 save_ok = false;

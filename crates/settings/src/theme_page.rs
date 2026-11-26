@@ -37,6 +37,7 @@ pub fn ui(
     current: &mut Theme,
     user_theme: &mut UserTheme,
     saved_themes: &mut Vec<SavedUserTheme>,
+    saved_themes_error: Option<&str>,
     save_name: &mut String,
 ) -> ThemeChange {
     let mut change = ThemeChange::default();
@@ -204,30 +205,40 @@ pub fn ui(
                     });
 
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(save_name)
-                            .hint_text("テーマ名を入力")
-                            .desired_width(170.0),
+                if let Some(err) = saved_themes_error {
+                    ui.label(
+                        RichText::new(format!(
+                            "保存済みテーマを読み込めませんでした ({err})。保護のため保存を無効にしています。"
+                        ))
+                        .small()
+                        .color(ui.visuals().error_fg_color),
                     );
-                    let clean_name = sanitize_theme_name(save_name);
-                    if ui
-                        .add_enabled(!clean_name.is_empty(), egui::Button::new("保存"))
-                        .clicked()
-                    {
-                        if let Some(existing) =
-                            saved_themes.iter_mut().find(|t| t.name == clean_name)
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(save_name)
+                                .hint_text("テーマ名を入力")
+                                .desired_width(170.0),
+                        );
+                        let clean_name = sanitize_theme_name(save_name);
+                        if ui
+                            .add_enabled(!clean_name.is_empty(), egui::Button::new("保存"))
+                            .clicked()
                         {
-                            existing.theme = *user_theme;
-                        } else {
-                            saved_themes.push(SavedUserTheme {
-                                name: clean_name,
-                                theme: *user_theme,
-                            });
+                            if let Some(existing) =
+                                saved_themes.iter_mut().find(|t| t.name == clean_name)
+                            {
+                                existing.theme = *user_theme;
+                            } else {
+                                saved_themes.push(SavedUserTheme {
+                                    name: clean_name,
+                                    theme: *user_theme,
+                                });
+                            }
+                            change.saved_themes_changed = true;
                         }
-                        change.saved_themes_changed = true;
-                    }
-                });
+                    });
+                }
             });
         });
 
