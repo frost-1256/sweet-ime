@@ -108,7 +108,7 @@ impl Slip {
     /// leaves another valid word), swapping two the safest.
     fn penalty(self) -> i32 {
         match self {
-            Slip::Extra => EDIT_PENALTY + 500,
+            Slip::Extra => EDIT_PENALTY + 1150,
             Slip::Repeated => EDIT_PENALTY,
             Slip::Swapped => EDIT_PENALTY - 500,
             Slip::Missing | Slip::Neighbour => EDIT_PENALTY,
@@ -207,6 +207,15 @@ fn edits(raw: &str, window: usize, earlier: bool) -> Vec<(String, String, Slip)>
             for onset in "kstmgzdbprfwcjv".chars() {
                 add(i, &[onset], &b[i..], Slip::MissingConsonant);
             }
+        } else if ch == 'h' {
+            for onset in ['s', 'c'] {
+                add(i, &[onset], &b[i..], Slip::MissingConsonant);
+            }
+        } else if ch == 's' {
+            add(i, &['t'], &b[i..], Slip::MissingConsonant);
+            if ch != b.get(i.wrapping_sub(1)).copied().unwrap_or('\0') {
+                add(i, &[ch], &b[i..], Slip::MissingConsonant);
+            }
         } else if ch.is_ascii_lowercase()
             && ch != 'n'
             && ch != b.get(i.wrapping_sub(1)).copied().unwrap_or('\0')
@@ -253,7 +262,7 @@ pub(crate) fn correct_with_gain(
     if typed.is_empty() {
         return None;
     }
-    const RECENT_KEYS: usize = 12;
+    const RECENT_KEYS: usize = 16;
     let variants = edits(raw, RECENT_KEYS, false);
     let (raw, reading, gain) = conv.score_typos(|cost| {
         let base = cost(&typed);
@@ -286,7 +295,7 @@ pub(crate) fn correct_with_gain(
         let earlier_margin = recent
             .as_ref()
             .map_or(i64::from(margin), |(_, _, gain)| *gain)
-            + 1400;
+            + 1100;
         pick(edits(raw, RECENT_KEYS, true), earlier_margin).or(recent)
     })?;
     let surface = conv.convert(&reading, &[], 1).into_iter().next()?.surface();

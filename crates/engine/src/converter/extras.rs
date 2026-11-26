@@ -191,8 +191,74 @@ impl Converter {
                 push(arabic_id, cost + NUMBER_ARABIC_EXTRA, n.value.to_string());
                 if let Some(s) = crate::number::to_arabic_big(n.value) {
                     push(arabic_id, cost + NUMBER_ARABIC_EXTRA - 100, s);
+                } else if (200..=900).contains(&n.value) && n.value % 100 == 0 {
+                    push(
+                        arabic_id,
+                        cost + NUMBER_ARABIC_EXTRA + 200,
+                        format!("{}百", n.value / 100),
+                    );
+                } else if (2000..=9000).contains(&n.value) && n.value % 1000 == 0 {
+                    push(
+                        arabic_id,
+                        cost + NUMBER_ARABIC_EXTRA + 200,
+                        format!("{}千", n.value / 1000),
+                    );
                 }
             }
+        }
+        self.arabic_counter_extras(text, out);
+    }
+
+    /// Offers Arabic-digit variants (1人, 2人, 1個, 1本, 1票) for dictionary
+    /// entries written with a leading kanji digit and a counter.
+    fn arabic_counter_extras(&self, text: &str, out: &mut Vec<Extra>) {
+        const COUNTERS: &[&str] = &[
+            "人", "個", "本", "枚", "冊", "台", "回", "階", "年", "月", "日", "時", "分", "秒",
+            "円", "歳", "才", "票", "位", "番", "件", "名", "つ", "度", "軒", "匹", "頭", "羽",
+            "杯", "脚", "組", "点", "社", "校", "駅", "曲", "話", "章", "行", "列", "面", "勝",
+            "敗", "倍", "割", "歩", "泊", "巻", "着", "足", "丁", "粒", "袋", "箱", "缶", "瓶",
+            "皿", "玉", "つ目",
+        ];
+        let kanji_digit = |c: char| -> Option<char> {
+            match c {
+                '一' => Some('1'),
+                '二' => Some('2'),
+                '三' => Some('3'),
+                '四' => Some('4'),
+                '五' => Some('5'),
+                '六' => Some('6'),
+                '七' => Some('7'),
+                '八' => Some('8'),
+                '九' => Some('9'),
+                _ => None,
+            }
+        };
+        let mut seen: std::collections::HashSet<(usize, usize, String)> = Default::default();
+        for (pos, _) in text.char_indices() {
+            self.dict.common_prefix(&text[pos..], |l, e| {
+                let mut chars = e.surface.chars();
+                let Some(first) = chars.next() else { return };
+                let Some(digit) = kanji_digit(first) else {
+                    return;
+                };
+                let rest = chars.as_str();
+                if !COUNTERS.contains(&rest) {
+                    return;
+                }
+                let surface = format!("{digit}{rest}");
+                let end = pos + l;
+                if seen.insert((pos, end, surface.clone())) {
+                    out.push(Extra {
+                        start: pos,
+                        end,
+                        lid: e.lid,
+                        rid: e.rid,
+                        cost: i32::from(e.cost) + NUMBER_ARABIC_EXTRA,
+                        surface,
+                        origin: Origin::Number,
+                    });
+                }
+            });
         }
     }
 

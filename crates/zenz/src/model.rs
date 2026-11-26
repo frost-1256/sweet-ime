@@ -1,6 +1,6 @@
 //! GPT-2 forward pass with a KV cache, loading HF safetensors (F32/BF16/F16).
 
-use crate::kernels::matmul;
+use crate::kernels::{axpy_f32, dot_f32, matmul, matmul_bias};
 
 mod weights;
 
@@ -96,14 +96,6 @@ impl KvCache {
             self.v[l].truncate(len * e);
         }
         self.len = len.min(self.len);
-    }
-}
-
-fn add_bias(y: &mut [f32], b: &[f32]) {
-    for row in y.chunks_exact_mut(b.len()) {
-        for (v, bb) in row.iter_mut().zip(b) {
-            *v += bb;
-        }
     }
 }
 
@@ -225,12 +217,11 @@ impl Model {
         for (li, lr) in self.layers.iter().enumerate() {
             let l = self.view(d, lr);
             layer_norm(&x, &l.ln1_w, &l.ln1_b, eps, &mut h);
-            matmul(&h, &l.attn_w, &mut qkv, t, e, 3 * e, false);
-            add_bias(&mut qkv, &l.attn_b);
+            matmul_bias(&h, &l.attn_w, Some(&l.attn_b), &mut qkv, t, e, 3 * e, false);
             {
                 let kc = &cache.k[li];
                 let vc = &cache.v[li];
-                for i in 0..t {
+                let run_row = |i: usize, att_row: &mut [f32], scores: &mut [f32]| {
                     let n_ctx = past + anc[i].len();
                     for hh in 0..nh {
                         let off = hh * hd;
@@ -242,7 +233,7 @@ impl Model {
                             } else {
                                 &qkv[anc[i][j - past] * 3 * e + e + off..][..hd]
                             };
-                            let s = q.iter().zip(k).map(|(a, b)| a * b).sum::<f32>() * scale;
+                            let s = dot_f32(q, k) * scale;
                             scores[j] = s;
                             mx = mx.max(s);
                         }
@@ -251,7 +242,7 @@ impl Model {
                             *s = (*s - mx).exp();
                             sum += *s;
                         }
-                        let out = &mut att[i * e + off..][..hd];
+                        let out = &mut att_row[off..][..hd];
                         out.fill(0.0);
                         let inv_sum = sum.recip();
                         for j in 0..n_ctx {
@@ -261,10 +252,21 @@ impl Model {
                             } else {
                                 &qkv[anc[i][j - past] * 3 * e + 2 * e + off..][..hd]
                             };
-                            for d in 0..hd {
-                                out[d] += w * v[d];
-                            }
+                            axpy_f32(out, v, w);
                         }
+                    }
+                };
+                if t >= 12 {
+                    use rayon::prelude::*;
+                    att.par_chunks_exact_mut(e)
+                        .enumerate()
+                        .for_each_init(
+                            || vec![0f32; max_ctx],
+                            |row_scores, (i, att_row)| run_row(i, att_row, row_scores),
+                        );
+                } else {
+                    for (i, att_row) in att.chunks_exact_mut(e).enumerate() {
+                        run_row(i, att_row, &mut scores);
                     }
                 }
             }
@@ -274,14 +276,11 @@ impl Model {
                     cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
                 }
             }
-            matmul(&att, &l.proj_w, &mut x, t, e, e, true);
-            add_bias(&mut x, &l.proj_b);
+            matmul_bias(&att, &l.proj_w, Some(&l.proj_b), &mut x, t, e, e, true);
             layer_norm(&x, &l.ln2_w, &l.ln2_b, eps, &mut h);
-            matmul(&h, &l.fc_w, &mut ff, t, e, 4 * e, false);
-            add_bias(&mut ff, &l.fc_b);
+            matmul_bias(&h, &l.fc_w, Some(&l.fc_b), &mut ff, t, e, 4 * e, false);
             gelu_new(&mut ff);
-            matmul(&ff, &l.fc2_w, &mut x, t, 4 * e, e, true);
-            add_bias(&mut x, &l.fc2_b);
+            matmul_bias(&ff, &l.fc2_w, Some(&l.fc2_b), &mut x, t, 4 * e, e, true);
         }
         if append {
             cache.len = past + t;
