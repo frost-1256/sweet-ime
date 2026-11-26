@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appearance;
 mod apps_page;
 mod dict_page;
 #[cfg(not(target_os = "macos"))]
@@ -23,7 +24,7 @@ mod theme_page;
 mod update;
 mod update_ui;
 
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, RichText};
 use neural_page::{Download, MODELS};
 use sweet_engine::learning::Learned;
 use sweet_engine::{Options, UserHistory, paths};
@@ -229,28 +230,42 @@ impl eframe::App for App {
             download.poll();
         }
 
-        egui::Panel::left("nav").resizable(false).exact_size(190.0).show(ui, |ui| {
-            ui.add_space(18.0);
-            ui.label(RichText::new("Sweet IME").size(20.0).strong());
-            ui.add_space(14.0);
-            for &p in Page::ALL {
-                let selected = self.page == p;
-                let text = RichText::new(p.label()).size(15.5);
-                let b = egui::Button::selectable(selected, text).min_size(Vec2::new(ui.available_width(), 34.0));
-                if ui.add(b).clicked() {
-                    self.select_page(p);
-                }
-            }
-        });
+        let theme = appearance::apply(ui, self.opts.theme);
+        let nav_frame = egui::Frame::new()
+            .fill(theme.sidebar)
+            .stroke(egui::Stroke::new(1.0, theme.border))
+            .inner_margin(egui::Margin::symmetric(12, 16));
+        egui::Panel::left("nav")
+            .resizable(false)
+            .exact_size(168.0)
+            .frame(nav_frame)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin { left: 14, top: 3, ..egui::Margin::ZERO })
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Sweet IME").size(20.0).strong());
+                        });
+                    ui.add_space(9.0);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for &p in Page::ALL {
+                        if theme.navigation_item(ui, p.label(), self.page == p).clicked() {
+                            self.select_page(p);
+                        }
+                    }
+                });
+            });
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        let content_frame = egui::Frame::new()
+            .fill(theme.background)
+            .inner_margin(egui::Margin::symmetric(22, 16));
+        egui::CentralPanel::default().frame(content_frame).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                ui.add_space(14.0);
+                sweet_ui::title(ui, self.page.label());
+                ui.add_space(4.0);
                 if self.page != Page::About {
                     update_ui::banner(ui, &mut self.updater);
                 }
-                sweet_ui::title(ui, self.page.label());
-                ui.add_space(6.0);
                 match self.page {
                     Page::Input => self.input_page(ui),
                     Page::Keys => self.keys.ui(ui, &mut self.status),
