@@ -68,9 +68,14 @@ install -Dm755 scripts/get-zenz.sh "$PKG_ROOT/files/share/sweet-ime/get-zenz.sh"
 install -Dm644 LICENSE "$PKG_ROOT/files/share/sweet-ime/licenses/sweet-ime.txt"
 install -Dm644 assets/licenses/english-words.txt "$PKG_ROOT/files/share/sweet-ime/licenses/english-words.txt"
 install -Dm644 assets/licenses/sudachidict.txt "$PKG_ROOT/files/share/sweet-ime/licenses/sudachidict.txt"
+install -Dm644 assets/licenses/wayland-protocols.txt "$PKG_ROOT/files/share/sweet-ime/licenses/wayland-protocols.txt"
 if [ -f third_party/mozc-data/src/data/dictionary_oss/README.txt ]; then
     install -Dm644 third_party/mozc-data/src/data/dictionary_oss/README.txt \
         "$PKG_ROOT/files/share/sweet-ime/licenses/dictionary-oss.txt"
+fi
+if [ ! -f "$PKG_ROOT/files/lib/fcitx5/sweetui.so" ] || [ ! -f "$PKG_ROOT/files/share/fcitx5/addon/sweetui.conf" ]; then
+    echo "ERROR: sweetui.so or sweetui.conf missing from staged package" >&2
+    exit 1
 fi
 
 cat > "$PKG_ROOT/install.sh" <<'EOF'
@@ -135,9 +140,11 @@ fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
     rm -f "${ADDON_DIR}/sweetime.so" \
+        "${ADDON_DIR}/sweetui.so" \
         "${PREFIX}/bin/sweet-settings" \
         "${PREFIX}/bin/sweet-zenz-pack" \
         "${PREFIX}/share/fcitx5/addon/sweetime.conf" \
+        "${PREFIX}/share/fcitx5/addon/sweetui.conf" \
         "${PREFIX}/share/fcitx5/inputmethod/sweetime.conf" \
         "${PREFIX}/share/applications/sweet-settings.desktop"
     rm -rf "${PREFIX}/share/sweet-ime" "${PREFIX}/share/fcitx5/themes"/sweet-ime-*
@@ -146,6 +153,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 install -Dm755 "$SCRIPT_DIR/files/lib/fcitx5/sweetime.so" "${ADDON_DIR}/sweetime.so"
+if [ -f "$SCRIPT_DIR/files/lib/fcitx5/sweetui.so" ]; then
+    install -Dm755 "$SCRIPT_DIR/files/lib/fcitx5/sweetui.so" "${ADDON_DIR}/sweetui.so"
+fi
 install -Dm755 "$SCRIPT_DIR/files/bin/sweet-settings" "${PREFIX}/bin/sweet-settings"
 install -Dm755 "$SCRIPT_DIR/files/bin/sweet-zenz-pack" "${PREFIX}/bin/sweet-zenz-pack"
 mkdir -p "${PREFIX}/share"

@@ -464,24 +464,68 @@ fn write_classicui(config: &Path, edit: impl FnOnce(&str) -> String, hint: &str)
     Ok(())
 }
 
-/// Asks the running fcitx5 to reload the classicui theme.
+/// Asks the running fcitx5 to reload the active UI addon (classicui / sweetui).
 fn reload() {
     use std::process::{Command, Stdio};
-    let dbus = Command::new("dbus-send")
+    let reload_addon = |addon: &str| {
+        Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.fcitx.Fcitx5",
+                "/controller",
+                "org.fcitx.Fcitx.Controller1.ReloadAddonConfig",
+                &format!("string:{addon}"),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let active = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply=literal",
+            "--dest=org.fcitx.Fcitx5",
+            "/controller",
+            "org.fcitx.Fcitx.Controller1.CurrentUI",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    match active.as_deref() {
+        Some("kimpanel") => {
+            let _ = reload_addon("kimpanel");
+            let _ = reload_addon("classicui");
+        }
+        Some(ui) => {
+            let _ = reload_addon(ui);
+        }
+        None => {
+            let _ = reload_addon("classicui");
+            let _ = reload_addon("sweetui");
+        }
+    }
+}
+
+/// Reloads SweetUI's configuration without touching `classicui.conf`.
+#[cfg(not(windows))]
+pub fn reload_sweetui() {
+    use std::process::{Command, Stdio};
+    let _ = Command::new("dbus-send")
         .args([
             "--session",
             "--print-reply",
             "--dest=org.fcitx.Fcitx5",
             "/controller",
             "org.fcitx.Fcitx.Controller1.ReloadAddonConfig",
-            "string:classicui",
+            "string:sweetui",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    if !dbus.is_ok_and(|s| s.success()) {
-        let _ = Command::new("fcitx5-remote").arg("-r").stdout(Stdio::null()).stderr(Stdio::null()).status();
-    }
 }
 
 #[cfg(test)]
