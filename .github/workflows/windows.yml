@@ -299,8 +299,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake pkg-config unzip curl libfcitx5core-dev \
-            libcairo2-dev libpango1.0-dev libwayland-bin \
+            cmake pkg-config unzip curl libfcitx5core-dev fcitx5-modules-dev \
+            libcairo2-dev libpango1.0-dev libwayland-bin libxcb-ewmh-dev \
             libfontconfig1-dev libwayland-dev libxkbcommon-dev \
             libgl1-mesa-dev libegl1-mesa-dev libx11-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev

@@ -357,8 +357,8 @@ impl eframe::App for App {
                                 if toggle(ui, &mut self.opts.gaming_mode).changed() {
                                     self.save();
                                     #[cfg(not(windows))]
-                                    {
-                                        let _ = fcitx_theme::apply(self.opts.theme, &self.user_theme);
+                                    if self.status.as_ref().is_none_or(|(_, ok)| *ok) {
+                                        fcitx_theme::reload_sweetui();
                                     }
                                 }
                             },

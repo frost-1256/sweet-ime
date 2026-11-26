@@ -4,8 +4,9 @@
 // - Per-pixel ARGB rounded corners, drop shadow, and user-theme background opacity
 // - 90 ms fade-in animation and 70 ms cubic ease-out selection highlight slide
 // - Optional animated rainbow border (gaming_mode)
+// - Wayland ext-background-effect-v1 compositor blur when translucent
 // - Direct theme sync from Sweet IME's config.txt + user_theme.txt
-// - Wayland (wlr-layer-shell-v1 + wl_shm) and X11/XCB (32-bit ARGB override-redirect) backends
+// - Wayland (wlr-layer-shell-v1 + double-buffered wl_shm) and X11/XCB backends
 
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
@@ -42,6 +43,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -79,6 +81,11 @@ struct RectF {
     bool contains(double px, double py) const {
         return px >= x && px <= x + w && py >= y && py <= y + h;
     }
+
+    bool approxEqual(const RectF &o) const {
+        return std::fabs(x - o.x) < 0.5 && std::fabs(y - o.y) < 0.5 &&
+               std::fabs(w - o.w) < 0.5 && std::fabs(h - o.h) < 0.5;
+    }
 };
 
 struct CandidateItem {
@@ -88,6 +95,7 @@ struct CandidateItem {
 
 struct PanelSnapshot {
     std::string preedit;
+    std::string aux_up;
     std::string aux_down;
     std::vector<CandidateItem> items;
     int cursor = -1;
@@ -178,14 +186,19 @@ double easeOutCubic(double t) {
 
 class SweetPanelRenderer {
 public:
-    SweetPanelRenderer() {
-        reloadConfig();
-    }
+    SweetPanelRenderer() { reloadConfig(); }
 
     void reloadConfig() {
         sweet_ui_load_theme(&theme_);
         prefs_ = readClassicUIPrefs();
         lastConfigReload_ = Clock::now();
+        if (snap_.visible) {
+            measure();
+            if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
+                slideFrom_ = itemRects_[snap_.cursor];
+                slideTo_ = itemRects_[snap_.cursor];
+            }
+        }
     }
 
     void maybeReloadConfig() {
@@ -193,7 +206,9 @@ public:
                                  Clock::now() - lastConfigReload_)
                                  .count();
         if (elapsed >= 500) {
-            reloadConfig();
+            sweet_ui_load_theme(&theme_);
+            prefs_ = readClassicUIPrefs();
+            lastConfigReload_ = Clock::now();
         }
     }
 
@@ -202,8 +217,7 @@ public:
         maybeReloadConfig();
 
         const bool wasVisible = snap_.visible;
-        const int oldCursor = snap_.cursor;
-        RectF oldHighlight = currentHighlightRect(now);
+        const RectF oldHighlight = currentHighlightRect(now);
 
         snap_ = next;
 
@@ -231,13 +245,16 @@ public:
             slideStart_ = now - std::chrono::milliseconds(static_cast<long long>(SLIDE_MS));
         } else if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
             const RectF target = itemRects_[snap_.cursor];
-            if (oldCursor != snap_.cursor && oldHighlight.w > 0.0 && oldHighlight.h > 0.0) {
-                slideFrom_ = oldHighlight;
-                slideTo_ = target;
-                slideStart_ = now;
-            } else {
-                slideFrom_ = target;
-                slideTo_ = target;
+            // Keep an in-progress slide intact if the target geometry has not changed.
+            if (!target.approxEqual(slideTo_)) {
+                if (oldHighlight.w > 0.0 && oldHighlight.h > 0.0) {
+                    slideFrom_ = oldHighlight;
+                    slideTo_ = target;
+                    slideStart_ = now;
+                } else {
+                    slideFrom_ = target;
+                    slideTo_ = target;
+                }
             }
         }
     }
@@ -320,7 +337,8 @@ public:
         if (theme_.gaming_mode) {
             const double sec =
                 std::chrono::duration<double>(now.time_since_epoch()).count();
-            cairo_pattern_t *pat = cairo_pattern_create_linear(cardX, cardY, cardX + cardW, cardY + cardH);
+            cairo_pattern_t *pat =
+                cairo_pattern_create_linear(cardX, cardY, cardX + cardW, cardY + cardH);
             for (int s = 0; s <= 4; ++s) {
                 double r, g, b;
                 hsvToRgb(sec * 0.35 + s * 0.25, 0.85, 1.0, r, g, b);
@@ -384,6 +402,20 @@ public:
         const double padV = static_cast<double>(theme_.panel_padding);
         const double padH = padV + 4.0;
         const double contentPad = std::max(4.0, padV - 1.0);
+        double headerY = cardY + contentPad + 2.0;
+
+        // Optional auxUp line (e.g. input-method notification banner).
+        if (!snap_.aux_up.empty()) {
+            pango_layout_set_font_description(layout, fontDesc);
+            pango_layout_set_text(layout, snap_.aux_up.c_str(), -1);
+            int w = 0, h = 0;
+            pango_layout_get_pixel_size(layout, &w, &h);
+            cairo_set_source_rgba(cr, theme_.text[0] / 255.0, theme_.text[1] / 255.0,
+                                  theme_.text[2] / 255.0, fade);
+            cairo_move_to(cr, cardX + contentPad + padH, headerY);
+            pango_cairo_show_layout(cr, layout);
+            headerY += h + 6.0;
+        }
 
         // Optional preedit line (when client doesn't display inline preedit).
         if (!snap_.preedit.empty()) {
@@ -391,7 +423,7 @@ public:
             pango_layout_set_text(layout, snap_.preedit.c_str(), -1);
             cairo_set_source_rgba(cr, theme_.text[0] / 255.0, theme_.text[1] / 255.0,
                                   theme_.text[2] / 255.0, fade);
-            cairo_move_to(cr, cardX + contentPad + padH, cardY + contentPad + 2.0);
+            cairo_move_to(cr, cardX + contentPad + padH, headerY);
             pango_cairo_show_layout(cr, layout);
         }
 
@@ -477,14 +509,22 @@ private:
         const double padH = padV + 4.0;
         const double contentPad = std::max(4.0, padV - 1.0);
 
-        double preW = 0.0, preH = 0.0;
+        double headW = 0.0, headH = 0.0;
+        if (!snap_.aux_up.empty()) {
+            pango_layout_set_font_description(layout, fontDesc);
+            pango_layout_set_text(layout, snap_.aux_up.c_str(), -1);
+            int w = 0, h = 0;
+            pango_layout_get_pixel_size(layout, &w, &h);
+            headW = std::max(headW, w + 2.0 * padH);
+            headH += h + 6.0;
+        }
         if (!snap_.preedit.empty()) {
             pango_layout_set_font_description(layout, fontDesc);
             pango_layout_set_text(layout, snap_.preedit.c_str(), -1);
             int w = 0, h = 0;
             pango_layout_get_pixel_size(layout, &w, &h);
-            preW = w + 2.0 * padH;
-            preH = h + 6.0;
+            headW = std::max(headW, w + 2.0 * padH);
+            headH += h + 6.0;
         }
 
         double footW = 0.0, footH = 0.0;
@@ -531,8 +571,8 @@ private:
         double cardW = 0.0;
         double cardH = 0.0;
         if (prefs_.vertical) {
-            const double innerW = std::max({MIN_PANEL_W, preW, footW, maxItemW});
-            double y = SHADOW_PAD + contentPad + preH;
+            const double innerW = std::max({MIN_PANEL_W, headW, footW, maxItemW});
+            double y = SHADOW_PAD + contentPad + headH;
             for (const auto &sz : itemSizes) {
                 itemRects_.push_back({SHADOW_PAD + contentPad, y, innerW, sz.second});
                 y += sz.second + 2.0;
@@ -541,15 +581,15 @@ private:
             cardW = innerW + 2.0 * contentPad;
             cardH = (y - SHADOW_PAD) + footH + contentPad;
         } else {
-            const double innerW = std::max({MIN_PANEL_W, preW, footW, sumItemW});
+            const double innerW = std::max({MIN_PANEL_W, headW, footW, sumItemW});
             double x = SHADOW_PAD + contentPad;
-            const double y = SHADOW_PAD + contentPad + preH;
+            const double y = SHADOW_PAD + contentPad + headH;
             for (const auto &sz : itemSizes) {
                 itemRects_.push_back({x, y, sz.first, maxItemH});
                 x += sz.first + 4.0;
             }
             cardW = innerW + 2.0 * contentPad;
-            cardH = preH + maxItemH + footH + 2.0 * contentPad;
+            cardH = headH + maxItemH + footH + 2.0 * contentPad;
         }
 
         width_ = static_cast<int>(std::ceil(cardW + 2.0 * SHADOW_PAD));
@@ -623,13 +663,13 @@ public:
         }
     }
 
-    void present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor) {
-        if (!screen_) return;
+    bool present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor) {
+        if (!screen_) return false;
         const int w = renderer.width();
         const int h = renderer.height();
         if (w <= 0 || h <= 0) {
             hide();
-            return;
+            return false;
         }
         ensureWindow(w, h);
 
@@ -665,12 +705,21 @@ public:
         cairo_surface_flush(surf);
         const unsigned char *data = cairo_image_surface_get_data(surf);
         const int stride = cairo_image_surface_get_stride(surf);
-        xcb_put_image(conn_, XCB_IMAGE_FORMAT_Z_PIXMAP, win_, gc_,
-                      static_cast<uint16_t>(w), static_cast<uint16_t>(h), 0, 0, 0, depth_,
-                      static_cast<uint32_t>(stride * h), data);
+
+        // Chunk uploads into <= 64 KiB strips so we never exceed libxcb's
+        // 262 KiB non-BIG-REQUESTS request limit on the shared connection.
+        const int maxRows = std::max(1, 65536 / std::max(1, stride));
+        for (int row = 0; row < h; row += maxRows) {
+            const int stripH = std::min(maxRows, h - row);
+            xcb_put_image(conn_, XCB_IMAGE_FORMAT_Z_PIXMAP, win_, gc_,
+                          static_cast<uint16_t>(w), static_cast<uint16_t>(stripH), 0,
+                          static_cast<int16_t>(row), 0, depth_,
+                          static_cast<uint32_t>(stride * stripH), data + row * stride);
+        }
         xcb_flush(conn_);
         cairo_destroy(cr);
         cairo_surface_destroy(surf);
+        return true;
     }
 
 private:
@@ -724,7 +773,7 @@ private:
 #endif
 
 // ---------------------------------------------------------------------------
-// Wayland (wlr-layer-shell-v1 + wl_shm) backend
+// Wayland (wlr-layer-shell-v1 + double-buffered wl_shm + ext-background-effect-v1)
 // ---------------------------------------------------------------------------
 #ifdef SWEET_HAVE_WAYLAND
 class WaylandPopup {
@@ -745,8 +794,15 @@ public:
         hide();
         if (pointer_) wl_pointer_destroy(pointer_);
         if (seat_) wl_seat_destroy(seat_);
+        if (output_) wl_output_destroy(output_);
         if (bgEffectManager_) ext_background_effect_manager_v1_destroy(bgEffectManager_);
-        if (layerShell_) zwlr_layer_shell_v1_destroy(layerShell_);
+        if (layerShell_) {
+            if (layerShellVersion_ >= 3) {
+                zwlr_layer_shell_v1_destroy(layerShell_);
+            } else {
+                wl_proxy_destroy(reinterpret_cast<wl_proxy *>(layerShell_));
+            }
+        }
         if (shm_) wl_shm_destroy(shm_);
         if (compositor_) wl_compositor_destroy(compositor_);
         if (registry_) wl_registry_destroy(registry_);
@@ -769,25 +825,32 @@ public:
             wl_surface_destroy(surface_);
             surface_ = nullptr;
         }
-        destroyBuffer();
+        for (auto &slot : slots_) {
+            slot.destroy();
+        }
         configured_ = false;
         pointerInside_ = false;
         if (display_) wl_display_flush(display_);
     }
 
-    void present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor) {
-        if (!ready()) return;
+    bool present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor) {
+        if (!ready()) return false;
         const int w = renderer.width();
         const int h = renderer.height();
         if (w <= 0 || h <= 0) {
             hide();
-            return;
+            return false;
         }
 
         if (!surface_) {
             surface_ = wl_compositor_create_surface(compositor_);
+            if (!surface_) return false;
             layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
                 layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "sweet-ime");
+            if (!layerSurface_) {
+                hide();
+                return false;
+            }
             zwlr_layer_surface_v1_add_listener(layerSurface_, &kLayerSurfaceListener, this);
             zwlr_layer_surface_v1_set_keyboard_interactivity(
                 layerSurface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
@@ -801,8 +864,21 @@ public:
             zwlr_layer_surface_v1_set_anchor(
                 layerSurface_,
                 ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
-            const int mx = std::max(0, cursor.left() - static_cast<int>(SHADOW_PAD));
-            const int my = std::max(0, cursor.bottom() + 4 - static_cast<int>(SHADOW_PAD));
+            int mx = cursor.left() - static_cast<int>(SHADOW_PAD);
+            int my = cursor.bottom() + 4 - static_cast<int>(SHADOW_PAD);
+            if (outputH_ > 0 && my + h > outputH_) {
+                my = cursor.top() - h - 4 + static_cast<int>(SHADOW_PAD);
+            }
+            if (outputW_ > 0) {
+                mx = std::clamp(mx, 0, std::max(0, outputW_ - w));
+            } else {
+                mx = std::max(0, mx);
+            }
+            if (outputH_ > 0) {
+                my = std::clamp(my, 0, std::max(0, outputH_ - h));
+            } else {
+                my = std::max(0, my);
+            }
             zwlr_layer_surface_v1_set_margin(layerSurface_, my, 0, 0, mx);
         } else {
             zwlr_layer_surface_v1_set_anchor(layerSurface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
@@ -814,6 +890,10 @@ public:
         if (!configured_) {
             wl_surface_commit(surface_);
             wl_display_roundtrip(display_);
+            // Compositor may have sent `closed` during the roundtrip.
+            if (!surface_ || !layerSurface_) {
+                return false;
+            }
         }
 
         // Apply Wayland ext-background-effect-v1 compositor blur when translucent.
@@ -839,61 +919,99 @@ public:
             }
         }
 
-        if (!ensureBuffer(w, h)) return;
+        ShmSlot *slot = acquireSlot(w, h);
+        if (!slot) {
+            return false;
+        }
 
         cairo_surface_t *surf = cairo_image_surface_create_for_data(
-            static_cast<unsigned char *>(shmData_), CAIRO_FORMAT_ARGB32, w, h, w * 4);
+            static_cast<unsigned char *>(slot->data), CAIRO_FORMAT_ARGB32, w, h, w * 4);
         cairo_t *cr = cairo_create(surf);
         renderer.paint(cr);
         cairo_surface_flush(surf);
         cairo_destroy(cr);
         cairo_surface_destroy(surf);
 
-        wl_surface_attach(surface_, buffer_, 0, 0);
+        slot->busy = true;
+        wl_surface_attach(surface_, slot->buffer, 0, 0);
         wl_surface_damage_buffer(surface_, 0, 0, w, h);
         wl_surface_commit(surface_);
         wl_display_flush(display_);
+        return true;
     }
 
 private:
-    bool ensureBuffer(int w, int h) {
-        if (buffer_ && bufW_ == w && bufH_ == h) return true;
-        destroyBuffer();
-        const size_t size = static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
-        const int fd = memfd_create("sweetui-shm", MFD_CLOEXEC);
-        if (fd < 0) return false;
-        if (ftruncate(fd, static_cast<off_t>(size)) < 0) {
-            close(fd);
-            return false;
-        }
-        void *mem = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        if (mem == MAP_FAILED) {
-            close(fd);
-            return false;
-        }
-        wl_shm_pool *pool = wl_shm_create_pool(shm_, fd, static_cast<int32_t>(size));
-        buffer_ = wl_shm_pool_create_buffer(pool, 0, w, h, w * 4, WL_SHM_FORMAT_ARGB8888);
-        wl_shm_pool_destroy(pool);
-        close(fd);
-        shmData_ = mem;
-        shmSize_ = size;
-        bufW_ = w;
-        bufH_ = h;
-        return buffer_ != nullptr;
-    }
+    struct ShmSlot {
+        wl_buffer *buffer = nullptr;
+        void *data = nullptr;
+        size_t size = 0;
+        int w = 0;
+        int h = 0;
+        bool busy = false;
 
-    void destroyBuffer() {
-        if (buffer_) {
-            wl_buffer_destroy(buffer_);
-            buffer_ = nullptr;
+        void destroy() {
+            if (buffer) {
+                wl_buffer_destroy(buffer);
+                buffer = nullptr;
+            }
+            if (data) {
+                munmap(data, size);
+                data = nullptr;
+            }
+            size = 0;
+            w = 0;
+            h = 0;
+            busy = false;
         }
-        if (shmData_) {
-            munmap(shmData_, shmSize_);
-            shmData_ = nullptr;
+
+        bool ensure(wl_shm *shm, int nw, int nh) {
+            if (buffer && w == nw && h == nh) return true;
+            destroy();
+            const size_t nsize = static_cast<size_t>(nw) * static_cast<size_t>(nh) * 4;
+            const int fd = memfd_create("sweetui-shm", MFD_CLOEXEC);
+            if (fd < 0) return false;
+            if (ftruncate(fd, static_cast<off_t>(nsize)) < 0) {
+                close(fd);
+                return false;
+            }
+            void *mem = mmap(nullptr, nsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (mem == MAP_FAILED) {
+                close(fd);
+                return false;
+            }
+            wl_shm_pool *pool = wl_shm_create_pool(shm, fd, static_cast<int32_t>(nsize));
+            buffer = wl_shm_pool_create_buffer(pool, 0, nw, nh, nw * 4, WL_SHM_FORMAT_ARGB8888);
+            wl_shm_pool_destroy(pool);
+            close(fd);
+            if (!buffer) {
+                munmap(mem, nsize);
+                return false;
+            }
+            wl_buffer_add_listener(buffer, &kBufferListener, this);
+            data = mem;
+            size = nsize;
+            w = nw;
+            h = nh;
+            busy = false;
+            return true;
         }
-        shmSize_ = 0;
-        bufW_ = 0;
-        bufH_ = 0;
+
+        static void onRelease(void *user, wl_buffer *) {
+            static_cast<ShmSlot *>(user)->busy = false;
+        }
+
+        static constexpr wl_buffer_listener kBufferListener = {
+            .release = onRelease,
+        };
+    };
+
+    ShmSlot *acquireSlot(int w, int h) {
+        for (auto &slot : slots_) {
+            if (!slot.busy) {
+                return slot.ensure(shm_, w, h) ? &slot : nullptr;
+            }
+        }
+        return nullptr;
     }
 
     static void onGlobal(void *data, wl_registry *reg, uint32_t name, const char *iface,
@@ -906,13 +1024,18 @@ private:
             self->shm_ = static_cast<wl_shm *>(
                 wl_registry_bind(reg, name, &wl_shm_interface, 1));
         } else if (std::strcmp(iface, zwlr_layer_shell_v1_interface.name) == 0) {
-            self->layerShell_ = static_cast<zwlr_layer_shell_v1 *>(
-                wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1));
+            self->layerShellVersion_ = std::min(version, 3u);
+            self->layerShell_ = static_cast<zwlr_layer_shell_v1 *>(wl_registry_bind(
+                reg, name, &zwlr_layer_shell_v1_interface, self->layerShellVersion_));
         } else if (std::strcmp(iface, ext_background_effect_manager_v1_interface.name) == 0) {
             self->bgEffectManager_ = static_cast<ext_background_effect_manager_v1 *>(
                 wl_registry_bind(reg, name, &ext_background_effect_manager_v1_interface, 1));
             ext_background_effect_manager_v1_add_listener(self->bgEffectManager_,
                                                           &kBgEffectListener, self);
+        } else if (std::strcmp(iface, wl_output_interface.name) == 0 && !self->output_) {
+            self->output_ = static_cast<wl_output *>(
+                wl_registry_bind(reg, name, &wl_output_interface, std::min(version, 2u)));
+            wl_output_add_listener(self->output_, &kOutputListener, self);
         } else if (std::strcmp(iface, wl_seat_interface.name) == 0 && !self->seat_) {
             self->seat_ = static_cast<wl_seat *>(
                 wl_registry_bind(reg, name, &wl_seat_interface, std::min(version, 5u)));
@@ -925,6 +1048,26 @@ private:
     static constexpr wl_registry_listener kRegistryListener = {
         .global = onGlobal,
         .global_remove = onGlobalRemove,
+    };
+
+    static void onOutputGeometry(void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t,
+                                 const char *, const char *, int32_t) {}
+    static void onOutputMode(void *data, wl_output *, uint32_t flags, int32_t w, int32_t h,
+                             int32_t) {
+        if ((flags & WL_OUTPUT_MODE_CURRENT) != 0 && w > 0 && h > 0) {
+            auto *self = static_cast<WaylandPopup *>(data);
+            self->outputW_ = w;
+            self->outputH_ = h;
+        }
+    }
+    static void onOutputDone(void *, wl_output *) {}
+    static void onOutputScale(void *, wl_output *, int32_t) {}
+
+    static constexpr wl_output_listener kOutputListener = {
+        .geometry = onOutputGeometry,
+        .mode = onOutputMode,
+        .done = onOutputDone,
+        .scale = onOutputScale,
     };
 
     static void onSeatCapabilities(void *data, wl_seat *seat, uint32_t caps) {
@@ -1031,19 +1174,19 @@ private:
     wl_registry *registry_ = nullptr;
     wl_compositor *compositor_ = nullptr;
     wl_shm *shm_ = nullptr;
+    wl_output *output_ = nullptr;
     wl_seat *seat_ = nullptr;
     wl_pointer *pointer_ = nullptr;
     zwlr_layer_shell_v1 *layerShell_ = nullptr;
+    uint32_t layerShellVersion_ = 1;
     ext_background_effect_manager_v1 *bgEffectManager_ = nullptr;
     ext_background_effect_surface_v1 *bgEffectSurface_ = nullptr;
     bool blurSupported_ = false;
     wl_surface *surface_ = nullptr;
     zwlr_layer_surface_v1 *layerSurface_ = nullptr;
-    wl_buffer *buffer_ = nullptr;
-    void *shmData_ = nullptr;
-    size_t shmSize_ = 0;
-    int bufW_ = 0;
-    int bufH_ = 0;
+    std::array<ShmSlot, 2> slots_{};
+    int outputW_ = 0;
+    int outputH_ = 0;
     bool configured_ = false;
     bool pointerInside_ = false;
     double ptrX_ = 0.0;
@@ -1065,17 +1208,21 @@ public:
                 [this](const std::string &name, wl_display *display, fcitx::FocusGroup *) {
                     auto popup = std::make_unique<WaylandPopup>(
                         display,
-                        [this](double x, double y) { onHover(x, y); },
-                        [this](double x, double y) { onClick(x, y); });
+                        [this, name](double x, double y) { onHover(BackendKind::Wayland, name, x, y); },
+                        [this, name](double x, double y) { onClick(BackendKind::Wayland, name, x, y); });
                     if (popup->ready()) {
                         wlPopups_[name] = std::move(popup);
-                        instance_->userInterfaceManager().updateAvailability();
+                        notifyAvailability();
                     }
                 });
             wlClosed_ = wayland->call<fcitx::IWaylandModule::addConnectionClosedCallback>(
                 [this](const std::string &name, wl_display *) {
+                    if (presentedKind_ == BackendKind::Wayland && presentedName_ == name) {
+                        presentedKind_ = BackendKind::None;
+                        presentedName_.clear();
+                    }
                     wlPopups_.erase(name);
-                    instance_->userInterfaceManager().updateAvailability();
+                    notifyAvailability();
                 });
         }
 #endif
@@ -1089,21 +1236,24 @@ public:
                         name, [this, name](xcb_connection_t *, xcb_generic_event_t *ev) {
                             return handleXcbEvent(name, ev);
                         });
-                    instance_->userInterfaceManager().updateAvailability();
+                    notifyAvailability();
                 });
             xcbClosed_ = xcb->call<fcitx::IXCBModule::addConnectionClosedCallback>(
                 [this](const std::string &name, xcb_connection_t *) {
+                    if (presentedKind_ == BackendKind::Xcb && presentedName_ == name) {
+                        presentedKind_ = BackendKind::None;
+                        presentedName_.clear();
+                    }
                     xcbFilters_.erase(name);
                     xcbPopups_.erase(name);
-                    instance_->userInterfaceManager().updateAvailability();
+                    notifyAvailability();
                 });
         }
 #endif
+        constructing_ = false;
     }
 
-    ~SweetUI() override {
-        stopTimer();
-    }
+    ~SweetUI() override { stopTimer(); }
 
     bool available() override {
         bool ok = false;
@@ -1129,6 +1279,9 @@ public:
 
     void reloadConfig() override {
         renderer_.reloadConfig();
+        if (!suspended_ && renderer_.visible()) {
+            renderNow();
+        }
     }
 
     void update(fcitx::UserInterfaceComponent component, fcitx::InputContext *ic) override {
@@ -1139,6 +1292,9 @@ public:
         const auto &panel = ic->inputPanel();
         if (!panel.preedit().empty()) {
             snap.preedit = panel.preedit().toString();
+        }
+        if (!panel.auxUp().empty()) {
+            snap.aux_up = panel.auxUp().toString();
         }
         if (!panel.auxDown().empty()) {
             snap.aux_down = panel.auxDown().toString();
@@ -1152,59 +1308,122 @@ public:
             }
             snap.cursor = cands->cursorIndex();
         }
-        snap.visible = !snap.items.empty() || !snap.preedit.empty();
+        snap.visible = !snap.items.empty() || !snap.preedit.empty() || !snap.aux_up.empty() ||
+                       !snap.aux_down.empty();
 
         activeIC_ = ic->watch();
         activeDisplay_ = ic->display();
         activeCursor_ = ic->cursorRect();
+        retryCount_ = 0;
         renderer_.updateData(snap);
         renderNow();
     }
 
 private:
+    enum class BackendKind { None, Wayland, Xcb };
+
+    void notifyAvailability() {
+        if (!constructing_) {
+            instance_->userInterfaceManager().updateAvailability();
+        }
+    }
+
+    std::pair<BackendKind, std::string> resolveTarget() const {
+#ifdef SWEET_HAVE_WAYLAND
+        if (activeDisplay_.rfind("wayland:", 0) == 0) {
+            const std::string name = activeDisplay_.substr(8);
+            if (wlPopups_.find(name) != wlPopups_.end()) {
+                return {BackendKind::Wayland, name};
+            }
+            return {BackendKind::None, {}};
+        }
+#endif
+#ifdef SWEET_HAVE_XCB
+        if (activeDisplay_.rfind("x11:", 0) == 0) {
+            const std::string name = activeDisplay_.substr(4);
+            if (xcbPopups_.find(name) != xcbPopups_.end()) {
+                return {BackendKind::Xcb, name};
+            }
+            return {BackendKind::None, {}};
+        }
+#endif
+        // Only fall back to a default connection when no explicit display was named.
+        if (activeDisplay_.empty()) {
+#ifdef SWEET_HAVE_WAYLAND
+            if (!wlPopups_.empty()) {
+                return {BackendKind::Wayland, wlPopups_.begin()->first};
+            }
+#endif
+#ifdef SWEET_HAVE_XCB
+            if (!xcbPopups_.empty()) {
+                return {BackendKind::Xcb, xcbPopups_.begin()->first};
+            }
+#endif
+        }
+        return {BackendKind::None, {}};
+    }
+
+    void hidePresented() {
+#ifdef SWEET_HAVE_WAYLAND
+        if (presentedKind_ == BackendKind::Wayland) {
+            if (auto it = wlPopups_.find(presentedName_); it != wlPopups_.end()) {
+                it->second->hide();
+            }
+        }
+#endif
+#ifdef SWEET_HAVE_XCB
+        if (presentedKind_ == BackendKind::Xcb) {
+            if (auto it = xcbPopups_.find(presentedName_); it != xcbPopups_.end()) {
+                it->second->hide();
+            }
+        }
+#endif
+        presentedKind_ = BackendKind::None;
+        presentedName_.clear();
+    }
+
     void renderNow() {
         if (!renderer_.visible()) {
             hideAll();
             stopTimer();
             return;
         }
-        bool presented = false;
+        auto [kind, name] = resolveTarget();
+        if (kind != presentedKind_ || name != presentedName_) {
+            hidePresented();
+        }
+        bool ok = false;
 #ifdef SWEET_HAVE_WAYLAND
-        if (activeDisplay_.rfind("wayland:", 0) == 0) {
-            auto it = wlPopups_.find(activeDisplay_.substr(8));
-            if (it == wlPopups_.end() && !wlPopups_.empty()) it = wlPopups_.begin();
-            if (it != wlPopups_.end()) {
-                it->second->present(renderer_, activeCursor_);
-                presented = true;
+        if (kind == BackendKind::Wayland) {
+            if (auto it = wlPopups_.find(name); it != wlPopups_.end()) {
+                ok = it->second->present(renderer_, activeCursor_);
             }
         }
 #endif
 #ifdef SWEET_HAVE_XCB
-        if (!presented && activeDisplay_.rfind("x11:", 0) == 0) {
-            auto it = xcbPopups_.find(activeDisplay_.substr(4));
-            if (it == xcbPopups_.end() && !xcbPopups_.empty()) it = xcbPopups_.begin();
-            if (it != xcbPopups_.end()) {
-                it->second->present(renderer_, activeCursor_);
-                presented = true;
+        if (kind == BackendKind::Xcb) {
+            if (auto it = xcbPopups_.find(name); it != xcbPopups_.end()) {
+                ok = it->second->present(renderer_, activeCursor_);
             }
         }
 #endif
-#ifdef SWEET_HAVE_WAYLAND
-        if (!presented && !wlPopups_.empty()) {
-            wlPopups_.begin()->second->present(renderer_, activeCursor_);
-            presented = true;
-        }
-#endif
-#ifdef SWEET_HAVE_XCB
-        if (!presented && !xcbPopups_.empty()) {
-            xcbPopups_.begin()->second->present(renderer_, activeCursor_);
-            presented = true;
-        }
-#endif
-        if (presented && renderer_.needsAnimation()) {
-            ensureTimer();
+        if (ok) {
+            presentedKind_ = kind;
+            presentedName_ = name;
+            retryCount_ = 0;
+            if (renderer_.needsAnimation()) {
+                ensureTimer();
+            } else {
+                stopTimer();
+            }
         } else {
-            stopTimer();
+            hidePresented();
+            if (kind != BackendKind::None && retryCount_ < 3) {
+                ++retryCount_;
+                ensureTimer();
+            } else {
+                stopTimer();
+            }
         }
     }
 
@@ -1215,6 +1434,9 @@ private:
 #ifdef SWEET_HAVE_XCB
         for (auto &[_, p] : xcbPopups_) p->hide();
 #endif
+        presentedKind_ = BackendKind::None;
+        presentedName_.clear();
+        retryCount_ = 0;
     }
 
     void ensureTimer() {
@@ -1223,7 +1445,8 @@ private:
             CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 16000, 1000,
             [this](fcitx::EventSourceTime *src, uint64_t) {
                 renderNow();
-                if (renderer_.needsAnimation()) {
+                if (renderer_.needsAnimation() ||
+                    (presentedKind_ == BackendKind::None && retryCount_ > 0 && retryCount_ < 3)) {
                     src->setNextInterval(16000);
                     src->setOneShot();
                 } else {
@@ -1235,13 +1458,15 @@ private:
 
     void stopTimer() { animTimer_.reset(); }
 
-    void onHover(double x, double y) {
+    void onHover(BackendKind kind, const std::string &name, double x, double y) {
+        if (kind != presentedKind_ || name != presentedName_) return;
         if (renderer_.setHover(x, y)) {
             renderNow();
         }
     }
 
-    void onClick(double x, double y) {
+    void onClick(BackendKind kind, const std::string &name, double x, double y) {
+        if (kind != presentedKind_ || name != presentedName_) return;
         const int idx = renderer_.hitTest(x, y);
         if (idx < 0) return;
         auto *ic = activeIC_.get();
@@ -1263,19 +1488,19 @@ private:
         if (type == XCB_MOTION_NOTIFY) {
             auto *m = reinterpret_cast<xcb_motion_notify_event_t *>(ev);
             if (m->event == win) {
-                onHover(m->event_x, m->event_y);
+                onHover(BackendKind::Xcb, name, m->event_x, m->event_y);
                 return true;
             }
         } else if (type == XCB_LEAVE_NOTIFY) {
             auto *l = reinterpret_cast<xcb_leave_notify_event_t *>(ev);
             if (l->event == win) {
-                onHover(-1.0, -1.0);
+                onHover(BackendKind::Xcb, name, -1.0, -1.0);
                 return true;
             }
         } else if (type == XCB_BUTTON_PRESS) {
             auto *b = reinterpret_cast<xcb_button_press_event_t *>(ev);
             if (b->event == win && b->detail == 1) {
-                onClick(b->event_x, b->event_y);
+                onClick(BackendKind::Xcb, name, b->event_x, b->event_y);
                 return true;
             }
         }
@@ -1288,7 +1513,11 @@ private:
     fcitx::TrackableObjectReference<fcitx::InputContext> activeIC_;
     std::string activeDisplay_;
     fcitx::Rect activeCursor_;
+    BackendKind presentedKind_ = BackendKind::None;
+    std::string presentedName_;
+    int retryCount_ = 0;
     std::unique_ptr<fcitx::EventSourceTime> animTimer_;
+    bool constructing_ = true;
     bool suspended_ = false;
 
 #ifdef SWEET_HAVE_WAYLAND

@@ -68,9 +68,14 @@ install -Dm755 scripts/get-zenz.sh "$PKG_ROOT/files/share/sweet-ime/get-zenz.sh"
 install -Dm644 LICENSE "$PKG_ROOT/files/share/sweet-ime/licenses/sweet-ime.txt"
 install -Dm644 assets/licenses/english-words.txt "$PKG_ROOT/files/share/sweet-ime/licenses/english-words.txt"
 install -Dm644 assets/licenses/sudachidict.txt "$PKG_ROOT/files/share/sweet-ime/licenses/sudachidict.txt"
+install -Dm644 assets/licenses/wayland-protocols.txt "$PKG_ROOT/files/share/sweet-ime/licenses/wayland-protocols.txt"
 if [ -f third_party/mozc-data/src/data/dictionary_oss/README.txt ]; then
     install -Dm644 third_party/mozc-data/src/data/dictionary_oss/README.txt \
         "$PKG_ROOT/files/share/sweet-ime/licenses/dictionary-oss.txt"
+fi
+if [ ! -f "$PKG_ROOT/files/lib/fcitx5/sweetui.so" ] || [ ! -f "$PKG_ROOT/files/share/fcitx5/addon/sweetui.conf" ]; then
+    echo "ERROR: sweetui.so or sweetui.conf missing from staged package" >&2
+    exit 1
 fi
 
 cat > "$PKG_ROOT/install.sh" <<'EOF'

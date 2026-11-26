@@ -79,6 +79,7 @@ stdenv.mkDerivation (finalAttrs: {
     pango
     wayland
     xorg.libxcb
+    xorg.xcbutilwm
   ];
 
   cmakeDir = "../crates/fcitx5";
@@ -116,6 +117,7 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm644 ../LICENSE "$out/share/sweet-ime/licenses/sweet-ime.txt"
     install -Dm644 ../assets/licenses/english-words.txt "$out/share/sweet-ime/licenses/english-words.txt"
     install -Dm644 ../assets/licenses/sudachidict.txt "$out/share/sweet-ime/licenses/sudachidict.txt"
+    install -Dm644 ../assets/licenses/wayland-protocols.txt "$out/share/sweet-ime/licenses/wayland-protocols.txt"
     install -Dm644 ${mozc}/src/data/dictionary_oss/README.txt "$out/share/sweet-ime/licenses/dictionary-oss.txt"
     wrapProgram "$out/bin/sweet-settings" \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiLibs} \
