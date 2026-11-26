@@ -11,17 +11,24 @@ pub struct RomajiPage {
     /// Path typed for import or export.
     file: String,
     confirm_reset: bool,
+    /// Why `romaji.tsv` could not be read, if it could not.
+    load_error: Option<String>,
     /// Measured height of one row, for the virtualized list.
     row_h: f32,
 }
 
 impl RomajiPage {
     pub fn new() -> Self {
+        let (rules, load_error) = match paths::load_romaji_rules() {
+            Ok(rules) => (rules.unwrap_or_else(romaji::default_rules), None),
+            Err(e) => (romaji::default_rules(), Some(e.to_string())),
+        };
         Self {
-            rules: paths::load_romaji_rules().unwrap_or_else(romaji::default_rules),
+            rules,
             filter: String::new(),
             file: String::new(),
             confirm_reset: false,
+            load_error,
             row_h: 40.0,
         }
     }
@@ -44,6 +51,15 @@ impl RomajiPage {
             )
             .weak(),
         );
+        if let Some(e) = &self.load_error {
+            ui.label(
+                RichText::new(format!(
+                    "romaji.tsv を読めませんでした ({e})。IME はそれまでの表(なければ組み込みの表)を使い続けます。\
+                     ここに出ている組み込みの表を変更すると、そのファイルは上書きされます。"
+                ))
+                .color(ui.visuals().warn_fg_color),
+            );
+        }
         ui.add_space(4.0);
         let mut changed = false;
         ui.horizontal(|ui| {
@@ -56,10 +72,13 @@ impl RomajiPage {
                 ui.label("表を初期設定に戻しますか?");
                 if ui.button("戻す").clicked() {
                     *status = Some(match paths::reset_romaji_rules() {
-                        Ok(()) => ("初期設定に戻しました。".into(), true),
+                        Ok(()) => {
+                            self.rules = romaji::default_rules();
+                            self.load_error = None;
+                            ("初期設定に戻しました。".into(), true)
+                        }
                         Err(e) => (format!("戻せませんでした: {e}"), false),
                     });
-                    self.rules = romaji::default_rules();
                     self.confirm_reset = false;
                 }
                 if ui.button("やめる").clicked() {
@@ -190,21 +209,19 @@ impl RomajiPage {
             ui.horizontal(|ui| {
                 let path = self.file.trim().trim_matches('"').to_string();
                 if ui.add_enabled(!path.is_empty(), egui::Button::new("インポート")).clicked() {
-                    *status = Some(match std::fs::read(&path).map(|b| sweet_engine::text_file::decode_text(&b)) {
-                        Ok(text) => {
-                            let rules = romaji::parse_rules(&text);
-                            if rules.is_empty() {
-                                ("ローマ字の行が見つかりませんでした。".into(), false)
-                            } else {
+                    *status = Some(match paths::read_romaji_table(std::path::Path::new(&path)) {
+                        Ok(None) => ("ローマ字の行が見つかりませんでした。".into(), false),
+                        // The editor keeps its table unless the new one was saved.
+                        Ok(Some(rules)) => match paths::save_romaji_rules(&rules) {
+                            Ok(()) => {
                                 let n = rules.len();
                                 self.rules = rules;
                                 self.filter.clear();
-                                match self.save() {
-                                    (_, true) => (format!("{n} 行を読み込みました。"), true),
-                                    failed => failed,
-                                }
+                                self.load_error = None;
+                                (format!("{n} 行を読み込みました。"), true)
                             }
-                        }
+                            Err(e) => (format!("保存できませんでした: {e}"), false),
+                        },
                         Err(e) => (format!("読み込めませんでした: {e}"), false),
                     });
                 }

@@ -18,3 +18,26 @@ fn user_table_applies_to_composers_until_reset() {
     romaji::set_rules(None);
     assert_eq!(romaji::to_hiragana("ca"), "cあ");
 }
+
+#[test]
+fn reading_a_table_file_distinguishes_missing_empty_and_too_large() {
+    use sweet_engine::paths::read_romaji_table;
+
+    let dir = std::env::temp_dir().join(format!("sweet-ime-romaji-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("romaji.tsv");
+
+    assert!(read_romaji_table(&path).unwrap().is_none(), "missing");
+    std::fs::write(&path, "no tabs\n").unwrap();
+    assert!(read_romaji_table(&path).unwrap().is_none(), "no rows");
+    std::fs::write(&path, "ca\tか\n").unwrap();
+    assert_eq!(
+        read_romaji_table(&path).unwrap(),
+        Some(vec![Rule::new("ca", "か", "")])
+    );
+    let too_large = "ca\tか\n".repeat(romaji::MAX_TABLE_BYTES as usize / 4);
+    std::fs::write(&path, too_large).unwrap();
+    assert!(read_romaji_table(&path).is_err(), "larger than the limit");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -98,8 +98,16 @@ pub fn default_rules() -> Vec<Rule> {
     rules
 }
 
+/// Longest `input` or `next` a table row may have, in characters. The table
+/// stores every prefix of every input, so long keys would cost memory.
+pub const MAX_KEY_CHARS: usize = 32;
+
+/// Largest romaji table file that is read, in bytes.
+pub const MAX_TABLE_BYTES: u64 = 1 << 20;
+
 /// Reads tab-separated rows (`input`, `output`, optional `next`), the format
-/// Mozc and Google Japanese Input export. Lines without a tab are skipped.
+/// Mozc and Google Japanese Input export. Lines without a tab, and rows whose
+/// `input` or `next` is longer than [`MAX_KEY_CHARS`], are skipped.
 pub fn parse_rules(text: &str) -> Vec<Rule> {
     text.trim_start_matches('\u{feff}')
         .lines()
@@ -108,7 +116,8 @@ pub fn parse_rules(text: &str) -> Vec<Rule> {
             let input = cols.next()?;
             let output = cols.next()?;
             let next = cols.next().unwrap_or("");
-            (!input.is_empty()).then(|| Rule::new(input, output, next))
+            let fits = |s: &str| s.chars().count() <= MAX_KEY_CHARS;
+            (!input.is_empty() && fits(input) && fits(next)).then(|| Rule::new(input, output, next))
         })
         .collect()
 }
@@ -485,6 +494,10 @@ mod tests {
         assert_eq!(parse_rules(&format_rules(&rules)), rules);
         let mozc = "\u{feff}a\tあ\r\nkk\tっ\tk\r\n\r\nno tab\n";
         assert_eq!(parse_rules(mozc), vec![Rule::new("a", "あ", ""), Rule::new("kk", "っ", "k")]);
+        let long = "k".repeat(MAX_KEY_CHARS + 1);
+        assert!(parse_rules(&format!("{long}	か
+ka	か	{long}
+")).is_empty());
     }
 
     #[test]

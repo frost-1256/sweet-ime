@@ -1138,6 +1138,18 @@ fn main() -> Result<()> {
             focus.OnKillThreadFocus()?;
             focus.OnSetThreadFocus()?;
             check("romaji table in UTF-16", reading("ca"), "こ", &mut fails);
+            // A table over the size limit is not read; the current one stays.
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            std::fs::write(&path, "ca\tか\n".repeat(sweet_engine::romaji::MAX_TABLE_BYTES as usize / 4)).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("set romaji.tsv timestamp");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("oversized romaji table keeps the current one", reading("ca"), "こ", &mut fails);
             sweet_engine::paths::reset_romaji_rules().expect("remove romaji.tsv");
             focus.OnKillThreadFocus()?;
             focus.OnSetThreadFocus()?;

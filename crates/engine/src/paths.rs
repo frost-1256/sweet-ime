@@ -227,25 +227,48 @@ pub fn romaji_table_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("romaji.tsv"))
 }
 
-/// Reads the user's romaji table (UTF-8 or UTF-16); `None` when there is
-/// none (the built-in table applies).
-pub fn load_romaji_rules() -> Option<Vec<crate::romaji::Rule>> {
-    let text = crate::text_file::decode_text(&std::fs::read(romaji_table_file()?).ok()?);
-    Some(crate::romaji::parse_rules(&text)).filter(|rules| !rules.is_empty())
+/// Reads a romaji table file (UTF-8 or UTF-16). `Ok(None)` when it is
+/// missing or has no rows; an error when it cannot be read or is larger
+/// than [`crate::romaji::MAX_TABLE_BYTES`].
+pub fn read_romaji_table(path: &std::path::Path) -> std::io::Result<Option<Vec<crate::romaji::Rule>>> {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+        Ok(m) if m.len() > crate::romaji::MAX_TABLE_BYTES => {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the table is larger than 1 MiB"));
+        }
+        Ok(_) => {}
+    }
+    let text = crate::text_file::decode_text(&std::fs::read(path)?);
+    Ok(Some(crate::romaji::parse_rules(&text)).filter(|rules| !rules.is_empty()))
 }
 
-/// Reads the user's romaji table and makes it the one composers use.
+/// Reads the user's romaji table; `Ok(None)` when there is none (the
+/// built-in table applies).
+pub fn load_romaji_rules() -> std::io::Result<Option<Vec<crate::romaji::Rule>>> {
+    romaji_table_file().map_or(Ok(None), |p| read_romaji_table(&p))
+}
+
+/// Reads the user's romaji table and makes it the one composers use. A table
+/// that cannot be read leaves the current one in place.
 pub fn apply_romaji_table() {
-    crate::romaji::set_rules(load_romaji_rules().as_deref());
+    if let Ok(rules) = load_romaji_rules() {
+        crate::romaji::set_rules(rules.as_deref());
+    }
 }
 
-/// Writes the user's romaji table.
+/// Writes the user's romaji table. The new file replaces the old one in a
+/// single rename, so readers never see a partly written table.
 pub fn save_romaji_rules(rules: &[crate::romaji::Rule]) -> std::io::Result<()> {
     let p = romaji_table_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d)?;
+    let dir = p.parent().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("romaji.{}.tmp", std::process::id()));
+    let result = std::fs::write(&tmp, crate::romaji::format_rules(rules)).and_then(|()| std::fs::rename(&tmp, &p));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::write(p, crate::romaji::format_rules(rules))
+    result
 }
 
 /// Removes the user's romaji table (back to the built-in table).
