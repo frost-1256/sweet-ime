@@ -1314,8 +1314,14 @@ public final class SettingsActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(16), dp(10), dp(12), dp(10));
         row.setBackground(ripple());
-        int iconBackground = theme.accent;
-        View ic = icon(iconId, contrastingInk(iconBackground), 24);
+        // A tonal container: a tint of the accent on the card, with the icon
+        // drawn in the accent and darkened or lightened until it stays legible.
+        int iconBackground = blend(theme.key, theme.accent, theme.dark ? 0.24f : 0.16f);
+        int iconInk = theme.accent;
+        for (int i = 1; i <= 10 && contrast(iconInk, iconBackground) < 3f; i++) {
+            iconInk = blend(theme.accent, theme.text, i / 10f);
+        }
+        View ic = icon(iconId, iconInk, 24);
         ic.setBackground(roundRect(iconBackground, 14));
         row.addView(ic, new LinearLayout.LayoutParams(dp(44), dp(44)));
         LinearLayout texts = new LinearLayout(this);
@@ -1457,10 +1463,21 @@ public final class SettingsActivity extends Activity {
     }
 
     private static int readableInk(int background, int ink) {
-        float a = Color.luminance(background);
-        float b = Color.luminance(ink);
-        float contrast = (Math.max(a, b) + 0.05f) / (Math.min(a, b) + 0.05f);
-        return contrast >= 3f ? ink : contrastingInk(background);
+        return contrast(ink, background) >= 3f ? ink : contrastingInk(background);
+    }
+
+    private static float contrast(int x, int y) {
+        float a = Color.luminance(x);
+        float b = Color.luminance(y);
+        return (Math.max(a, b) + 0.05f) / (Math.min(a, b) + 0.05f);
+    }
+
+    /** `from` moved toward `to` by `amount` (0 to 1), ignoring alpha. */
+    private static int blend(int from, int to, float amount) {
+        return Color.rgb(
+                Math.round(Color.red(from) + (Color.red(to) - Color.red(from)) * amount),
+                Math.round(Color.green(from) + (Color.green(to) - Color.green(from)) * amount),
+                Math.round(Color.blue(from) + (Color.blue(to) - Color.blue(from)) * amount));
     }
 
     private View prefToggle(String title, String desc, String key, boolean def) {

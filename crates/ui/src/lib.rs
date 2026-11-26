@@ -109,9 +109,25 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     }
     let knob_r = if *on { 6.0 } else { 5.0 } + if response.hovered() { 1.0 } else { 0.0 };
     let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
-    let knob = if *on { Color32::WHITE } else { off_stroke };
+    let knob = if *on { contrasting_ink(accent) } else { off_stroke };
     painter.circle_filled(egui::pos2(x, rect.center().y), knob_r, knob);
     response
+}
+
+/// Black or white, whichever contrasts more with `background`.
+pub fn contrasting_ink(background: Color32) -> Color32 {
+    // At this relative luminance black and white have equal contrast ratios.
+    if relative_luminance(background) >= 0.179 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// WCAG relative luminance of an sRGB color.
+pub fn relative_luminance(color: Color32) -> f32 {
+    let linear = egui::Rgba::from(color);
+    0.2126 * linear.r() + 0.7152 * linear.g() + 0.0722 * linear.b()
 }
 
 /// A settings card: title and description on the left, `control` on the right.

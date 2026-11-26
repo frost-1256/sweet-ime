@@ -35,6 +35,8 @@ Work on `develop` and open PRs into `main`. Use short, imperative commit subject
 
 GitHub Actions tests Windows, Android, and Linux. Enable auto-merge per PR when requested to merge after checks. The protected `main` branch requires the six platform CI checks and CodeRabbit.
 
+A passing CodeRabbit check does not mean the review found nothing. CodeRabbit can post review comments after its check succeeds, and auto-merge does not wait for them. Before you merge a PR or enable auto-merge, wait until CodeRabbit has reviewed the latest pushed commit. Read its inline comments with `gh api repos/{owner}/{repo}/pulls/<n>/comments`. Fix each valid finding, or reply to say why you skipped it. Repeat this after every push to the PR. Never tag a release from a merge that has unaddressed review comments.
+
 ## Releases
 
 Release timing is a separate, manual decision. Use the patch version for bug fixes and the minor version for compatible new features during the `0.x` series.
