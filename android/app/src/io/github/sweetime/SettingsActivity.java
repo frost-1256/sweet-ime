@@ -247,9 +247,6 @@ public final class SettingsActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setPadding(dp(4), dp(24), 0, 0);
         box.addView(title);
-        TextView sub = text("Rust で書いた日本語入力", 14, theme.subText);
-        sub.setPadding(dp(4), 0, 0, 0);
-        box.addView(sub);
 
         // Filled in once a check finds a new release.
         homeBanner = card(null);
