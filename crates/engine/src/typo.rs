@@ -117,6 +117,49 @@ impl Slip {
     }
 }
 
+/// Keys around suspicious kana byte spans (high-cost nodes/transitions on the
+/// Viterbi best path). Maps each kana byte span back to the romaji key indices
+/// that produced it, padded by a small margin so edits before/after are covered.
+fn near_kana_spans(b: &[char], spans: &[(usize, usize)]) -> Vec<bool> {
+    let mut at = vec![false; b.len() + 1];
+    if spans.is_empty() {
+        return at;
+    }
+    let mut composer = Composer::new();
+    let mut key_kana_pos = Vec::with_capacity(b.len() + 1);
+    key_kana_pos.push(0usize);
+    for &ch in b {
+        composer.push(ch);
+        key_kana_pos.push(composer.kana().len());
+    }
+    composer.flush();
+    let total_kana = composer.kana().len();
+    for &(start, end) in spans {
+        let mut first_key = b.len();
+        let mut last_key = 0usize;
+        for i in 0..b.len() {
+            let k_start = key_kana_pos[i];
+            let k_end = if i + 1 == b.len() {
+                total_kana
+            } else {
+                key_kana_pos[i + 1]
+            };
+            if k_end >= start && k_start <= end {
+                first_key = first_key.min(i);
+                last_key = last_key.max(i);
+            }
+        }
+        if first_key <= last_key {
+            let lo = first_key.saturating_sub(4);
+            let hi = (last_key + 4).min(b.len());
+            for flag in &mut at[lo..=hi] {
+                *flag = true;
+            }
+        }
+    }
+    at
+}
+
 fn edits(raw: &str, window: usize, earlier: bool) -> Vec<(String, String, Slip)> {
     let b: Vec<char> = raw.chars().collect();
     let mut at = near_stray_letters(&b);
@@ -128,6 +171,10 @@ fn edits(raw: &str, window: usize, earlier: bool) -> Vec<(String, String, Slip)>
             at[from..].fill(true);
         }
     }
+    edits_at(&b, &at)
+}
+
+fn edits_at(b: &[char], at: &[bool]) -> Vec<(String, String, Slip)> {
     let from = at.iter().position(|&x| x).unwrap_or(b.len());
     // Keep the pending romaji as well as the kana before each edit, so a
     // variant only reprocesses the part of the input that could change.
@@ -263,7 +310,22 @@ pub(crate) fn correct_with_gain(
         return None;
     }
     const RECENT_KEYS: usize = 16;
-    let variants = edits(raw, RECENT_KEYS, false);
+    const SUSPICIOUS_STEP_COST: i32 = 4800;
+    let unresolved = has_unresolved_romaji(&typed);
+    let variants = if unresolved || raw.len() <= RECENT_KEYS {
+        edits(raw, RECENT_KEYS, false)
+    } else {
+        // For longer all-kana input, focus on high-cost regions of the Viterbi
+        // best path. Clean sentences have no suspicious spans and return
+        // immediately instead of burning the full typo budget on fruitless edits.
+        let spans = conv.suspicious_kana_spans(&typed, SUSPICIOUS_STEP_COST);
+        if spans.is_empty() {
+            return None;
+        }
+        let b: Vec<char> = raw.chars().collect();
+        let at = near_kana_spans(&b, &spans);
+        edits_at(&b, &at)
+    };
     let (raw, reading, gain) = conv.score_typos(|cost| {
         let base = cost(&typed);
         let mut pick = |variants: Vec<(String, String, Slip)>, minimum_gain| {
@@ -282,21 +344,7 @@ pub(crate) fn correct_with_gain(
             }
             best
         };
-        let recent = pick(variants, i64::from(margin));
-        if !(RECENT_KEYS + 1..=64).contains(&raw.len())
-            || has_unresolved_romaji(&typed)
-            || t.elapsed() >= budget
-        {
-            return recent;
-        }
-        // Earlier changes need more evidence than edits near the caret.
-        // An incidental late edit should not hide a substantially better
-        // repair near the start.
-        let earlier_margin = recent
-            .as_ref()
-            .map_or(i64::from(margin), |(_, _, gain)| *gain)
-            + 1100;
-        pick(edits(raw, RECENT_KEYS, true), earlier_margin).or(recent)
+        pick(variants, i64::from(margin))
     })?;
     let surface = conv.convert(&reading, &[], 1).into_iter().next()?.surface();
     Some((

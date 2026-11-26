@@ -11,7 +11,7 @@ pub mod tokenizer;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use sweet_engine::dict::{TECH_TERMS, VRCHAT_TERMS};
 
@@ -24,11 +24,19 @@ const CONTEXT_TAG: char = '\u{EE02}';
 /// Left context is limited to its last N characters.
 pub const MAX_CONTEXT_CHARS: usize = 40;
 
+struct PrefixCache {
+    tokens: Vec<u32>,
+    kv: KvCache,
+}
+
 pub struct Zenz {
     pub tokenizer: Tokenizer,
     pub model: Model,
     /// Prepend BOS to prompts.
     pub add_bos: bool,
+    /// Single-slot KV cache for the prompt prefix so incremental live
+    /// conversions reuse K/V states for the unchanged left context & reading.
+    prefix_cache: Mutex<Option<PrefixCache>>,
 }
 
 fn normalize(s: &str) -> String {
@@ -41,10 +49,20 @@ impl Zenz {
         let path = path.as_ref();
         if path.is_file() {
             let (model, vocab, merges) = Model::load_packed(path)?;
-            return Ok(Self { tokenizer: Tokenizer::from_strings(&vocab, &merges)?, model, add_bos: false });
+            return Ok(Self {
+                tokenizer: Tokenizer::from_strings(&vocab, &merges)?,
+                model,
+                add_bos: false,
+                prefix_cache: Mutex::new(None),
+            });
         }
         let dir = path;
-        Ok(Self { tokenizer: Tokenizer::load(dir)?, model: Model::load(dir)?, add_bos: false })
+        Ok(Self {
+            tokenizer: Tokenizer::load(dir)?,
+            model: Model::load(dir)?,
+            add_bos: false,
+            prefix_cache: Mutex::new(None),
+        })
     }
 
     /// Packs a Hugging Face model directory into a single `.swz` file.
@@ -119,7 +137,7 @@ impl Zenz {
 
     fn score_candidates(&self, prompt: &str, candidates: &[String], relative: bool) -> Vec<f32> {
         let mut ids = self.encode_prompt(prompt);
-        let mut cache = self.model.new_cache();
+        let prompt_len = ids.len();
         let toks: Vec<Vec<u32>> = candidates.iter().map(|c| self.tokenizer.encode(&normalize(c))).collect();
         // Shared prefix tokens contribute the same log-probability to every
         // candidate. Keep them in the prompt and skip their vocabulary projections.
@@ -139,15 +157,43 @@ impl Zenz {
                 .count();
             ids.extend_from_slice(&first[..shared]);
         }
-        // Trie: node -> (token, parent). The prompt is a chain at the front;
-        // candidates hang off its last token.
         let p = ids.len();
-        let mut nodes: Vec<u32> = ids.clone();
-        let mut parents: Vec<Option<usize>> = (0..p).map(|i| i.checked_sub(1)).collect();
+        if p == 0 {
+            return vec![f32::NEG_INFINITY; toks.len()];
+        }
+        // Cache up to `prompt_len - 1` (everything before the output tag, which
+        // stays identical as the user types additional characters or re-scores).
+        let cacheable_len = prompt_len.saturating_sub(1);
+        let cached = self
+            .prefix_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let (mut cache, reuse) = match cached {
+            Some(mut entry) => {
+                let common = entry
+                    .tokens
+                    .iter()
+                    .zip(&ids[..p - 1])
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                if common > 0 {
+                    entry.kv.truncate(common);
+                    (entry.kv, common)
+                } else {
+                    (self.model.new_cache(), 0)
+                }
+            }
+            None => (self.model.new_cache(), 0),
+        };
+        // Suffix of the prompt+shared chain that is not in `cache` yet.
+        let tail_p = p - reuse;
+        let mut nodes: Vec<u32> = ids[reuse..].to_vec();
+        let mut parents: Vec<Option<usize>> = (0..tail_p).map(|i| i.checked_sub(1)).collect();
         let mut children: std::collections::HashMap<(Option<usize>, u32), usize> = Default::default();
         let mut ends: Vec<Option<usize>> = Vec::with_capacity(toks.len());
         for t in &toks {
-            let mut cur: Option<usize> = p.checked_sub(1);
+            let mut cur: Option<usize> = tail_p.checked_sub(1);
             for &tok in &t[shared..] {
                 let next = *children.entry((cur, tok)).or_insert_with(|| {
                     nodes.push(tok);
@@ -158,42 +204,55 @@ impl Zenz {
             }
             ends.push(cur);
         }
+        let save_kv_prefix = cacheable_len.saturating_sub(reuse);
         let v = self.model.cfg.vocab_size;
         let eos = self.tokenizer.eos as usize;
-        if p == 0 {
-            return vec![f32::NEG_INFINITY; toks.len()];
-        }
         // Logits are only needed from the last prompt token on.
-        let from = p - 1;
-        self.model.forward_tree_with(&nodes, &parents, &mut cache, from, |logits| {
-            let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
-            // A branch can score several child tokens and EOS from the same logits.
-            let normalizers: Vec<_> = if logits.len() >= 16 * v {
-                use rayon::prelude::*;
-                logits
-                    .par_chunks_exact(v)
-                    .map(model::log_normalizer)
+        let from = tail_p - 1;
+        let scores = self.model.forward_tree_caching_with(
+            &nodes,
+            &parents,
+            &mut cache,
+            save_kv_prefix,
+            from,
+            |logits| {
+                let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
+                // A branch can score several child tokens and EOS from the same logits.
+                let normalizers: Vec<_> = if logits.len() >= 4 * v {
+                    use rayon::prelude::*;
+                    logits
+                        .par_chunks_exact(v)
+                        .map(model::log_normalizer)
+                        .collect()
+                } else {
+                    logits.chunks_exact(v).map(model::log_normalizer).collect()
+                };
+                let log_prob = |i, token| {
+                    let (mx, log_sum) = normalizers[i - from];
+                    row(i)[token] - mx - log_sum
+                };
+                // Cumulative log-prob of the candidate part of the path to each node.
+                let mut cum = vec![0f32; nodes.len()];
+                for i in tail_p..nodes.len() {
+                    let par = parents[i].expect("candidate nodes have a parent");
+                    cum[i] = cum[par] + log_prob(par, nodes[i] as usize);
+                }
+                ends.iter()
+                    .map(|&end| {
+                        let end = end.expect("non-empty prompt");
+                        cum[end] + log_prob(end, eos)
+                    })
                     .collect()
-            } else {
-                logits.chunks_exact(v).map(model::log_normalizer).collect()
-            };
-            let log_prob = |i, token| {
-                let (mx, log_sum) = normalizers[i - from];
-                row(i)[token] - mx - log_sum
-            };
-            // Cumulative log-prob of the candidate part of the path to each node.
-            let mut cum = vec![0f32; nodes.len()];
-            for i in p..nodes.len() {
-                let par = parents[i].expect("candidate nodes have a parent");
-                cum[i] = cum[par] + log_prob(par, nodes[i] as usize);
-            }
-            ends.iter()
-                .map(|&end| {
-                    let end = end.expect("non-empty prompt");
-                    cum[end] + log_prob(end, eos)
-                })
-                .collect()
-        })
+            },
+        );
+        if cache.len > 0 {
+            let cached_len = cache.len.min(ids.len());
+            *self.prefix_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(PrefixCache {
+                tokens: ids[..cached_len].to_vec(),
+                kv: cache,
+            });
+        }
+        scores
     }
 }
 
@@ -216,7 +275,7 @@ impl ZenzReranker {
             zenz,
             n: 5,
             n_without_context: 7,
-            mix: 0.12,
+            mix: 0.40,
         }
     }
 }
@@ -304,18 +363,20 @@ impl sweet_engine::Reranker for ZenzReranker {
         let surfaces: Vec<String> = eligible.iter().map(|&i| cands[i].surface()).collect();
         let scores = self.zenz.score_candidates(&prompt, &surfaces, true);
         // Repeated readings can make the model copy the first spelling even
-        // where another word is plausible. Keep the original as an option.
-        let repetition_weight = if repeated.is_some_and(|(_, count, _)| count >= 3) {
-            3.2
-        } else {
-            2.7
+        // where another word is plausible. Keep the original as an option, and
+        // reduce lattice cost weight so the lattice's repetition bias does not
+        // override distinct homophones.
+        let (repetition_weight, effective_mix) = match repeated {
+            Some((_, count, _)) if count >= 3 => (3.2, self.mix.min(0.12)),
+            Some(_) => (2.7, self.mix.min(0.12)),
+            None => (2.7, self.mix),
         };
         (0..eligible.len())
             .max_by(|&a, &b| {
                 let s = |i: usize| {
                     let candidate = &cands[eligible[i]];
                     scores[i]
-                        - self.mix * candidate.cost as f32 / 500.0
+                        - effective_mix * candidate.cost as f32 / 500.0
                         - repetition_weight * repetitions(candidate) as f32
                 };
                 s(a).total_cmp(&s(b))
@@ -328,6 +389,29 @@ impl sweet_engine::Reranker for ZenzReranker {
 mod tests {
     use super::{Zenz, ZenzReranker};
     use sweet_engine::{Converter, Dictionary, Reranker};
+
+    #[test]
+    fn prefix_kv_cache_matches_uncached_scores() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/zenz-v3.1-xsmall.swz"
+        );
+        let Ok(cached) = Zenz::load(path) else { return };
+        let Ok(fresh) = Zenz::load(path) else { return };
+        // Warm cache with a shorter prefix (simulating incremental live typing).
+        let p1 = Zenz::prompt("きょうははしを", "先ほどから");
+        let c1 = ["今日は橋を", "今日は箸を"].map(str::to_owned);
+        let _ = cached.score_candidates(&p1, &c1, true);
+
+        // Extend the reading with the same left context — must reuse prefix KV.
+        let p2 = Zenz::prompt("きょうははしをわたる", "先ほどから");
+        let c2 = ["今日は橋を渡る", "今日は箸を渡る"].map(str::to_owned);
+        let got = cached.score_candidates(&p2, &c2, true);
+        let want = fresh.score_candidates(&p2, &c2, true);
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-3, "cand {i}: cached={g} vs fresh={w}");
+        }
+    }
 
     #[test]
     fn relative_scores_drop_only_the_shared_prefix_probability() {

@@ -482,6 +482,12 @@ impl Converter {
                 }
             }
         }
+        // Handle English words whose final consonant merged into a following
+        // Japanese particle in romaji:
+        // - `s` + `ha` -> `しゃ` (newsha -> ねwしゃ -> news + は)
+        // - `c` + `ha` -> `ちゃ` (pcha -> pちゃ -> PC + は)
+        // - `x` + `n{a,i,u,e,o}` -> `ん{あ,い,う,え,お}` (linuxno -> ぃぬんお -> Linux + の)
+        self.merged_particle_spellings(text, id, out);
         if !text.bytes().any(|b| b.is_ascii_alphabetic()) {
             return;
         }
@@ -555,6 +561,116 @@ impl Converter {
                         origin: Origin::Spelling,
                     });
                     self.n_row_after(word, &rest[..end], &rest[end..], start + end, out);
+                }
+            }
+        }
+    }
+
+    /// Matches English spellings whose final `s`/`c`/`x` merged into the
+    /// following Japanese particle (`は` via `sha`/`cha`, or `な/に/ぬ/ね/の`
+    /// via `xn` -> `ん`).
+    fn merged_particle_spellings(&self, text: &str, noun_id: u16, out: &mut Vec<Extra>) {
+        let lookup_spelling = |cand: &str| -> Option<(&'static str, i32)> {
+            if let Some((_, sp)) = crate::english::romaji_readings()
+                .iter()
+                .find(|(r, _)| r == cand)
+            {
+                return Some((*sp, SPELLING_COST));
+            }
+            if self.english_words_enabled()
+                && let Some(word) = crate::english::word_index().get(cand)
+            {
+                return Some((word, WORD_LIST_COST));
+            }
+            None
+        };
+        let push_particle = |at: usize, len: usize, kana: &str, out: &mut Vec<Extra>| {
+            for e in self
+                .dict
+                .lookup(kana)
+                .into_iter()
+                .filter(|e| e.surface == kana)
+            {
+                out.push(Extra {
+                    start: at,
+                    end: at + len,
+                    lid: e.lid,
+                    rid: e.rid,
+                    cost: i32::from(e.cost),
+                    surface: kana.to_string(),
+                    origin: Origin::Spelling,
+                });
+            }
+        };
+        let max_stem = crate::english::word_index().max_len.max(32);
+
+        for (merged, suffix_ch) in [("しゃ", 's'), ("ちゃ", 'c')] {
+            if !text.contains(merged) {
+                continue;
+            }
+            for (pos, _) in text.match_indices(merged) {
+                if pos == 0 {
+                    continue;
+                }
+                let prefix = &text[..pos];
+                let mut probe = String::new();
+                for (start, _) in prefix.char_indices().rev() {
+                    if pos - start > max_stem {
+                        break;
+                    }
+                    probe.clear();
+                    probe.push_str(&prefix[start..]);
+                    probe.push(suffix_ch);
+                    if let Some((spelling, cost)) = lookup_spelling(&probe) {
+                        out.push(Extra {
+                            start,
+                            end: pos,
+                            lid: noun_id,
+                            rid: noun_id,
+                            cost,
+                            surface: spelling.to_string(),
+                            origin: Origin::Spelling,
+                        });
+                        push_particle(pos, merged.len(), "は", out);
+                    }
+                }
+            }
+        }
+
+        if text.contains('ん') {
+            for (pos, _) in text.match_indices('ん') {
+                if pos == 0 {
+                    continue;
+                }
+                let after = &text[pos + 'ん'.len_utf8()..];
+                let Some(vowel) = after.chars().next() else {
+                    continue;
+                };
+                let Some(vi) = "あいうえお".chars().position(|v| v == vowel) else {
+                    continue;
+                };
+                let particle = ["な", "に", "ぬ", "ね", "の"][vi];
+                let prefix = &text[..pos];
+                let mut probe = String::new();
+                for (start, _) in prefix.char_indices().rev() {
+                    if pos - start > max_stem {
+                        break;
+                    }
+                    probe.clear();
+                    probe.push_str(&prefix[start..]);
+                    probe.push('x');
+                    if let Some((spelling, cost)) = lookup_spelling(&probe) {
+                        out.push(Extra {
+                            start,
+                            end: pos,
+                            lid: noun_id,
+                            rid: noun_id,
+                            cost,
+                            surface: spelling.to_string(),
+                            origin: Origin::Spelling,
+                        });
+                        push_particle(pos, 'ん'.len_utf8() + vowel.len_utf8(), particle, out);
+                    }
                 }
             }
         }

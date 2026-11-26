@@ -58,11 +58,15 @@ pub fn doubled_final_consonant(reading: &str) -> Option<String> {
         .map(|stem| format!("{stem}っ"))
 }
 
-/// Readings of bundled spellings (3+ keys) that are not romaji.
+/// Readings of bundled spellings (3+ keys, or 2-key consonant abbreviations
+/// like PC/PR/DB that leave both letters unresolved) that are not romaji.
 pub fn bundled_readings<'a>(spellings: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<(String, &'a str)> {
     let mut out: Vec<(String, &'a str)> = Vec::new();
     for (spelling, _) in spellings {
-        for r in readings_of(spelling, 3) {
+        for r in readings_of(spelling, 2) {
+            if spelling.len() == 2 && r.bytes().filter(u8::is_ascii_alphabetic).count() < 2 {
+                continue;
+            }
             if !out.iter().any(|(x, _)| *x == r) {
                 out.push((r, spelling));
             }

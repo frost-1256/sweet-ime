@@ -305,8 +305,10 @@ impl Composing {
         // Once the caret splits the composition, the raw keys may be out of order.
         if !self.before.is_empty()
             || !self.after.is_empty()
-            || !(5..=64).contains(&self.raw.len())
-            || !self.raw.bytes().all(|b| b.is_ascii_lowercase() || matches!(b, b'-' | b'\''))
+            || !(5..=96).contains(&self.raw.len())
+            || !self.raw.bytes().all(|b| {
+                b.is_ascii_lowercase() || matches!(b, b'-' | b'\'' | b',' | b'.' | b'?' | b'!')
+            })
             || romaji::to_hiragana(&self.raw) != reading
         {
             return None;
