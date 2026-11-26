@@ -65,6 +65,27 @@ pub fn save_user_theme(theme: &crate::UserTheme) -> std::io::Result<()> {
     std::fs::write(p, theme.to_text())
 }
 
+/// Named user-theme presets (`user_themes.txt`).
+pub fn saved_user_themes_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("user_themes.txt"))
+}
+
+pub fn load_saved_user_themes() -> Vec<crate::theme::SavedUserTheme> {
+    saved_user_themes_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| crate::theme::parse_saved_user_themes(&t))
+        .unwrap_or_default()
+}
+
+pub fn save_saved_user_themes(themes: &[crate::theme::SavedUserTheme]) -> std::io::Result<()> {
+    let p =
+        saved_user_themes_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(p, crate::theme::format_saved_user_themes(themes))
+}
+
 /// The Windows candidate window's font family, one name per file.
 #[cfg(windows)]
 pub fn candidate_font_file() -> Option<PathBuf> {

@@ -129,6 +129,10 @@ struct App {
     opts: Options,
     user_theme: sweet_engine::UserTheme,
     #[cfg(not(target_os = "macos"))]
+    saved_user_themes: Vec<sweet_engine::theme::SavedUserTheme>,
+    #[cfg(not(target_os = "macos"))]
+    user_theme_name: String,
+    #[cfg(not(target_os = "macos"))]
     font_picker: Option<font_picker::FontPicker>,
     status: Option<(String, bool)>,
     history: Option<UserHistory>,
@@ -153,6 +157,8 @@ impl App {
         let history = paths::history_file().map(UserHistory::with_file);
         let opts = paths::load_options();
         let user_theme = paths::load_user_theme();
+        #[cfg(not(target_os = "macos"))]
+        let saved_user_themes = paths::load_saved_user_themes();
         let updater = {
             let mut updater = update::Updater::new();
             if opts.update_check {
@@ -166,6 +172,10 @@ impl App {
             activation: single_instance::Activation::register(cc)?,
             opts,
             user_theme,
+            #[cfg(not(target_os = "macos"))]
+            saved_user_themes,
+            #[cfg(not(target_os = "macos"))]
+            user_theme_name: String::new(),
             #[cfg(not(target_os = "macos"))]
             font_picker: None,
             status: None,
@@ -278,10 +288,24 @@ impl eframe::App for App {
                         self.font_picker
                             .get_or_insert_with(font_picker::FontPicker::new)
                             .ui(ui, &mut self.status);
-                        let theme_change =
-                            theme_page::ui(ui, &mut self.opts.theme, &mut self.user_theme);
+                        let theme_change = theme_page::ui(
+                            ui,
+                            &mut self.opts.theme,
+                            &mut self.user_theme,
+                            &mut self.saved_user_themes,
+                            &mut self.user_theme_name,
+                        );
                         let mut save_ok = true;
-                        if theme_change.user_theme_edited {
+                        if theme_change.saved_themes_changed {
+                            if let Err(e) = paths::save_saved_user_themes(&self.saved_user_themes) {
+                                self.status = Some((format!("保存できませんでした: {e}"), false));
+                                save_ok = false;
+                            } else if !theme_change.any() {
+                                self.status =
+                                    Some(("ユーザーテーマを保存しました。".into(), true));
+                            }
+                        }
+                        if save_ok && theme_change.user_theme_edited {
                             if let Err(e) = paths::save_user_theme(&self.user_theme) {
                                 self.status = Some((format!("保存できませんでした: {e}"), false));
                                 save_ok = false;
