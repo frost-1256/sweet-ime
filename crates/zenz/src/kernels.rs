@@ -23,6 +23,341 @@ struct SendPtr(*mut f32);
 unsafe impl Send for SendPtr {}
 unsafe impl Sync for SendPtr {}
 
+/// Per-column symmetric INT8 quantized weight matrix `[k, n]`, pre-packed into
+/// contiguous 16-column strips `[n_blocks, k, 16]` so small-batch GEMM streams
+/// 1 byte/weight sequentially with zero runtime packing or stride conflicts.
+pub struct Q8Matrix {
+    k: usize,
+    n: usize,
+    n_blocks: usize,
+    /// Pre-packed int8 weights of length `n_blocks * k * 16`.
+    q: Vec<i8>,
+    /// Per-column dequantization scales of length `n_blocks * 16`.
+    scales: Vec<f32>,
+}
+
+impl Q8Matrix {
+    pub fn from_f32(w: &[f32], k: usize, n: usize) -> Self {
+        assert!(w.len() >= k * n);
+        let n_blocks = n.div_ceil(16);
+        let n_pad = n_blocks * 16;
+        let mut scales = vec![0f32; n_pad];
+        let mut q = vec![0i8; n_blocks * k * 16];
+
+        let quantize_block = |jb: usize, q_strip: &mut [i8], sc_strip: &mut [f32]| {
+            let j_base = jb * 16;
+            let cols = (n - j_base).min(16);
+            let mut max_abs = [0f32; 16];
+            for kk in 0..k {
+                let row = &w[kk * n + j_base..kk * n + j_base + cols];
+                for c in 0..cols {
+                    let a = row[c].abs();
+                    if a > max_abs[c] {
+                        max_abs[c] = a;
+                    }
+                }
+            }
+            let mut inv = [0f32; 16];
+            for c in 0..cols {
+                if max_abs[c] > 0.0 {
+                    sc_strip[c] = max_abs[c] / 127.0;
+                    inv[c] = 127.0 / max_abs[c];
+                }
+            }
+            for kk in 0..k {
+                let row = &w[kk * n + j_base..kk * n + j_base + cols];
+                let dst = &mut q_strip[kk * 16..kk * 16 + 16];
+                for c in 0..cols {
+                    dst[c] = (row[c] * inv[c]).round().clamp(-127.0, 127.0) as i8;
+                }
+            }
+        };
+
+        if n_blocks >= 8 && k * n >= 65_536 {
+            use rayon::prelude::*;
+            pool().install(|| {
+                q.par_chunks_exact_mut(k * 16)
+                    .zip(scales.par_chunks_exact_mut(16))
+                    .enumerate()
+                    .for_each(|(jb, (q_strip, sc_strip))| quantize_block(jb, q_strip, sc_strip));
+            });
+        } else {
+            for jb in 0..n_blocks {
+                let q_strip = &mut q[jb * k * 16..(jb + 1) * k * 16];
+                let sc_strip = &mut scales[jb * 16..(jb + 1) * 16];
+                quantize_block(jb, q_strip, sc_strip);
+            }
+        }
+
+        Self {
+            k,
+            n,
+            n_blocks,
+            q,
+            scales,
+        }
+    }
+}
+
+/// `y[m,n] (+)= x[m,k] @ w_q8[k,n] (+ bias[n])`
+pub fn matmul_q8_bias(
+    x: &[f32],
+    w: &Q8Matrix,
+    bias: Option<&[f32]>,
+    y: &mut [f32],
+    m: usize,
+    accumulate: bool,
+) {
+    let (k, n, n_blocks) = (w.k, w.n, w.n_blocks);
+    assert!(m.checked_mul(k).is_some_and(|len| x.len() >= len));
+    assert!(m.checked_mul(n).is_some_and(|len| y.len() >= len));
+    if let Some(b) = bias {
+        assert!(b.len() >= n);
+    }
+    let work = m.saturating_mul(k).saturating_mul(n);
+    let threads = if work < 1 << 17 {
+        1
+    } else {
+        pool().current_num_threads().min((n_blocks / 2).max(1))
+    };
+    let chunk_blocks = n_blocks.div_ceil(threads).max(1);
+    let yp = SendPtr(y.as_mut_ptr());
+    let run = |b0: usize, b1: usize| {
+        let yp = yp;
+        // SAFETY: each task writes a disjoint column range [b0*16, min(b1*16, n)) of y.
+        unsafe { matmul_q8_blocks(x, w, bias, yp.0, m, b0, b1, accumulate) };
+    };
+    if threads == 1 {
+        run(0, n_blocks);
+        return;
+    }
+    pool().scope(|s| {
+        let mut b0 = 0;
+        while b0 < n_blocks {
+            let b1 = (b0 + chunk_blocks).min(n_blocks);
+            s.spawn(move |_| run(b0, b1));
+            b0 = b1;
+        }
+    });
+}
+
+unsafe fn matmul_q8_blocks(
+    x: &[f32],
+    w: &Q8Matrix,
+    bias: Option<&[f32]>,
+    y: *mut f32,
+    m: usize,
+    b0: usize,
+    b1: usize,
+    accumulate: bool,
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
+            unsafe { matmul_q8_avx2(x, w, bias, y, m, b0, b1, accumulate) };
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    unsafe {
+        matmul_q8_generic(x, w, bias, y, m, b0, b1, accumulate);
+    }
+}
+
+unsafe fn matmul_q8_generic(
+    x: &[f32],
+    w: &Q8Matrix,
+    bias: Option<&[f32]>,
+    y: *mut f32,
+    m: usize,
+    b0: usize,
+    b1: usize,
+    accumulate: bool,
+) {
+    let (k, n) = (w.k, w.n);
+    for jb in b0..b1 {
+        let j_base = jb * 16;
+        let cols = (n - j_base).min(16);
+        let q_strip = &w.q[jb * k * 16..];
+        let sc = &w.scales[j_base..j_base + cols];
+        for i in 0..m {
+            let xr = &x[i * k..(i + 1) * k];
+            let mut acc = [0f32; 16];
+            for kk in 0..k {
+                let a = xr[kk];
+                let qw = &q_strip[kk * 16..kk * 16 + cols];
+                for c in 0..cols {
+                    acc[c] += a * f32::from(qw[c]);
+                }
+            }
+            for c in 0..cols {
+                let j = j_base + c;
+                let v = acc[c] * sc[c] + bias.map_or(0.0, |b| b[j]);
+                unsafe {
+                    let dst = y.add(i * n + j);
+                    if accumulate {
+                        *dst += v;
+                    } else {
+                        *dst = v;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn matmul_q8_avx2(
+    x: &[f32],
+    w: &Q8Matrix,
+    bias: Option<&[f32]>,
+    y: *mut f32,
+    m: usize,
+    b0: usize,
+    b1: usize,
+    accumulate: bool,
+) {
+    let (k, n) = (w.k, w.n);
+    let bp = bias.map_or(std::ptr::null(), |b| b.as_ptr());
+    let qp = w.q.as_ptr();
+    let sp = w.scales.as_ptr();
+    for jb in b0..b1 {
+        let j = jb * 16;
+        let q_strip = unsafe { qp.add(jb * k * 16) };
+        let mut i = 0;
+        #[cfg(target_arch = "x86_64")]
+        while i < m {
+            unsafe {
+                match (m - i, accumulate) {
+                    (1, false) => micro_q8_avx2::<1, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (2, false) => micro_q8_avx2::<2, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (3, false) => micro_q8_avx2::<3, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (4, false) => micro_q8_avx2::<4, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (5, false) => micro_q8_avx2::<5, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (_, false) => micro_q8_avx2::<6, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (1, true) => micro_q8_avx2::<1, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (2, true) => micro_q8_avx2::<2, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (3, true) => micro_q8_avx2::<3, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (4, true) => micro_q8_avx2::<4, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (5, true) => micro_q8_avx2::<5, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (_, true) => micro_q8_avx2::<6, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                }
+            }
+            i += 6;
+        }
+        #[cfg(target_arch = "x86")]
+        while i < m {
+            unsafe {
+                match (m - i, accumulate) {
+                    (1, false) => micro_q8_avx2::<1, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (_, false) => micro_q8_avx2::<2, false>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (1, true) => micro_q8_avx2::<1, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                    (_, true) => micro_q8_avx2::<2, true>(x, q_strip, sp, bp, y, i, j, k, n),
+                }
+            }
+            i += 2;
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn micro_q8_avx2<const R: usize, const ACCUM: bool>(
+    x: &[f32],
+    q_strip: *const i8,
+    scales: *const f32,
+    bp: *const f32,
+    y: *mut f32,
+    i: usize,
+    j: usize,
+    k: usize,
+    n: usize,
+) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    unsafe {
+        let mut acc0 = [_mm256_setzero_ps(); R];
+        let mut acc1 = [_mm256_setzero_ps(); R];
+        let xp = x.as_ptr().add(i * k);
+        let mut wp = q_strip;
+        let mut kk = 0;
+        while kk + 2 <= k {
+            let qa = _mm_loadu_si128(wp as *const __m128i);
+            let w0a = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(qa));
+            let w1a = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(qa, 8)));
+            let qb = _mm_loadu_si128(wp.add(16) as *const __m128i);
+            let w0b = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(qb));
+            let w1b = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(qb, 8)));
+            for r in 0..R {
+                let aa = _mm256_broadcast_ss(&*xp.add(r * k + kk));
+                acc0[r] = _mm256_fmadd_ps(aa, w0a, acc0[r]);
+                acc1[r] = _mm256_fmadd_ps(aa, w1a, acc1[r]);
+                let ab = _mm256_broadcast_ss(&*xp.add(r * k + kk + 1));
+                acc0[r] = _mm256_fmadd_ps(ab, w0b, acc0[r]);
+                acc1[r] = _mm256_fmadd_ps(ab, w1b, acc1[r]);
+            }
+            wp = wp.add(32);
+            kk += 2;
+        }
+        while kk < k {
+            let qa = _mm_loadu_si128(wp as *const __m128i);
+            let w0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(qa));
+            let w1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(qa, 8)));
+            for r in 0..R {
+                let a = _mm256_broadcast_ss(&*xp.add(r * k + kk));
+                acc0[r] = _mm256_fmadd_ps(a, w0, acc0[r]);
+                acc1[r] = _mm256_fmadd_ps(a, w1, acc1[r]);
+            }
+            wp = wp.add(16);
+            kk += 1;
+        }
+        let s0 = _mm256_loadu_ps(scales.add(j));
+        let s1 = _mm256_loadu_ps(scales.add(j + 8));
+        if j + 16 <= n {
+            let (b0, b1) = if bp.is_null() {
+                (_mm256_setzero_ps(), _mm256_setzero_ps())
+            } else {
+                (_mm256_loadu_ps(bp.add(j)), _mm256_loadu_ps(bp.add(j + 8)))
+            };
+            for r in 0..R {
+                let v0 = _mm256_fmadd_ps(acc0[r], s0, b0);
+                let v1 = _mm256_fmadd_ps(acc1[r], s1, b1);
+                let yp = y.add((i + r) * n + j);
+                if ACCUM {
+                    _mm256_storeu_ps(yp, _mm256_add_ps(_mm256_loadu_ps(yp), v0));
+                    _mm256_storeu_ps(yp.add(8), _mm256_add_ps(_mm256_loadu_ps(yp.add(8)), v1));
+                } else {
+                    _mm256_storeu_ps(yp, v0);
+                    _mm256_storeu_ps(yp.add(8), v1);
+                }
+            }
+        } else {
+            let cols = n - j;
+            for r in 0..R {
+                let mut tmp = [0f32; 16];
+                _mm256_storeu_ps(tmp.as_mut_ptr(), _mm256_mul_ps(acc0[r], s0));
+                _mm256_storeu_ps(tmp.as_mut_ptr().add(8), _mm256_mul_ps(acc1[r], s1));
+                let yp = y.add((i + r) * n + j);
+                for c in 0..cols {
+                    let b = if bp.is_null() { 0.0 } else { *bp.add(j + c) };
+                    let v = tmp[c] + b;
+                    if ACCUM {
+                        *yp.add(c) += v;
+                    } else {
+                        *yp.add(c) = v;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// y[m,n] (+)= x[m,k] @ w[k,n]   (w row-major)
 pub fn matmul(x: &[f32], w: &[f32], y: &mut [f32], m: usize, k: usize, n: usize, accumulate: bool) {
     matmul_bias(x, w, None, y, m, k, n, accumulate);

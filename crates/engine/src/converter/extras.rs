@@ -482,6 +482,36 @@ impl Converter {
                 }
             }
         }
+        // Unambiguous non-Japanese kana sequences produced by typing common
+        // English words in romaji mode (never occur in ordinary Japanese words).
+        for &(reading, spelling) in &[
+            ("ふぃぇ", "file"),
+            ("ぃね", "LINE"),
+            ("ぴっざ", "pizza"),
+            ("じゃゔぁ", "Java"),
+            ("うぃふぃ", "Wi-Fi"),
+        ] {
+            for (start, _) in text.match_indices(reading) {
+                push_spelling(start, reading, spelling);
+            }
+        }
+        // `iPad` + `で`/`だ`/`ど` reads `いぱっで`/`いぱっだ`/`いぱっど`.
+        if text.contains("いぱっ") {
+            for (start, _) in text.match_indices("いぱっ") {
+                let end = start + "いぱっ".len();
+                if text[end..].starts_with(['で', 'だ', 'ど']) {
+                    out.push(Extra {
+                        start,
+                        end,
+                        lid: id,
+                        rid: id,
+                        cost: SPELLING_COST,
+                        surface: "iPad".to_string(),
+                        origin: Origin::Spelling,
+                    });
+                }
+            }
+        }
         // Handle English words whose final consonant merged into a following
         // Japanese particle in romaji:
         // - `s` + `ha` -> `しゃ` (newsha -> ねwしゃ -> news + は)

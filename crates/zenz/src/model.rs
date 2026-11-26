@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use crate::kernels::{
-    attention_row_f32, gelu_f32, layer_norm_f32, log_normalizer_f32, matmul, matmul_bias,
+    Q8Matrix, attention_row_f32, gelu_f32, layer_norm_f32, log_normalizer_f32, matmul_q8_bias,
 };
 
 mod weights;
@@ -84,15 +84,11 @@ struct Layer {
 struct LayerView<'a> {
     ln1_w: &'a [f32],
     ln1_b: &'a [f32],
-    attn_w: &'a [f32],
     attn_b: &'a [f32],
-    proj_w: &'a [f32],
     proj_b: &'a [f32],
     ln2_w: &'a [f32],
     ln2_b: &'a [f32],
-    fc_w: &'a [f32],
     fc_b: &'a [f32],
-    fc2_w: &'a [f32],
     fc2_b: &'a [f32],
 }
 
@@ -117,13 +113,22 @@ impl Store {
     }
 }
 
+struct Q8Layer {
+    attn_w: Q8Matrix,
+    proj_w: Q8Matrix,
+    fc_w: Q8Matrix,
+    fc2_w: Q8Matrix,
+}
+
 pub struct Model {
     pub cfg: Config,
     store: Store,
     wte: R,   // [V, E]
     wte_t: R, // [E, V] for the LM head
-    wpe: R,   // [P, E]
+    wte_t_q8: Q8Matrix,
+    wpe: R, // [P, E]
     layers: Vec<Layer>,
+    q8_layers: Vec<Q8Layer>,
     lnf_w: R,
     lnf_b: R,
 }
@@ -161,19 +166,51 @@ fn gelu_new(v: &mut [f32]) {
 }
 
 impl Model {
+    fn build_q8(
+        cfg: Config,
+        store: Store,
+        wte: R,
+        wte_t: R,
+        wpe: R,
+        layers: Vec<Layer>,
+        lnf_w: R,
+        lnf_b: R,
+    ) -> Self {
+        let d = store.data();
+        let e = cfg.n_embd;
+        let wte_t_q8 = Q8Matrix::from_f32(&d[wte_t.clone()], e, cfg.vocab_size);
+        let q8_layers: Vec<Q8Layer> = layers
+            .iter()
+            .map(|l| Q8Layer {
+                attn_w: Q8Matrix::from_f32(&d[l.attn_w.clone()], e, 3 * e),
+                proj_w: Q8Matrix::from_f32(&d[l.proj_w.clone()], e, e),
+                fc_w: Q8Matrix::from_f32(&d[l.fc_w.clone()], e, 4 * e),
+                fc2_w: Q8Matrix::from_f32(&d[l.fc2_w.clone()], 4 * e, e),
+            })
+            .collect();
+        Self {
+            cfg,
+            store,
+            wte,
+            wte_t,
+            wte_t_q8,
+            wpe,
+            layers,
+            q8_layers,
+            lnf_w,
+            lnf_b,
+        }
+    }
+
     fn view<'a>(&'a self, d: &'a [f32], l: &Layer) -> LayerView<'a> {
         LayerView {
             ln1_w: &d[l.ln1_w.clone()],
             ln1_b: &d[l.ln1_b.clone()],
-            attn_w: &d[l.attn_w.clone()],
             attn_b: &d[l.attn_b.clone()],
-            proj_w: &d[l.proj_w.clone()],
             proj_b: &d[l.proj_b.clone()],
             ln2_w: &d[l.ln2_w.clone()],
             ln2_b: &d[l.ln2_b.clone()],
-            fc_w: &d[l.fc_w.clone()],
             fc_b: &d[l.fc_b.clone()],
-            fc2_w: &d[l.fc2_w.clone()],
             fc2_b: &d[l.fc2_b.clone()],
         }
     }
@@ -308,10 +345,10 @@ impl Model {
                     xr[j] = te[j] + pe[j];
                 }
             }
-            for (li, lr) in self.layers.iter().enumerate() {
+            for (li, (lr, ql)) in self.layers.iter().zip(&self.q8_layers).enumerate() {
                 let l = self.view(d, lr);
                 layer_norm(x, l.ln1_w, l.ln1_b, eps, h);
-                matmul_bias(h, l.attn_w, Some(l.attn_b), qkv, t, e, 3 * e, false);
+                matmul_q8_bias(h, &ql.attn_w, Some(l.attn_b), qkv, t, false);
                 {
                     let kc = &cache.k[li];
                     let vc = &cache.v[li];
@@ -355,15 +392,15 @@ impl Model {
                         cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
                     }
                 }
-                matmul_bias(att, l.proj_w, Some(l.proj_b), x, t, e, e, true);
+                matmul_q8_bias(att, &ql.proj_w, Some(l.proj_b), x, t, true);
                 layer_norm(x, l.ln2_w, l.ln2_b, eps, h);
-                matmul_bias(h, l.fc_w, Some(l.fc_b), ff, t, e, 4 * e, false);
+                matmul_q8_bias(h, &ql.fc_w, Some(l.fc_b), ff, t, false);
                 gelu_new(ff);
-                matmul_bias(ff, l.fc2_w, Some(l.fc2_b), x, t, 4 * e, e, true);
+                matmul_q8_bias(ff, &ql.fc2_w, Some(l.fc2_b), x, t, true);
             }
             let src = &x[(t - rows) * e..];
             layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, hf);
-            matmul(hf, &d[self.wte_t.clone()], logits, rows, e, vsz, false);
+            matmul_q8_bias(hf, &self.wte_t_q8, None, logits, rows, false);
             consume(&logits[..rows * vsz])
         };
         // Keep steady-state memory bounded after unusually large batches.
