@@ -106,7 +106,7 @@ jobs:
                 tst=true
                 ;;
               assets/*)
-                win=true; lnx=true; mac=true
+                win=true; and=true; lnx=true; mac=true
                 ;;
               crates/*)
                 win=true; tst=true; and=true; lnx=true; mac=true
@@ -115,7 +115,7 @@ jobs:
                 win=true; tst=true; and=true; lnx=true; mac=true
                 ;;
             esac
-          done < <(git diff --name-only HEAD^1 HEAD)
+          done < <(git diff --name-only --no-renames HEAD^1 HEAD)
 
           {
             echo "windows=$win"
