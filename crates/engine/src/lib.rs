@@ -25,5 +25,5 @@ pub use dict::Dictionary;
 pub use keymap::Keymap;
 pub use learning::UserHistory;
 pub use user_dict::UserDictionary;
-pub use theme::Theme;
+pub use theme::{Theme, UserTheme};
 pub use session::{CandidateList, Key, ListKind, Options, Preedit, Session, SpanAttr};

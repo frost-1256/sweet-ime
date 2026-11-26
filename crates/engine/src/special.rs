@@ -151,6 +151,42 @@ fn time_forms(t: DateTime) -> Vec<String> {
     ]
 }
 
+fn is_date_reading(reading: &str) -> bool {
+    matches!(
+        reading,
+        "きょう"
+            | "ほんじつ"
+            | "ひづけ"
+            | "あした"
+            | "あす"
+            | "みょうにち"
+            | "あさって"
+            | "きのう"
+            | "さくじつ"
+            | "おととい"
+            | "いま"
+            | "じこく"
+            | "げんざい"
+            | "ことし"
+            | "こんねん"
+            | "こんげつ"
+            | "ようび"
+    )
+}
+
+/// True if `(reading, surface)` is a time- or calculation-dependent candidate
+/// that should not be saved to user learning history.
+pub fn is_ephemeral_candidate(reading: &str, surface: &str) -> bool {
+    if is_date_reading(reading) {
+        return matches!(
+            surface,
+            "日曜日" | "月曜日" | "火曜日" | "水曜日" | "木曜日" | "金曜日" | "土曜日"
+        ) || surface.starts_with("令和")
+            || surface.bytes().any(|b| b.is_ascii_digit());
+    }
+    calculator_candidates(reading).iter().any(|c| c == surface)
+}
+
 /// Date and time candidates for `reading` at time `now`.
 pub fn date_candidates(reading: &str, now: DateTime) -> Vec<String> {
     let day = |n| date_forms(now.add_days(n));
@@ -338,5 +374,39 @@ mod tests {
         assert!(emoji_candidates("えがお").contains(&"😊".to_string()));
         assert!(!emoji_candidates("かお").is_empty());
         assert!(emoji_candidates("ねこぜ").is_empty());
+    }
+
+    #[test]
+    fn ephemeral_candidates_are_detected() {
+        for r in [
+            "きょう",
+            "ほんじつ",
+            "ひづけ",
+            "あした",
+            "あす",
+            "みょうにち",
+            "あさって",
+            "きのう",
+            "さくじつ",
+            "おととい",
+            "いま",
+            "じこく",
+            "げんざい",
+            "ことし",
+            "こんねん",
+            "こんげつ",
+            "ようび",
+        ] {
+            for c in date_candidates(r, T) {
+                assert!(is_ephemeral_candidate(r, &c), "{r} -> {c}");
+            }
+        }
+        assert!(is_ephemeral_candidate("ことし", "令和元年"));
+        assert!(!is_ephemeral_candidate("いま", "今"));
+        assert!(!is_ephemeral_candidate("きょう", "今日"));
+        assert!(!is_ephemeral_candidate("ようび", "曜日"));
+        assert!(is_ephemeral_candidate("1+2=", "3"));
+        assert!(is_ephemeral_candidate("1+2=", "1+2=3"));
+        assert!(!is_ephemeral_candidate("えがお", "😊"));
     }
 }

@@ -44,9 +44,19 @@ fn actions(ui: &mut egui::Ui, u: &mut Updater, r: &Release) {
 fn downloading(ui: &mut egui::Ui, u: &Updater, r: &Release) {
     ui.label(format!("バージョン {} をダウンロードしています…", r.version));
     match u.progress() {
-        Some(p) => ui.add(egui::ProgressBar::new(p).show_percentage()),
-        None => ui.spinner(),
-    };
+        Some(p) => {
+            let p = p.clamp(0.0, 1.0);
+            ui.horizontal(|ui| {
+                let pct = format!("{:.0}%", (p * 100.0).round());
+                let bar_w = (ui.available_width() - 48.0).max(80.0);
+                ui.add(egui::ProgressBar::new(p).desired_width(bar_w));
+                ui.label(pct);
+            });
+        }
+        None => {
+            ui.spinner();
+        }
+    }
 }
 
 /// A notice above every page while an update is available or downloading.

@@ -58,7 +58,7 @@ struct State {
     indicator: Option<ModeIndicator>,
     keymap: Keymap,
     /// Settings file times when last loaded.
-    settings_stamp: [Option<std::time::SystemTime>; 4],
+    settings_stamp: crate::SettingsStamp,
     /// The per-application settings turn the IME off in this application.
     app_off: bool,
     /// Open/close compartment event sink: (compartment source, cookie).

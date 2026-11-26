@@ -1,12 +1,13 @@
-//! Theme picker: a small preview of the candidate window per theme.
+//! Theme picker: a small preview of the candidate window per theme, plus a
+//! separate customizable user theme with background opacity.
 
-use sweet_engine::Theme;
-use sweet_engine::theme::Rgb;
-use sweet_ui::card_frame;
+use sweet_engine::theme::{Colors, MIN_BG_ALPHA, Rgb};
+use sweet_engine::{Theme, UserTheme};
 use sweet_ui::eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, StrokeKind, Vec2, pos2,
     vec2,
 };
+use sweet_ui::{card_frame, toggle};
 
 const TILE: Vec2 = Vec2::new(176.0, 150.0);
 
@@ -14,9 +15,23 @@ fn c32(v: Rgb) -> Color32 {
     Color32::from_rgb(v.0, v.1, v.2)
 }
 
-/// Draws the theme tiles; returns true when the selection changed.
-pub fn ui(ui: &mut egui::Ui, current: &mut Theme) -> bool {
-    let mut changed = false;
+/// Which theme files changed during a frame.
+#[derive(Default)]
+pub struct ThemeChange {
+    pub theme_selected: bool,
+    pub user_theme_edited: bool,
+}
+
+impl ThemeChange {
+    pub fn any(&self) -> bool {
+        self.theme_selected || self.user_theme_edited
+    }
+}
+
+/// Draws the built-in theme gallery and the separate user theme editor.
+pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) -> ThemeChange {
+    let mut change = ThemeChange::default();
+    let sys_light = crate::appearance::system_light(ui);
     card_frame(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("候補ウィンドウのテーマ").size(15.5));
@@ -28,18 +43,159 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme) -> bool {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-            for t in Theme::ALL {
-                if tile(ui, t, *current == t).clicked() && *current != t {
+            for t in Theme::BUILTINS {
+                let colors = t.colors(sys_light);
+                let name = if t == Theme::Default { "デフォルト" } else { t.label() };
+                if tile(ui, name, t.label(), colors, *current == t).clicked() && *current != t {
                     *current = t;
-                    changed = true;
+                    change.theme_selected = true;
                 }
             }
         });
     });
-    changed
+
+    ui.add_space(4.0);
+
+    // Separate User Theme card.
+    card_frame(ui).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("ユーザーテーマ").size(15.5));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let selected = *current == Theme::Custom;
+                if selected {
+                    ui.label(RichText::new("使用中").small().weak());
+                } else if ui.button("ユーザーテーマを使う").clicked() {
+                    *current = Theme::Custom;
+                    change.theme_selected = true;
+                }
+            });
+        });
+        ui.label(
+            RichText::new(
+                "既存テーマとは別に、色や背景の透過度を自由に設定できます。",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(6.0);
+
+        let mut edited = false;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing = vec2(16.0, 8.0);
+            let colors = user_theme.colors();
+            if tile(
+                ui,
+                "ユーザーテーマ",
+                "ユーザーテーマ (背景透過・カスタム配色)",
+                colors,
+                *current == Theme::Custom,
+            )
+            .clicked()
+                && *current != Theme::Custom
+            {
+                *current = Theme::Custom;
+                change.theme_selected = true;
+            }
+
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("user_theme_preset")
+                        .selected_text("既存テーマからコピー")
+                        .show_ui(ui, |ui| {
+                            for preset in Theme::BUILTINS {
+                                if ui.selectable_label(false, preset.label()).clicked() {
+                                    let keep_alpha = user_theme.bg_alpha;
+                                    *user_theme = UserTheme::from_colors(preset.colors(sys_light));
+                                    user_theme.bg_alpha = keep_alpha;
+                                    edited = true;
+                                }
+                            }
+                        });
+                    if ui.button("初期値に戻す").clicked() {
+                        *user_theme = UserTheme::default();
+                        edited = true;
+                    }
+                });
+
+                ui.add_space(6.0);
+                let mut bg_pct = (user_theme.bg_alpha.clamp(MIN_BG_ALPHA, 1.0) * 100.0).round() as u32;
+                ui.horizontal(|ui| {
+                    ui.label("背景の不透明度");
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut bg_pct, (MIN_BG_ALPHA * 100.0) as u32..=100)
+                                .suffix("%"),
+                        )
+                        .changed()
+                    {
+                        user_theme.bg_alpha = (bg_pct as f32 / 100.0).clamp(MIN_BG_ALPHA, 1.0);
+                        edited = true;
+                    }
+                });
+
+                let mut hover_pct = (user_theme.hover_alpha.clamp(0.0, 0.5) * 100.0).round() as u32;
+                ui.horizontal(|ui| {
+                    ui.label("選択行の不透明度");
+                    if ui
+                        .add(egui::Slider::new(&mut hover_pct, 0..=50).suffix("%"))
+                        .changed()
+                    {
+                        user_theme.hover_alpha = (hover_pct as f32 / 100.0).clamp(0.0, 0.5);
+                        edited = true;
+                    }
+                });
+
+                ui.add_space(4.0);
+                egui::Grid::new("user_theme_colors")
+                    .num_columns(4)
+                    .spacing(vec2(12.0, 6.0))
+                    .show(ui, |ui| {
+                        edited |= color_field(ui, "背景", &mut user_theme.bg);
+                        edited |= color_field(ui, "文字", &mut user_theme.text);
+                        ui.end_row();
+                        edited |= color_field(ui, "補助文字", &mut user_theme.sub);
+                        edited |= color_field(ui, "アクセント", &mut user_theme.accent);
+                        ui.end_row();
+                        edited |= color_field(ui, "枠線", &mut user_theme.border);
+                        edited |= color_field(ui, "選択行", &mut user_theme.hover);
+                        ui.end_row();
+                    });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("ダークベース");
+                    if toggle(ui, &mut user_theme.dark).changed() {
+                        edited = true;
+                    }
+                });
+            });
+        });
+
+        if edited {
+            change.user_theme_edited = true;
+            if *current != Theme::Custom {
+                *current = Theme::Custom;
+                change.theme_selected = true;
+            }
+        }
+    });
+
+    change
 }
 
-fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
+fn color_field(ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3]) -> bool {
+    ui.label(label);
+    ui.color_edit_button_srgb(rgb).changed()
+}
+
+fn tile(
+    ui: &mut egui::Ui,
+    name: &str,
+    hover_text: &str,
+    c: Colors,
+    selected: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(TILE, Sense::click());
     let visuals = ui.visuals();
     let accent_ui = visuals.selection.bg_fill;
@@ -51,7 +207,6 @@ fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
         Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color)
     };
     let label_color = visuals.text_color();
-    let c = theme.colors(crate::appearance::system_light(ui));
     let painter = ui.painter_at(rect);
     painter.rect(
         rect,
@@ -63,10 +218,37 @@ fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
 
     // Mini candidate window.
     let win = egui::Rect::from_min_size(rect.min + vec2(14.0, 12.0), vec2(TILE.x - 28.0, 98.0));
+    let bg_alpha = c.bg_alpha.clamp(MIN_BG_ALPHA, 1.0);
+    if bg_alpha < 0.99 {
+        // Subtle checkerboard behind translucent previews so opacity is visible.
+        let cell = 10.0;
+        let light_sq = Color32::from_gray(165);
+        let dark_sq = Color32::from_gray(120);
+        let cols = (win.width() / cell).ceil() as usize;
+        let rows = (win.height() / cell).ceil() as usize;
+        for row in 0..rows {
+            for col in 0..cols {
+                let min = pos2(win.left() + col as f32 * cell, win.top() + row as f32 * cell);
+                let max = pos2((min.x + cell).min(win.right()), (min.y + cell).min(win.bottom()));
+                let sq = egui::Rect::from_min_max(min, max);
+                painter.rect_filled(
+                    sq,
+                    CornerRadius::ZERO,
+                    if (row + col) % 2 == 0 { light_sq } else { dark_sq },
+                );
+            }
+        }
+    }
+    let bg_fill = Color32::from_rgba_unmultiplied(
+        c.bg.0,
+        c.bg.1,
+        c.bg.2,
+        (bg_alpha * 255.0).round() as u8,
+    );
     painter.rect(
         win,
         CornerRadius::same(6),
-        c32(c.bg),
+        bg_fill,
         Stroke::new(1.0, c32(c.border)),
         StrokeKind::Inside,
     );
@@ -119,11 +301,6 @@ fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
         c32(c.sub),
     );
 
-    let name = if theme == Theme::Default {
-        "デフォルト"
-    } else {
-        theme.label()
-    };
     painter.text(
         pos2(rect.center().x, rect.bottom() - 20.0),
         Align2::CENTER_CENTER,
@@ -131,5 +308,5 @@ fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
         FontId::proportional(14.0),
         label_color,
     );
-    response.on_hover_text(theme.label())
+    response.on_hover_text(hover_text)
 }

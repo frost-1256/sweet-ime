@@ -23,6 +23,8 @@ pub enum Theme {
     Dracula,
     /// GNOME's Adwaita (GTK) colors; follows light/dark like the default.
     Adwaita,
+    /// User-defined colors and background opacity (`user_theme.txt`).
+    Custom,
 }
 
 /// Colors used to draw one theme.
@@ -30,6 +32,8 @@ pub enum Theme {
 pub struct Colors {
     /// Window background.
     pub bg: Rgb,
+    /// Window background opacity (`0.35..=1.0`); built-in themes use `1.0`.
+    pub bg_alpha: f32,
     /// Candidate text.
     pub text: Rgb,
     /// Index numbers and footer.
@@ -47,8 +51,12 @@ pub struct Colors {
     pub dark: bool,
 }
 
+/// Minimum allowed background opacity so candidate text remains legible.
+pub const MIN_BG_ALPHA: f32 = 0.35;
+
 const LIGHT: Colors = Colors {
     bg: Rgb(0xf9, 0xf9, 0xf9),
+    bg_alpha: 1.0,
     text: Rgb(0x1a, 0x1a, 0x1a),
     sub: Rgb(0x5f, 0x5f, 0x5f),
     hover: Rgb(0x00, 0x00, 0x00),
@@ -61,6 +69,7 @@ const LIGHT: Colors = Colors {
 
 const DARK: Colors = Colors {
     bg: Rgb(0x2c, 0x2c, 0x2c),
+    bg_alpha: 1.0,
     text: Rgb(0xff, 0xff, 0xff),
     sub: Rgb(0xc5, 0xc5, 0xc5),
     hover: Rgb(0xff, 0xff, 0xff),
@@ -72,7 +81,8 @@ const DARK: Colors = Colors {
 };
 
 impl Theme {
-    pub const ALL: [Theme; 9] = [
+    /// Built-in themes shown in the theme gallery.
+    pub const BUILTINS: [Theme; 9] = [
         Theme::Default,
         Theme::Light,
         Theme::Dark,
@@ -82,6 +92,19 @@ impl Theme {
         Theme::Lavender,
         Theme::Dracula,
         Theme::Adwaita,
+    ];
+
+    pub const ALL: [Theme; 10] = [
+        Theme::Default,
+        Theme::Light,
+        Theme::Dark,
+        Theme::Sakura,
+        Theme::Matcha,
+        Theme::Midnight,
+        Theme::Lavender,
+        Theme::Dracula,
+        Theme::Adwaita,
+        Theme::Custom,
     ];
 
     /// Name used in `config.txt`.
@@ -96,6 +119,7 @@ impl Theme {
             Theme::Lavender => "lavender",
             Theme::Dracula => "dracula",
             Theme::Adwaita => "adwaita",
+            Theme::Custom => "custom",
         }
     }
 
@@ -111,6 +135,7 @@ impl Theme {
             Theme::Lavender => "ラベンダー",
             Theme::Dracula => "Dracula",
             Theme::Adwaita => "GTK (Adwaita)",
+            Theme::Custom => "ユーザーテーマ",
         }
     }
 
@@ -126,7 +151,9 @@ impl Theme {
     }
 
     /// Colors for this theme; `system_light` is the system app theme and
-    /// only matters when [`Theme::follows_system`].
+    /// only matters when [`Theme::follows_system`]. For [`Theme::Custom`],
+    /// callers should prefer [`UserTheme::colors`]; this returns the default
+    /// user theme colors as a fallback.
     pub fn colors(self, system_light: bool) -> Colors {
         match self {
             Theme::Default if system_light => LIGHT,
@@ -135,6 +162,7 @@ impl Theme {
             Theme::Dark => DARK,
             Theme::Sakura => Colors {
                 bg: Rgb(0xff, 0xf4, 0xf7),
+                bg_alpha: 1.0,
                 text: Rgb(0x4a, 0x23, 0x32),
                 sub: Rgb(0xa0, 0x6a, 0x7d),
                 hover: Rgb(0xe8, 0x5a, 0x8a),
@@ -146,6 +174,7 @@ impl Theme {
             },
             Theme::Matcha => Colors {
                 bg: Rgb(0xf4, 0xf7, 0xee),
+                bg_alpha: 1.0,
                 text: Rgb(0x26, 0x33, 0x1c),
                 sub: Rgb(0x6b, 0x7a, 0x5c),
                 hover: Rgb(0x5a, 0x8a, 0x3c),
@@ -157,6 +186,7 @@ impl Theme {
             },
             Theme::Midnight => Colors {
                 bg: Rgb(0x1b, 0x20, 0x33),
+                bg_alpha: 1.0,
                 text: Rgb(0xe6, 0xea, 0xf5),
                 sub: Rgb(0x93, 0x9c, 0xb8),
                 hover: Rgb(0x7a, 0xa2, 0xff),
@@ -168,6 +198,7 @@ impl Theme {
             },
             Theme::Dracula => Colors {
                 bg: Rgb(0x28, 0x2a, 0x36),
+                bg_alpha: 1.0,
                 text: Rgb(0xf8, 0xf8, 0xf2),
                 sub: Rgb(0x8b, 0x96, 0xc4),
                 hover: Rgb(0xbd, 0x93, 0xf9),
@@ -180,6 +211,7 @@ impl Theme {
             // libadwaita's popover colors and blue accent.
             Theme::Adwaita if system_light => Colors {
                 bg: Rgb(0xff, 0xff, 0xff),
+                bg_alpha: 1.0,
                 text: Rgb(0x32, 0x32, 0x36),
                 sub: Rgb(0x7f, 0x7f, 0x83),
                 hover: Rgb(0x00, 0x00, 0x06),
@@ -191,6 +223,7 @@ impl Theme {
             },
             Theme::Adwaita => Colors {
                 bg: Rgb(0x36, 0x36, 0x3a),
+                bg_alpha: 1.0,
                 text: Rgb(0xff, 0xff, 0xff),
                 sub: Rgb(0xa8, 0xa8, 0xab),
                 hover: Rgb(0xff, 0xff, 0xff),
@@ -202,6 +235,7 @@ impl Theme {
             },
             Theme::Lavender => Colors {
                 bg: Rgb(0xf6, 0xf3, 0xfc),
+                bg_alpha: 1.0,
                 text: Rgb(0x2e, 0x24, 0x45),
                 sub: Rgb(0x7d, 0x70, 0x99),
                 hover: Rgb(0x8b, 0x6c, 0xd9),
@@ -211,8 +245,140 @@ impl Theme {
                 badge_border: Rgb(0xc4, 0xb5, 0xe8),
                 dark: false,
             },
+            Theme::Custom => UserTheme::default().colors(),
         }
     }
+}
+
+/// User-customizable theme colors and background opacity, saved in `user_theme.txt`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UserTheme {
+    pub bg: [u8; 3],
+    pub text: [u8; 3],
+    pub sub: [u8; 3],
+    pub hover: [u8; 3],
+    pub hover_alpha: f32,
+    pub accent: [u8; 3],
+    pub border: [u8; 3],
+    pub bg_alpha: f32,
+    pub dark: bool,
+}
+
+impl Default for UserTheme {
+    fn default() -> Self {
+        Self {
+            bg: [0x1e, 0x20, 0x28],
+            text: [0xf2, 0xf4, 0xf8],
+            sub: [0xa6, 0xac, 0xbe],
+            hover: [0xff, 0xff, 0xff],
+            hover_alpha: 0.12,
+            accent: [0x60, 0xa5, 0xfa],
+            border: [0x3c, 0x42, 0x54],
+            bg_alpha: 0.88,
+            dark: true,
+        }
+    }
+}
+
+impl UserTheme {
+    /// Initializes a user theme by copying a built-in theme's colors.
+    pub fn from_colors(c: Colors) -> Self {
+        let accent = c.accent.unwrap_or(if c.dark {
+            Rgb(0x60, 0xcd, 0xff)
+        } else {
+            Rgb(0x00, 0x5f, 0xb8)
+        });
+        Self {
+            bg: [c.bg.0, c.bg.1, c.bg.2],
+            text: [c.text.0, c.text.1, c.text.2],
+            sub: [c.sub.0, c.sub.1, c.sub.2],
+            hover: [c.hover.0, c.hover.1, c.hover.2],
+            hover_alpha: c.hover_alpha.clamp(0.0, 1.0),
+            accent: [accent.0, accent.1, accent.2],
+            border: [c.border.0, c.border.1, c.border.2],
+            bg_alpha: c.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
+            dark: c.dark,
+        }
+    }
+
+    pub fn colors(&self) -> Colors {
+        Colors {
+            bg: Rgb(self.bg[0], self.bg[1], self.bg[2]),
+            bg_alpha: self.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
+            text: Rgb(self.text[0], self.text[1], self.text[2]),
+            sub: Rgb(self.sub[0], self.sub[1], self.sub[2]),
+            hover: Rgb(self.hover[0], self.hover[1], self.hover[2]),
+            hover_alpha: self.hover_alpha.clamp(0.0, 1.0),
+            accent: Some(Rgb(self.accent[0], self.accent[1], self.accent[2])),
+            border: Rgb(self.border[0], self.border[1], self.border[2]),
+            badge_border: Rgb(self.border[0], self.border[1], self.border[2]),
+            dark: self.dark,
+        }
+    }
+
+    pub fn parse(text: &str) -> Self {
+        let mut t = Self::default();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or(line);
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let (k, v) = (k.trim(), v.trim());
+            match k {
+                "bg" => if let Some(c) = parse_hex(v) { t.bg = c; },
+                "text" => if let Some(c) = parse_hex(v) { t.text = c; },
+                "sub" => if let Some(c) = parse_hex(v) { t.sub = c; },
+                "hover" => if let Some(c) = parse_hex(v) { t.hover = c; },
+                "accent" => if let Some(c) = parse_hex(v) { t.accent = c; },
+                "border" => if let Some(c) = parse_hex(v) { t.border = c; },
+                "bg_alpha" => {
+                    if let Ok(a) = v.parse::<f32>() && a.is_finite() {
+                        t.bg_alpha = a.clamp(MIN_BG_ALPHA, 1.0);
+                    }
+                }
+                "hover_alpha" => {
+                    if let Ok(a) = v.parse::<f32>() && a.is_finite() {
+                        t.hover_alpha = a.clamp(0.0, 1.0);
+                    }
+                }
+                "dark" => match v {
+                    "true" | "1" => t.dark = true,
+                    "false" | "0" => t.dark = false,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        t
+    }
+
+    pub fn to_text(&self) -> String {
+        format!(
+            "bg = {}\ntext = {}\nsub = {}\nhover = {}\nhover_alpha = {:.2}\naccent = {}\nborder = {}\nbg_alpha = {:.2}\ndark = {}\n",
+            fmt_hex(self.bg),
+            fmt_hex(self.text),
+            fmt_hex(self.sub),
+            fmt_hex(self.hover),
+            self.hover_alpha.clamp(0.0, 1.0),
+            fmt_hex(self.accent),
+            fmt_hex(self.border),
+            self.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
+            self.dark,
+        )
+    }
+}
+
+fn fmt_hex(c: [u8; 3]) -> String {
+    format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.is_ascii() {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some([r, g, b])
 }
 
 #[cfg(test)]
@@ -233,5 +399,25 @@ mod tests {
         assert_eq!(Theme::Default.colors(true), Theme::Light.colors(true));
         assert_eq!(Theme::Default.colors(false), Theme::Dark.colors(true));
         assert!(Theme::Default.colors(true).accent.is_none());
+    }
+
+    #[test]
+    fn user_theme_round_trips() {
+        let mut ut = UserTheme::from_colors(Theme::Sakura.colors(true));
+        ut.bg_alpha = 0.72;
+        ut.hover_alpha = 0.25;
+        let parsed = UserTheme::parse(&ut.to_text());
+        assert_eq!(parsed.bg, ut.bg);
+        assert_eq!(parsed.text, ut.text);
+        assert_eq!(parsed.sub, ut.sub);
+        assert_eq!(parsed.hover, ut.hover);
+        assert_eq!(parsed.accent, ut.accent);
+        assert_eq!(parsed.border, ut.border);
+        assert_eq!(parsed.dark, ut.dark);
+        assert!((parsed.bg_alpha - 0.72).abs() < 0.01);
+        assert!((parsed.hover_alpha - 0.25).abs() < 0.01);
+        // Out-of-range alpha is clamped.
+        let clamped = UserTheme::parse("bg_alpha = 0.05\n");
+        assert_eq!(clamped.bg_alpha, MIN_BG_ALPHA);
     }
 }

@@ -5,7 +5,7 @@
 #![cfg_attr(windows, allow(dead_code))]
 
 use std::path::{Path, PathBuf};
-use sweet_engine::Theme;
+use sweet_engine::{Theme, UserTheme};
 use sweet_engine::theme::{Colors, Rgb};
 
 /// One classicui theme to write.
@@ -30,7 +30,14 @@ pub fn theme_name(theme: Theme, system_light: bool) -> String {
 }
 
 /// The themes `theme` uses: both variants of one that follows the system.
-fn themes_for(theme: Theme) -> Vec<Spec> {
+fn themes_for(theme: Theme, user_theme: &UserTheme) -> Vec<Spec> {
+    if theme == Theme::Custom {
+        return vec![Spec {
+            name: theme_name(Theme::Custom, true),
+            colors: user_theme.colors(),
+            gtk: false,
+        }];
+    }
     let variants: &[bool] = if theme.follows_system() { &[true, false] } else { &[true] };
     variants
         .iter()
@@ -38,10 +45,15 @@ fn themes_for(theme: Theme) -> Vec<Spec> {
         .collect()
 }
 
-/// Every classicui theme: the package installs them all. The default
+/// Every built-in classicui theme: the package installs them all. The default
 /// theme's variants are the light and dark themes.
 pub fn all_themes() -> Vec<Spec> {
-    Theme::ALL.into_iter().filter(|&t| t != Theme::Default).flat_map(themes_for).collect()
+    let default_user = UserTheme::default();
+    Theme::BUILTINS
+        .into_iter()
+        .filter(|&t| t != Theme::Default)
+        .flat_map(|t| themes_for(t, &default_user))
+        .collect()
 }
 
 /// Selection bar color when the theme follows the system accent (as the
@@ -68,14 +80,16 @@ pub fn theme_files(spec: &Spec) -> Vec<(&'static str, String)> {
     // 9-slice images: the corners (Margin) keep their size, the rest stretches.
     // The GTK shape draws a shadow in a transparent border (ShadowMargin).
     let (shadow, panel_margin, row_radius) = if spec.gtk { (12, 26, 6) } else { (0, 8, 4) };
+    let bg_alpha = c.bg_alpha.clamp(sweet_engine::theme::MIN_BG_ALPHA, 1.0);
+    let enable_blur = if bg_alpha < 0.99 { "True" } else { "False" };
     let panel = if spec.gtk {
         let opacity = if c.dark { 0.5 } else { 0.22 };
         format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4"/></filter></defs><rect x="12" y="14" width="56" height="56" rx="12" fill="#000000" fill-opacity="{opacity}" filter="url(#s)"/><rect x="12.5" y="12.5" width="55" height="55" rx="11.5" fill="{bg}" stroke="{border}"/></svg>"##
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4"/></filter></defs><rect x="12" y="14" width="56" height="56" rx="12" fill="#000000" fill-opacity="{opacity}" filter="url(#s)"/><rect x="12.5" y="12.5" width="55" height="55" rx="11.5" fill="{bg}" fill-opacity="{bg_alpha:.2}" stroke="{border}"/></svg>"##
         )
     } else {
         format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="{bg}" stroke="{border}"/></svg>"#
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="{bg}" fill-opacity="{bg_alpha:.2}" stroke="{border}"/></svg>"#
         )
     };
     let menu_highlight = format!(
@@ -110,7 +124,7 @@ pub fn theme_files(spec: &Spec) -> Vec<(&'static str, String)> {
          Description=Sweet IME candidate window colors\nScaleWithDPI=True\n\n\
          [InputPanel]\nNormalColor={text}\nHighlightCandidateColor={text}\n\
          HighlightColor={text}\nHighlightBackgroundColor={}\nSpacing=0\n\
-         EnableBlur=False\nFullWidthHighlight=True\n\n\
+         EnableBlur={enable_blur}\nFullWidthHighlight=True\n\n\
          [InputPanel/Background]\nImage=panel.svg\n\n",
         hexa(accent(c), 0.25)
     );
@@ -289,10 +303,10 @@ fn write_theme(dir: &Path, spec: &Spec) -> std::io::Result<()> {
 }
 
 /// Writes the themes, selects them, and asks fcitx5 to reload classicui.
-pub fn apply(theme: Theme) -> Result<(), String> {
+pub fn apply(theme: Theme, user_theme: &UserTheme) -> Result<(), String> {
     let data = xdg("XDG_DATA_HOME", ".local/share").ok_or("ホームフォルダが見つかりません")?;
     let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
-    write_themes(&data.join("fcitx5/themes"), &themes_for(theme))
+    write_themes(&data.join("fcitx5/themes"), &themes_for(theme, user_theme))
         .map_err(|e| format!("テーマを書き込めませんでした: {e}"))?;
     let (light, dark) = (theme_name(theme, true), theme_name(theme, false));
     let hint = if light == dark { format!("Theme={light}") } else { format!("Theme={light}, DarkTheme={dark}") };
@@ -355,7 +369,8 @@ mod tests {
 
     #[test]
     fn theme_uses_the_theme_colors() {
-        let files = theme_files(&themes_for(Theme::Sakura)[0]);
+        let ut = UserTheme::default();
+        let files = theme_files(&themes_for(Theme::Sakura, &ut)[0]);
         let conf = &files[0].1;
         assert!(conf.contains("NormalColor=#4a2332"), "{conf}");
         assert!(files.iter().any(|(f, s)| *f == "panel.svg" && s.contains("#fff4f7") && s.contains("#f5c6d6")));
@@ -364,12 +379,16 @@ mod tests {
         for image in conf.lines().filter_map(|l| l.strip_prefix("Image=")) {
             assert!(files.iter().any(|(f, _)| *f == image), "{image}");
         }
+        // Translucent user theme enables blur and writes fill-opacity.
+        let custom_files = theme_files(&themes_for(Theme::Custom, &ut)[0]);
+        assert!(custom_files[0].1.contains("EnableBlur=True"));
+        assert!(custom_files.iter().any(|(f, s)| *f == "panel.svg" && s.contains("fill-opacity=\"0.88\"")));
     }
 
     #[test]
     fn package_has_every_theme_the_app_selects() {
         let names: Vec<String> = all_themes().into_iter().map(|s| s.name).collect();
-        for t in Theme::ALL {
+        for t in Theme::BUILTINS {
             for light in [true, false] {
                 assert!(names.contains(&theme_name(t, light)), "{}", theme_name(t, light));
             }

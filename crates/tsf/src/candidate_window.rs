@@ -36,10 +36,10 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, CreateCompatibleDC, CreateDIBSection,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ,
-    InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, PAINTSTRUCT,
-    SelectObject, ValidateRect,
+    AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
+    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
+    GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, PAINTSTRUCT, SelectObject, ValidateRect,
 };
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
@@ -50,7 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
     PostMessageW, SetTimer, SetWindowLongPtrW, GWLP_HWNDPARENT, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
-    ULW_OPAQUE, UpdateLayeredWindow, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    ULW_ALPHA, ULW_OPAQUE, UpdateLayeredWindow, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{Error, HSTRING, Interface, PCWSTR, Result, w};
@@ -124,6 +124,7 @@ fn candidate_format(dwrite: &IDWriteFactory, family: &str) -> Result<IDWriteText
 #[derive(Clone, Copy)]
 struct Palette {
     bg: D2D1_COLOR_F,
+    bg_alpha: f32,
     text: D2D1_COLOR_F,
     sub: D2D1_COLOR_F,
     hover: D2D1_COLOR_F,
@@ -210,6 +211,7 @@ fn palette() -> Palette {
     let b = c.border;
     Palette {
         bg: col(c.bg, 1.0),
+        bg_alpha: c.bg_alpha.clamp(sweet_engine::theme::MIN_BG_ALPHA, 1.0),
         text: col(c.text, 1.0),
         sub: col(c.sub, 1.0),
         hover: col(c.hover, c.hover_alpha),
@@ -597,9 +599,10 @@ impl CandidateWindow {
                 was_visible,
                 fade,
                 st.bitmap_popup,
+                st.pal.bg_alpha,
             )
         });
-        let Some((w, h, text_x, was_visible, fade, bitmap_popup)) = geom else {
+        let Some((w, h, text_x, was_visible, fade, bitmap_popup, bg_alpha)) = geom else {
             return;
         };
         unsafe {
@@ -618,7 +621,7 @@ impl CandidateWindow {
                 y = y.max(wa.top);
             }
             if !was_visible && !bitmap_popup {
-                let alpha = if fade { 0 } else { 255 };
+                let alpha = if fade { 0 } else { (255.0 * bg_alpha).round() as u8 };
                 let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
             }
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -874,23 +877,43 @@ impl LayeredBitmap {
         }
     }
 
-    fn present(&self, hwnd: HWND) -> Result<()> {
+    fn present(&self, hwnd: HWND, alpha: u8) -> Result<()> {
         let size = SIZE {
             cx: self.size.width as i32,
             cy: self.size.height as i32,
         };
         unsafe {
-            UpdateLayeredWindow(
-                hwnd,
-                None,
-                None,
-                Some(&size),
-                Some(self.dc),
-                Some(&POINT::default()),
-                COLORREF(0),
-                None,
-                ULW_OPAQUE,
-            )
+            if alpha < 255 {
+                let blend = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    BlendFlags: 0,
+                    SourceConstantAlpha: alpha,
+                    AlphaFormat: 0,
+                };
+                UpdateLayeredWindow(
+                    hwnd,
+                    None,
+                    None,
+                    Some(&size),
+                    Some(self.dc),
+                    Some(&POINT::default()),
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
+                )
+            } else {
+                UpdateLayeredWindow(
+                    hwnd,
+                    None,
+                    None,
+                    Some(&size),
+                    Some(self.dc),
+                    Some(&POINT::default()),
+                    COLORREF(0),
+                    None,
+                    ULW_OPAQUE,
+                )
+            }
         }
     }
 }
@@ -1059,10 +1082,12 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             return Err(e);
         }
         if let Some(RenderBackend::Bitmap(_, bitmap)) = &st.target {
-            bitmap.present(hwnd)?;
+            let alpha = (255.0 * st.pal.bg_alpha).round() as u8;
+            bitmap.present(hwnd, alpha)?;
         } else {
             let t = (st.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), (255.0 * t) as u8, LWA_ALPHA);
+            let alpha = (255.0 * st.pal.bg_alpha * t).round() as u8;
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
         }
     }
     Ok(())

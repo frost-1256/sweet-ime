@@ -45,6 +45,26 @@ pub fn config_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.txt"))
 }
 
+/// User-defined theme colors and opacity (`user_theme.txt`).
+pub fn user_theme_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("user_theme.txt"))
+}
+
+pub fn load_user_theme() -> crate::UserTheme {
+    user_theme_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| crate::UserTheme::parse(&t))
+        .unwrap_or_default()
+}
+
+pub fn save_user_theme(theme: &crate::UserTheme) -> std::io::Result<()> {
+    let p = user_theme_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(p, theme.to_text())
+}
+
 /// The Windows candidate window's font family, one name per file.
 #[cfg(windows)]
 pub fn candidate_font_file() -> Option<PathBuf> {
