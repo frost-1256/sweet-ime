@@ -338,7 +338,7 @@ fn parse_vertical(conf: &str) -> bool {
         .filter_map(|line| line.split_once('='))
         .filter_map(|(k, v)| (k.trim() == "Vertical Candidate List").then_some(v.trim()))
         .last()
-        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        .map_or(true, |v| v.eq_ignore_ascii_case("true"))
 }
 
 fn select_vertical(conf: &str, vertical: bool) -> String {
@@ -598,6 +598,7 @@ mod tests {
         let varied = select_font_size("Font=\"Cantarell 12 @wght=700\"\n", 14);
         assert_eq!(varied, "Font=\"Cantarell 14 @wght=700\"\n");
         assert_eq!(parse_font_size(&varied), (14, false));
+        assert!(parse_vertical(""));
         let vert = select_vertical(&sized, true);
         assert!(parse_vertical(&vert));
         assert!(!parse_vertical(&select_vertical(&vert, false)));

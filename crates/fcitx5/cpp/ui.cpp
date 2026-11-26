@@ -32,9 +32,15 @@
 #include <wayland-client.h>
 #include <wayland_public.h>
 #include "ext-background-effect-v1-client-protocol.h"
+#include "input-method-unstable-v2-client-protocol.h"
 #define namespace wl_namespace
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #undef namespace
+#ifdef SWEET_HAVE_WAYLANDIM
+#include <fcitx-utils/misc.h>
+#include <fcitx-utils/signals.h>
+#include <waylandim_public.h>
+#endif
 #endif
 
 #ifdef SWEET_HAVE_XCB
@@ -780,6 +786,37 @@ private:
 // Wayland (wlr-layer-shell-v1 + double-buffered wl_shm + ext-background-effect-v1)
 // ---------------------------------------------------------------------------
 #ifdef SWEET_HAVE_WAYLAND
+#ifdef SWEET_HAVE_WAYLANDIM
+// Fcitx5's waylandim module exports getInputMethodV2(InputContext *) returning
+// fcitx::wayland::ZwpInputMethodV2 *, whose header is internal to fcitx5.
+// Mirror its layout and verify both version_ == 1 and wl_proxy_get_class() ==
+// "zwp_input_method_v2" before ever using the raw Wayland proxy; if anything
+// differs we safely fall back to wlr-layer-shell-v1.
+struct ZwpInputMethodV2Mirror {
+    fcitx::Signal<void()> activateSignal;
+    fcitx::Signal<void()> deactivateSignal;
+    fcitx::Signal<void(const char *, uint32_t, uint32_t)> surroundingTextSignal;
+    fcitx::Signal<void(uint32_t)> textChangeCauseSignal;
+    fcitx::Signal<void(uint32_t, uint32_t)> contentTypeSignal;
+    fcitx::Signal<void()> doneSignal;
+    fcitx::Signal<void()> unavailableSignal;
+    uint32_t version;
+    void *userData;
+    zwp_input_method_v2 *data;
+};
+
+static zwp_input_method_v2 *extractRawInputMethodV2(fcitx::wayland::ZwpInputMethodV2 *im) {
+    if (!im) return nullptr;
+    const auto *m = reinterpret_cast<const ZwpInputMethodV2Mirror *>(im);
+    if (m->version != 1 || !m->data) return nullptr;
+    const char *cls = wl_proxy_get_class(reinterpret_cast<wl_proxy *>(m->data));
+    if (!cls || std::strcmp(cls, zwp_input_method_v2_interface.name) != 0) {
+        return nullptr;
+    }
+    return m->data;
+}
+#endif
+
 class WaylandPopup {
 public:
     using HoverCb = std::function<void(double, double)>;
@@ -836,6 +873,11 @@ public:
             ext_background_effect_surface_v1_destroy(bgEffectSurface_);
             bgEffectSurface_ = nullptr;
         }
+        if (imPopupSurface_) {
+            zwp_input_popup_surface_v2_destroy(imPopupSurface_);
+            imPopupSurface_ = nullptr;
+            imPopupOwner_ = nullptr;
+        }
         if (layerSurface_) {
             zwlr_layer_surface_v1_destroy(layerSurface_);
             layerSurface_ = nullptr;
@@ -853,7 +895,8 @@ public:
         if (display_) wl_display_flush(display_);
     }
 
-    bool present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor) {
+    bool present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor,
+                 zwp_input_method_v2 *rawIm = nullptr) {
         if (!ready()) return false;
         const int w = renderer.width();
         const int h = renderer.height();
@@ -862,36 +905,59 @@ public:
             return false;
         }
 
-        if (!surface_) {
-            surface_ = wl_compositor_create_surface(compositor_);
-            if (!surface_) return false;
-            wl_surface_add_listener(surface_, &kSurfaceListener, this);
-            layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
-                layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "sweet-ime");
-            if (!layerSurface_) {
+        if (rawIm) {
+            // Wayland native input-method-v2 popup: the compositor positions the
+            // surface directly at the focused text caret (Niri, Hyprland, Sway, ...).
+            if (layerSurface_ || (imPopupSurface_ && imPopupOwner_ != rawIm)) {
                 hide();
-                return false;
             }
-            zwlr_layer_surface_v1_add_listener(layerSurface_, &kLayerSurfaceListener, this);
-            zwlr_layer_surface_v1_set_keyboard_interactivity(
-                layerSurface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
-            zwlr_layer_surface_v1_set_exclusive_zone(layerSurface_, -1);
-            configured_ = false;
-        }
+            if (!surface_) {
+                surface_ = wl_compositor_create_surface(compositor_);
+                if (!surface_) return false;
+                wl_surface_add_listener(surface_, &kSurfaceListener, this);
+                imPopupSurface_ = zwp_input_method_v2_get_input_popup_surface(rawIm, surface_);
+                if (!imPopupSurface_) {
+                    hide();
+                    return false;
+                }
+                imPopupOwner_ = rawIm;
+                configured_ = true;
+            }
+        } else {
+            if (imPopupSurface_) {
+                hide();
+            }
+            if (!surface_) {
+                surface_ = wl_compositor_create_surface(compositor_);
+                if (!surface_) return false;
+                wl_surface_add_listener(surface_, &kSurfaceListener, this);
+                layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
+                    layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "sweet-ime");
+                if (!layerSurface_) {
+                    hide();
+                    return false;
+                }
+                zwlr_layer_surface_v1_add_listener(layerSurface_, &kLayerSurfaceListener, this);
+                zwlr_layer_surface_v1_set_keyboard_interactivity(
+                    layerSurface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+                zwlr_layer_surface_v1_set_exclusive_zone(layerSurface_, -1);
+                configured_ = false;
+            }
 
-        lastCursor_ = cursor;
-        lastW_ = w;
-        lastH_ = h;
-        applyPlacement();
-        zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(w),
-                                       static_cast<uint32_t>(h));
+            lastCursor_ = cursor;
+            lastW_ = w;
+            lastH_ = h;
+            applyPlacement();
+            zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(w),
+                                           static_cast<uint32_t>(h));
 
-        if (!configured_) {
-            // Commit the initial role state and wait asynchronously for
-            // zwlr_layer_surface_v1.configure via fcitx5's Wayland event loop.
-            wl_surface_commit(surface_);
-            wl_display_flush(display_);
-            return true;
+            if (!configured_) {
+                // Commit the initial role state and wait asynchronously for
+                // zwlr_layer_surface_v1.configure via fcitx5's Wayland event loop.
+                wl_surface_commit(surface_);
+                wl_display_flush(display_);
+                return true;
+            }
         }
 
         // Apply Wayland ext-background-effect-v1 compositor blur when translucent.
@@ -1349,6 +1415,8 @@ private:
     bool blurSupported_ = false;
     wl_surface *surface_ = nullptr;
     zwlr_layer_surface_v1 *layerSurface_ = nullptr;
+    zwp_input_popup_surface_v2 *imPopupSurface_ = nullptr;
+    zwp_input_method_v2 *imPopupOwner_ = nullptr;
     std::array<ShmSlot, 2> slots_{};
     fcitx::Rect lastCursor_{};
     int lastW_ = 0;
@@ -1638,7 +1706,16 @@ private:
 #ifdef SWEET_HAVE_WAYLAND
         if (kind == BackendKind::Wayland) {
             if (auto it = wlPopups_.find(name); it != wlPopups_.end()) {
-                ok = it->second->present(renderer_, activeCursor_);
+                zwp_input_method_v2 *rawIm = nullptr;
+#ifdef SWEET_HAVE_WAYLANDIM
+                if (auto *ic = activeIC_.get(); ic && ic->frontendName() == "wayland_v2") {
+                    if (auto *waylandim = instance_->addonManager().addon("waylandim", true)) {
+                        auto *im = waylandim->call<fcitx::IWaylandIMModule::getInputMethodV2>(ic);
+                        rawIm = extractRawInputMethodV2(im);
+                    }
+                }
+#endif
+                ok = it->second->present(renderer_, activeCursor_, rawIm);
                 completed = ok && it->second->configured();
             }
         }
