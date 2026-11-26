@@ -51,7 +51,7 @@ fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
         Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color)
     };
     let label_color = visuals.text_color();
-    let c = theme.colors(!visuals.dark_mode);
+    let c = theme.colors(crate::appearance::system_light(ui));
     let painter = ui.painter_at(rect);
     painter.rect(
         rect,
