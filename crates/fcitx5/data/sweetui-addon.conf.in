@@ -16,3 +16,4 @@ UIPriority=50
 0=wayland
 1=xcb
 2=notificationitem
+3=waylandim

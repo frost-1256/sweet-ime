@@ -345,7 +345,8 @@ impl TextService_Impl {
             return;
         };
         let hwnd = w.raw();
-        LIVE.submit(conv, reading, left_context, move |reading, surface| {
+        let debounce = std::time::Duration::from_millis(st.session.options.live_debounce_ms.into());
+        LIVE.submit_with_debounce(conv, reading, left_context, debounce, move |reading, surface| {
             crate::candidate_window::post_live(hwnd, reading, surface);
         });
     }

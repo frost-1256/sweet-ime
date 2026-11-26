@@ -2,8 +2,12 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Condvar, Mutex, Once};
+use std::time::{Duration, Instant};
 
 use crate::Converter;
+
+/// Default settle window before running neural live refinement (0 = off).
+const DEFAULT_LIVE_DEBOUNCE: Duration = Duration::ZERO;
 
 type Completion = Box<dyn FnOnce(String, String) + Send>;
 
@@ -11,13 +15,20 @@ struct Job {
     converter: &'static Converter,
     reading: String,
     left_context: String,
+    debounce: Duration,
     done: Completion,
+    submitted_at: Instant,
+}
+
+struct PendingState {
+    job: Option<Job>,
+    generation: u64,
 }
 
 /// A process-lifetime worker that retains only the latest pending request.
 pub struct LiveConversionWorker {
     started: Once,
-    pending: Mutex<Option<Job>>,
+    pending: Mutex<PendingState>,
     ready: Condvar,
 }
 
@@ -31,13 +42,16 @@ impl LiveConversionWorker {
     pub const fn new() -> Self {
         Self {
             started: Once::new(),
-            pending: Mutex::new(None),
+            pending: Mutex::new(PendingState {
+                job: None,
+                generation: 0,
+            }),
             ready: Condvar::new(),
         }
     }
 
-    /// Replaces any pending request. The callback receives the reading and
-    /// refined surface on the worker thread.
+    /// Replaces any pending request using the default debounce window. The
+    /// callback receives the reading and refined surface on the worker thread.
     pub fn submit(
         &'static self,
         converter: &'static Converter,
@@ -45,21 +59,36 @@ impl LiveConversionWorker {
         left_context: String,
         done: impl FnOnce(String, String) + Send + 'static,
     ) {
+        self.submit_with_debounce(converter, reading, left_context, DEFAULT_LIVE_DEBOUNCE, done);
+    }
+
+    /// Replaces any pending request with a caller-chosen settle delay.
+    /// `Duration::ZERO` runs immediately without waiting.
+    pub fn submit_with_debounce(
+        &'static self,
+        converter: &'static Converter,
+        reading: String,
+        left_context: String,
+        debounce: Duration,
+        done: impl FnOnce(String, String) + Send + 'static,
+    ) {
         self.started.call_once(|| {
             let _ = std::thread::Builder::new()
                 .name("sweet-ime-live".into())
                 .spawn(|| self.run());
         });
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(Job {
+        let replaced = {
+            let mut state = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            state.generation = state.generation.wrapping_add(1);
+            state.job.replace(Job {
                 converter,
                 reading,
                 left_context,
+                debounce,
                 done: Box::new(done),
-            });
+                submitted_at: Instant::now(),
+            })
+        };
         self.ready.notify_one();
         drop(replaced);
     }
@@ -67,12 +96,33 @@ impl LiveConversionWorker {
     fn run(&self) {
         loop {
             let job = {
-                let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-                self.ready
-                    .wait_while(pending, |pending| pending.is_none())
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .unwrap()
+                let mut state = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    state = self
+                        .ready
+                        .wait_while(state, |s| s.job.is_none())
+                        .unwrap_or_else(|e| e.into_inner());
+                    let generation = state.generation;
+                    let (debounce, elapsed) = {
+                        let job = state.job.as_ref().unwrap();
+                        (job.debounce, job.submitted_at.elapsed())
+                    };
+                    if !debounce.is_zero()
+                        && let Some(wait) = debounce.checked_sub(elapsed)
+                    {
+                        let (next_state, _) = self
+                            .ready
+                            .wait_timeout_while(state, wait, |s| s.generation == generation)
+                            .unwrap_or_else(|e| e.into_inner());
+                        state = next_state;
+                        if state.generation != generation {
+                            continue;
+                        }
+                    }
+                    if let Some(job) = state.job.take() {
+                        break job;
+                    }
+                }
             };
             let result = catch_unwind(AssertUnwindSafe(|| {
                 job.converter.refine_live(&job.reading, &job.left_context)

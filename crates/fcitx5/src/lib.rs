@@ -269,7 +269,8 @@ impl SweetContext {
             return;
         };
         let shared = Arc::downgrade(&self.live);
-        LIVE.submit(conv, reading, left_context, move |reading, surface| {
+        let debounce = std::time::Duration::from_millis(self.session.options.live_debounce_ms.into());
+        LIVE.submit_with_debounce(conv, reading, left_context, debounce, move |reading, surface| {
             let Some(shared) = shared.upgrade() else {
                 return;
             };

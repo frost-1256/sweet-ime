@@ -105,10 +105,13 @@ impl Context {
         }
         if let Some((reading, left_context)) = self.session.live_request() {
             let (send, receive) = mpsc::channel();
-            LIVE.submit(
+            let debounce =
+                std::time::Duration::from_millis(self.session.options.live_debounce_ms.into());
+            LIVE.submit_with_debounce(
                 self.converter,
                 reading,
                 left_context,
+                debounce,
                 move |reading, surface| {
                     let _ = send.send((reading, surface));
                 },

@@ -135,6 +135,83 @@ pub fn card(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mu
     card_inner(ui, title, desc, control);
 }
 
+/// A subtle section heading placed above a group of related settings.
+pub fn section_header(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(text).size(13.5).strong().weak());
+}
+
+/// A grouped settings card that holds multiple [`setting_row`] entries
+/// separated by [`setting_divider`] inside a single rounded container.
+pub fn card_group(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    let v = ui.visuals();
+    Frame::new()
+        .fill(v.faint_bg_color)
+        .stroke(Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(18, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            content(ui);
+        });
+}
+
+/// One row inside a [`card_group`]: title and description on the left,
+/// `control` on the right.
+pub fn setting_row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
+    setting_row_inner(ui, title, desc, control);
+}
+
+/// A subtle horizontal hairline between two [`setting_row`] items in a [`card_group`].
+pub fn setting_divider(ui: &mut egui::Ui) {
+    let color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        rect.left()..=rect.right(),
+        rect.center().y,
+        Stroke::new(1.0, color),
+    );
+}
+
+fn setting_row_inner(
+    ui: &mut egui::Ui,
+    title: &str,
+    desc: &str,
+    control: impl FnOnce(&mut egui::Ui),
+) -> egui::Rect {
+    let mut text_rect = egui::Rect::NOTHING;
+    Frame::new()
+        .inner_margin(Margin::symmetric(0, 12))
+        .show(ui, |ui| {
+            let row_size = Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
+            ui.allocate_ui_with_layout(
+                row_size,
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    control(ui);
+                    ui.add_space(12.0);
+                    let text_width = ui.available_width().max(0.0);
+                    let text = ui.allocate_ui_with_layout(
+                        Vec2::new(text_width, 0.0),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            ui.set_max_width(text_width);
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            ui.label(RichText::new(title).size(15.5));
+                            if !desc.is_empty() {
+                                ui.label(RichText::new(desc).small().weak());
+                            }
+                        },
+                    );
+                    text_rect = text.response.rect;
+                },
+            );
+        });
+    text_rect
+}
+
 fn card_inner(
     ui: &mut egui::Ui,
     title: &str,

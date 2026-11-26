@@ -1,10 +1,17 @@
 //! Input settings and their configuration-file format.
 
+/// Default settle delay before running background neural live refinement (0 = off).
+pub const DEFAULT_LIVE_DEBOUNCE_MS: u32 = 0;
+/// Upper bound accepted for `live_debounce_ms`.
+pub const MAX_LIVE_DEBOUNCE_MS: u32 = 500;
+
 /// User-facing behaviour switches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Show the converted text while typing; Enter commits it.
     pub live_conversion: bool,
+    /// Wait time in milliseconds before running background live refinement (0 disables debounce).
+    pub live_debounce_ms: u32,
     /// Show predictions while typing.
     pub suggestions: bool,
     /// Add Simeji kaomoji candidates to desktop Space conversions.
@@ -48,6 +55,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             live_conversion: true,
+            live_debounce_ms: DEFAULT_LIVE_DEBOUNCE_MS,
             suggestions: true,
             simeji_cloud: false,
             show_typed_input: false,
@@ -70,6 +78,9 @@ impl Default for Options {
 }
 
 impl Options {
+    /// Maximum supported value for [`Options::live_debounce_ms`].
+    pub const MAX_LIVE_DEBOUNCE_MS: u32 = MAX_LIVE_DEBOUNCE_MS;
+
     /// Parses `key = value` lines (`#` comments). Unknown keys are ignored.
     pub fn parse(text: &str) -> Self {
         let mut o = Self::default();
@@ -84,6 +95,11 @@ impl Options {
             );
             match k.trim() {
                 "live_conversion" => o.live_conversion = on,
+                "live_debounce_ms" => {
+                    if let Ok(ms) = v.trim().parse::<u32>() {
+                        o.live_debounce_ms = ms.min(MAX_LIVE_DEBOUNCE_MS);
+                    }
+                }
                 "suggestions" => o.suggestions = on,
                 "simeji_cloud" => o.simeji_cloud = on,
                 "show_typed_input" => o.show_typed_input = on,
@@ -113,6 +129,7 @@ impl Options {
         format!(
             "# Sweet IME settings (applied when the IME is next activated)
              live_conversion = {}
+             live_debounce_ms = {}
              suggestions = {}
              simeji_cloud = {}
              show_typed_input = {}
@@ -132,6 +149,7 @@ impl Options {
              shift_one_word = {}
 ",
             b(self.live_conversion),
+            self.live_debounce_ms.min(MAX_LIVE_DEBOUNCE_MS),
             b(self.suggestions),
             b(self.simeji_cloud),
             b(self.show_typed_input),
@@ -172,6 +190,7 @@ mod tests {
         assert_eq!(Options::parse(""), Options::default());
         let o = Options {
             live_conversion: false,
+            live_debounce_ms: 140,
             suggestions: true,
             simeji_cloud: true,
             show_typed_input: true,
@@ -191,6 +210,15 @@ mod tests {
             shift_one_word: false,
         };
         assert_eq!(Options::parse(&o.to_text()), o);
+        assert_eq!(Options::parse("live_debounce_ms = 0").live_debounce_ms, 0);
+        assert_eq!(
+            Options::parse("live_debounce_ms = 9999").live_debounce_ms,
+            super::MAX_LIVE_DEBOUNCE_MS
+        );
+        assert_eq!(
+            Options::parse("live_debounce_ms = invalid").live_debounce_ms,
+            super::DEFAULT_LIVE_DEBOUNCE_MS
+        );
         assert_eq!(
             Options::parse("theme = midnight").theme,
             crate::Theme::Midnight

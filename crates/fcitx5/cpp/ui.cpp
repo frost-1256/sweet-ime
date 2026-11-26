@@ -26,15 +26,28 @@
 #include <fcitx/userinterfacemanager.h>
 
 #ifdef SWEET_HAVE_WAYLAND
+#include <fcitx-utils/misc.h>
+#include <fcitx-utils/signals.h>
 #include <linux/input-event-codes.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <wayland_public.h>
 #include "ext-background-effect-v1-client-protocol.h"
+#include "input-method-unstable-v2-client-protocol.h"
 #define namespace wl_namespace
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #undef namespace
+
+// Upstream fcitx5 does not install waylandim_public.h / Fcitx5ModuleWaylandIM
+// in standard packages, so declare the header-only addon call signature directly
+// (matching src/frontend/waylandim/waylandim_public.h).
+namespace fcitx::wayland {
+class ZwpInputMethodV2;
+}
+FCITX_ADDON_DECLARE_FUNCTION(
+    WaylandIMModule, getInputMethodV2,
+    fcitx::wayland::ZwpInputMethodV2 *(fcitx::InputContext *));
 #endif
 
 #ifdef SWEET_HAVE_XCB
@@ -221,6 +234,8 @@ public:
         maybeReloadConfig();
 
         const bool wasVisible = snap_.visible;
+        const int prevCursor = snap_.cursor;
+        const int prevWidth = width_;
         const RectF oldHighlight = currentHighlightRect(now);
 
         snap_ = next;
@@ -234,7 +249,11 @@ public:
             return;
         }
 
+        const bool keepMinWidth = wasVisible && snap_.cursor < 0 && prevCursor < 0;
         measure();
+        if (keepMinWidth && width_ < prevWidth) {
+            width_ = prevWidth;
+        }
 
         if (!wasVisible) {
             const auto sinceHidden =
@@ -780,20 +799,54 @@ private:
 // Wayland (wlr-layer-shell-v1 + double-buffered wl_shm + ext-background-effect-v1)
 // ---------------------------------------------------------------------------
 #ifdef SWEET_HAVE_WAYLAND
+// Fcitx5's waylandim module exports getInputMethodV2(InputContext *) returning
+// fcitx::wayland::ZwpInputMethodV2 *, whose header is internal to fcitx5.
+// Mirror its layout and verify both version_ == 1 and wl_proxy_get_class() ==
+// "zwp_input_method_v2" before ever using the raw Wayland proxy; if anything
+// differs we safely fall back to wlr-layer-shell-v1.
+struct ZwpInputMethodV2Mirror {
+    fcitx::Signal<void()> activateSignal;
+    fcitx::Signal<void()> deactivateSignal;
+    fcitx::Signal<void(const char *, uint32_t, uint32_t)> surroundingTextSignal;
+    fcitx::Signal<void(uint32_t)> textChangeCauseSignal;
+    fcitx::Signal<void(uint32_t, uint32_t)> contentTypeSignal;
+    fcitx::Signal<void()> doneSignal;
+    fcitx::Signal<void()> unavailableSignal;
+    uint32_t version;
+    void *userData;
+    zwp_input_method_v2 *data;
+};
+
+static zwp_input_method_v2 *extractRawInputMethodV2(fcitx::wayland::ZwpInputMethodV2 *im) {
+    if (!im) return nullptr;
+    const auto *m = reinterpret_cast<const ZwpInputMethodV2Mirror *>(im);
+    if (m->version != 1 || !m->data) return nullptr;
+    const char *cls = wl_proxy_get_class(reinterpret_cast<wl_proxy *>(m->data));
+    if (!cls || std::strcmp(cls, zwp_input_method_v2_interface.name) != 0) {
+        return nullptr;
+    }
+    return m->data;
+}
+
 class WaylandPopup {
 public:
+    enum class PresentResult { Ok, PendingConfigure, Busy, Failed };
     using HoverCb = std::function<void(double, double)>;
     using ClickCb = std::function<void(double, double)>;
     using NotifyCb = std::function<void()>;
 
     WaylandPopup(wl_display *display, HoverCb onHover, ClickCb onClick, NotifyCb onReady,
-                 NotifyCb onConfigured, NotifyCb onInitialClosed)
+                 NotifyCb onConfigured, NotifyCb onInitialClosed, NotifyCb onBufferReleased)
         : display_(display),
           onHover_(std::move(onHover)),
           onClick_(std::move(onClick)),
           onReady_(std::move(onReady)),
           onConfigured_(std::move(onConfigured)),
-          onInitialClosed_(std::move(onInitialClosed)) {
+          onInitialClosed_(std::move(onInitialClosed)),
+          onBufferReleased_(std::move(onBufferReleased)) {
+        for (auto &slot : slots_) {
+            slot.owner = this;
+        }
         registry_ = wl_display_get_registry(display_);
         if (registry_) {
             wl_registry_add_listener(registry_, &kRegistryListener, this);
@@ -836,6 +889,11 @@ public:
             ext_background_effect_surface_v1_destroy(bgEffectSurface_);
             bgEffectSurface_ = nullptr;
         }
+        if (imPopupSurface_) {
+            zwp_input_popup_surface_v2_destroy(imPopupSurface_);
+            imPopupSurface_ = nullptr;
+            imPopupOwner_ = nullptr;
+        }
         if (layerSurface_) {
             zwlr_layer_surface_v1_destroy(layerSurface_);
             layerSurface_ = nullptr;
@@ -853,45 +911,69 @@ public:
         if (display_) wl_display_flush(display_);
     }
 
-    bool present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor) {
-        if (!ready()) return false;
+    PresentResult present(SweetPanelRenderer &renderer, const fcitx::Rect &cursor,
+                          zwp_input_method_v2 *rawIm = nullptr) {
+        if (!ready()) return PresentResult::Failed;
         const int w = renderer.width();
         const int h = renderer.height();
         if (w <= 0 || h <= 0) {
             hide();
-            return false;
+            return PresentResult::Failed;
         }
 
-        if (!surface_) {
-            surface_ = wl_compositor_create_surface(compositor_);
-            if (!surface_) return false;
-            wl_surface_add_listener(surface_, &kSurfaceListener, this);
-            layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
-                layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "sweet-ime");
-            if (!layerSurface_) {
+        if (rawIm) {
+            // Wayland native input-method-v2 popup: the compositor positions the
+            // surface directly at the focused text caret (Niri, Hyprland, Sway, ...).
+            if (layerSurface_ || (imPopupSurface_ && imPopupOwner_ != rawIm)) {
                 hide();
-                return false;
             }
-            zwlr_layer_surface_v1_add_listener(layerSurface_, &kLayerSurfaceListener, this);
-            zwlr_layer_surface_v1_set_keyboard_interactivity(
-                layerSurface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
-            zwlr_layer_surface_v1_set_exclusive_zone(layerSurface_, -1);
-            configured_ = false;
-        }
+            if (!surface_) {
+                surface_ = wl_compositor_create_surface(compositor_);
+                if (!surface_) return PresentResult::Failed;
+                wl_surface_add_listener(surface_, &kSurfaceListener, this);
+                imPopupSurface_ = zwp_input_method_v2_get_input_popup_surface(rawIm, surface_);
+                if (!imPopupSurface_) {
+                    hide();
+                    return PresentResult::Failed;
+                }
+                imPopupOwner_ = rawIm;
+                configured_ = true;
+            }
+        } else {
+            if (imPopupSurface_) {
+                hide();
+            }
+            if (!surface_) {
+                surface_ = wl_compositor_create_surface(compositor_);
+                if (!surface_) return PresentResult::Failed;
+                wl_surface_add_listener(surface_, &kSurfaceListener, this);
+                layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
+                    layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "sweet-ime");
+                if (!layerSurface_) {
+                    hide();
+                    return PresentResult::Failed;
+                }
+                zwlr_layer_surface_v1_add_listener(layerSurface_, &kLayerSurfaceListener, this);
+                zwlr_layer_surface_v1_set_keyboard_interactivity(
+                    layerSurface_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+                zwlr_layer_surface_v1_set_exclusive_zone(layerSurface_, -1);
+                configured_ = false;
+            }
 
-        lastCursor_ = cursor;
-        lastW_ = w;
-        lastH_ = h;
-        applyPlacement();
-        zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(w),
-                                       static_cast<uint32_t>(h));
+            lastCursor_ = cursor;
+            lastW_ = w;
+            lastH_ = h;
+            applyPlacement();
+            zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(w),
+                                           static_cast<uint32_t>(h));
 
-        if (!configured_) {
-            // Commit the initial role state and wait asynchronously for
-            // zwlr_layer_surface_v1.configure via fcitx5's Wayland event loop.
-            wl_surface_commit(surface_);
-            wl_display_flush(display_);
-            return true;
+            if (!configured_) {
+                // Commit the initial role state and wait asynchronously for
+                // zwlr_layer_surface_v1.configure via fcitx5's Wayland event loop.
+                wl_surface_commit(surface_);
+                wl_display_flush(display_);
+                return PresentResult::PendingConfigure;
+            }
         }
 
         // Apply Wayland ext-background-effect-v1 compositor blur when translucent.
@@ -917,9 +999,10 @@ public:
             }
         }
 
-        ShmSlot *slot = acquireSlot(w, h);
+        bool allocFailed = false;
+        ShmSlot *slot = acquireSlot(w, h, allocFailed);
         if (!slot) {
-            return false;
+            return allocFailed ? PresentResult::Failed : PresentResult::Busy;
         }
 
         cairo_surface_t *surf = cairo_image_surface_create_for_data(
@@ -935,11 +1018,12 @@ public:
         wl_surface_damage_buffer(surface_, 0, 0, w, h);
         wl_surface_commit(surface_);
         wl_display_flush(display_);
-        return true;
+        return PresentResult::Ok;
     }
 
 private:
     struct ShmSlot {
+        WaylandPopup *owner = nullptr;
         wl_buffer *buffer = nullptr;
         void *data = nullptr;
         size_t size = 0;
@@ -995,7 +1079,11 @@ private:
         }
 
         static void onRelease(void *user, wl_buffer *) {
-            static_cast<ShmSlot *>(user)->busy = false;
+            auto *slot = static_cast<ShmSlot *>(user);
+            slot->busy = false;
+            if (slot->owner && slot->owner->onBufferReleased_) {
+                slot->owner->onBufferReleased_();
+            }
         }
 
         static constexpr wl_buffer_listener kBufferListener = {
@@ -1003,10 +1091,15 @@ private:
         };
     };
 
-    ShmSlot *acquireSlot(int w, int h) {
+    ShmSlot *acquireSlot(int w, int h, bool &allocFailed) {
+        allocFailed = false;
         for (auto &slot : slots_) {
             if (!slot.busy) {
-                return slot.ensure(shm_, w, h) ? &slot : nullptr;
+                if (slot.ensure(shm_, w, h)) {
+                    return &slot;
+                }
+                allocFailed = true;
+                return nullptr;
             }
         }
         return nullptr;
@@ -1349,7 +1442,9 @@ private:
     bool blurSupported_ = false;
     wl_surface *surface_ = nullptr;
     zwlr_layer_surface_v1 *layerSurface_ = nullptr;
-    std::array<ShmSlot, 2> slots_{};
+    zwp_input_popup_surface_v2 *imPopupSurface_ = nullptr;
+    zwp_input_method_v2 *imPopupOwner_ = nullptr;
+    std::array<ShmSlot, 4> slots_{};
     fcitx::Rect lastCursor_{};
     int lastW_ = 0;
     int lastH_ = 0;
@@ -1362,6 +1457,7 @@ private:
     NotifyCb onReady_;
     NotifyCb onConfigured_;
     NotifyCb onInitialClosed_;
+    NotifyCb onBufferReleased_;
 };
 #endif
 
@@ -1402,6 +1498,13 @@ public:
                                 } else {
                                     stopTimer();
                                 }
+                            }
+                        },
+                        [this, name]() {
+                            if (!suspended_ && pendingPresent_ && renderer_.visible() &&
+                                presentedKind_ == BackendKind::Wayland && presentedName_ == name) {
+                                busyTicks_ = 0;
+                                ensureTimer();
                             }
                         });
                     const bool isReady = popup->ready();
@@ -1484,6 +1587,7 @@ public:
     }
 
     void reloadConfig() override {
+        ++snapshotGen_;
         renderer_.reloadConfig();
         if (!suspended_ && renderer_.visible()) {
             renderNow();
@@ -1521,7 +1625,19 @@ public:
         activeDisplay_ = ic->display();
         activeCursor_ = ic->cursorRect();
         retryCount_ = 0;
+        ++snapshotGen_;
         renderer_.updateData(snap);
+        if (snap.visible && presentedKind_ != BackendKind::None) {
+            const auto elapsedMs =
+                std::chrono::duration<double, std::milli>(Clock::now() - lastPresentAt_).count();
+            if (elapsedMs < 16.0) {
+                // Coalesce rapid keystrokes to display refresh rate (~60fps) to avoid
+                // mid-frame buffer churn and visible flickering while typing fast.
+                pendingPresent_ = true;
+                ensureTimer();
+                return;
+            }
+        }
         renderNow();
     }
 
@@ -1635,11 +1751,22 @@ private:
         }
         bool ok = false;
         bool completed = false;
+        bool busy = false;
 #ifdef SWEET_HAVE_WAYLAND
         if (kind == BackendKind::Wayland) {
             if (auto it = wlPopups_.find(name); it != wlPopups_.end()) {
-                ok = it->second->present(renderer_, activeCursor_);
-                completed = ok && it->second->configured();
+                zwp_input_method_v2 *rawIm = nullptr;
+                if (auto *ic = activeIC_.get(); ic && ic->frontendName() == "wayland_v2") {
+                    if (auto *waylandim = instance_->addonManager().addon("waylandim", true)) {
+                        auto *im = waylandim->call<fcitx::IWaylandIMModule::getInputMethodV2>(ic);
+                        rawIm = extractRawInputMethodV2(im);
+                    }
+                }
+                const auto res = it->second->present(renderer_, activeCursor_, rawIm);
+                ok = (res == WaylandPopup::PresentResult::Ok ||
+                      res == WaylandPopup::PresentResult::PendingConfigure);
+                completed = (res == WaylandPopup::PresentResult::Ok);
+                busy = (res == WaylandPopup::PresentResult::Busy);
             }
         }
 #endif
@@ -1655,9 +1782,25 @@ private:
             presentedKind_ = kind;
             presentedName_ = name;
             if (completed) {
+                lastPresentAt_ = Clock::now();
+                presentedGen_ = snapshotGen_;
+                pendingPresent_ = false;
                 retryCount_ = 0;
+                busyTicks_ = 0;
             }
             return completed && renderer_.needsAnimation();
+        }
+        if (busy) {
+            // Keep the currently visible frame intact while all SHM buffers are
+            // still held by the compositor. Retry on a short timer, and if all
+            // slots stay busy past the cap, keep pendingPresent_ set so
+            // ShmSlot::onRelease resumes presentation as soon as a buffer frees.
+            pendingPresent_ = true;
+            if (busyTicks_ < 15) {
+                ++busyTicks_;
+                return true;
+            }
+            return false;
         }
         hidePresented();
         if (kind != BackendKind::None && retryCount_ < 3) {
@@ -1684,7 +1827,9 @@ private:
 #endif
         presentedKind_ = BackendKind::None;
         presentedName_.clear();
+        pendingPresent_ = false;
         retryCount_ = 0;
+        busyTicks_ = 0;
     }
 
     void ensureTimer() {
@@ -1713,6 +1858,7 @@ private:
 
     void onClick(BackendKind kind, const std::string &name, double x, double y) {
         if (kind != presentedKind_ || name != presentedName_) return;
+        if (presentedGen_ != snapshotGen_) return;
         const int idx = renderer_.hitTest(x, y);
         if (idx < 0) return;
         auto *ic = activeIC_.get();
@@ -1762,6 +1908,11 @@ private:
     BackendKind presentedKind_ = BackendKind::None;
     std::string presentedName_;
     int retryCount_ = 0;
+    int busyTicks_ = 0;
+    uint64_t snapshotGen_ = 0;
+    uint64_t presentedGen_ = 0;
+    bool pendingPresent_ = false;
+    Clock::time_point lastPresentAt_{};
     std::unique_ptr<fcitx::EventSourceTime> animTimer_;
     bool constructing_ = true;
     bool suspended_ = false;

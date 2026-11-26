@@ -338,7 +338,7 @@ fn parse_vertical(conf: &str) -> bool {
         .filter_map(|line| line.split_once('='))
         .filter_map(|(k, v)| (k.trim() == "Vertical Candidate List").then_some(v.trim()))
         .last()
-        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        .map_or(true, |v| v.eq_ignore_ascii_case("true"))
 }
 
 fn select_vertical(conf: &str, vertical: bool) -> String {
@@ -369,9 +369,23 @@ pub fn apply_candidate_font_size(size: u32) -> Result<(), String> {
 
 #[cfg(not(windows))]
 pub fn vertical_candidate_list() -> bool {
-    let conf = xdg("XDG_CONFIG_HOME", ".config")
-        .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
-        .unwrap_or_default();
+    let Some(config) = xdg("XDG_CONFIG_HOME", ".config") else {
+        return true;
+    };
+    let conf = std::fs::read_to_string(config.join("fcitx5/conf/classicui.conf")).unwrap_or_default();
+    let has_key = conf
+        .lines()
+        .take_while(|line| !is_section(line))
+        .filter_map(|line| line.split_once('='))
+        .any(|(k, _)| k.trim() == "Vertical Candidate List");
+    if !has_key {
+        let _ = write_classicui(
+            &config,
+            |c| select_vertical(c, true),
+            "Vertical Candidate List=True",
+        );
+        return true;
+    }
     parse_vertical(&conf)
 }
 
@@ -598,6 +612,7 @@ mod tests {
         let varied = select_font_size("Font=\"Cantarell 12 @wght=700\"\n", 14);
         assert_eq!(varied, "Font=\"Cantarell 14 @wght=700\"\n");
         assert_eq!(parse_font_size(&varied), (14, false));
+        assert!(parse_vertical(""));
         let vert = select_vertical(&sized, true);
         assert!(parse_vertical(&vert));
         assert!(!parse_vertical(&select_vertical(&vert, false)));

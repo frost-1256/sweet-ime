@@ -1,29 +1,50 @@
 //! Review and manage the user's learned conversions.
 
 use sweet_ui::eframe::egui::{self, Color32, RichText};
-use sweet_ui::{card, card_frame, toggle};
+use sweet_ui::{card_frame, card_group, section_header, setting_divider, setting_row, toggle};
 
 use super::App;
 
 impl App {
     pub(super) fn learning_page(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
-        card(
-            ui,
-            "学習する",
-            "選んだ候補を覚えて、次から優先します。オフにすると覚えた内容も使いません。",
-            |ui| {
-                changed |= toggle(ui, &mut self.opts.learning).changed();
-            },
-        );
-        card(
-            ui,
-            "パスワード欄では学習しない",
-            "パスワード欄やブラウザーのプライベートウィンドウで入力した内容は覚えません。",
-            |ui| {
-                changed |= toggle(ui, &mut self.opts.private_fields).changed();
-            },
-        );
+        let mut forget_within = None;
+        section_header(ui, "学習の設定");
+        card_group(ui, |ui| {
+            setting_row(
+                ui,
+                "学習する",
+                "選んだ候補を覚えて、次から優先します。オフにすると覚えた内容も使いません。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.learning).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "パスワード欄では学習しない",
+                "パスワード欄やブラウザーのプライベートウィンドウで入力した内容は覚えません。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.private_fields).changed();
+                },
+            );
+            if self.history.is_some() {
+                setting_divider(ui);
+                setting_row(
+                    ui,
+                    "最近の学習を消す",
+                    "うっかり覚えさせた変換を、時間を区切って取り消します。",
+                    |ui| {
+                        if ui.button("今日 (24 時間)").clicked() {
+                            forget_within = Some((24 * 3600, "24 時間"));
+                        }
+                        if ui.button("直近 1 時間").clicked() {
+                            forget_within = Some((3600, "1 時間"));
+                        }
+                    },
+                );
+            }
+        });
         if changed {
             self.save();
         }
@@ -31,20 +52,6 @@ impl App {
             ui.label("学習データの場所がわかりません(APPDATA が未設定)。");
             return;
         };
-        let mut forget_within = None;
-        card(
-            ui,
-            "最近の学習を消す",
-            "うっかり覚えさせた変換を、時間を区切って取り消します。",
-            |ui| {
-                if ui.button("今日(24 時間)").clicked() {
-                    forget_within = Some((24 * 3600, "24 時間"));
-                }
-                if ui.button("直近 1 時間").clicked() {
-                    forget_within = Some((3600, "1 時間"));
-                }
-            },
-        );
         if let Some((secs, label)) = forget_within {
             let r = self
                 .history
@@ -58,6 +65,7 @@ impl App {
             };
         }
 
+        section_header(ui, "学習履歴");
         card_frame(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
