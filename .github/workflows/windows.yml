@@ -20,8 +20,116 @@ env:
   MOZC_REF: 1527a4cd1217cec4611cd4bc8d46f8c66ea79e6a
 
 jobs:
+  changes:
+    name: Detect affected platforms
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      windows: ${{ steps.filter.outputs.windows }}
+      test: ${{ steps.filter.outputs.test }}
+      android: ${{ steps.filter.outputs.android }}
+      linux: ${{ steps.filter.outputs.linux }}
+      macos: ${{ steps.filter.outputs.macos }}
+    steps:
+      - name: Check out PR merge commit
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          all_true() {
+            {
+              echo "windows=true"
+              echo "test=true"
+              echo "android=true"
+              echo "linux=true"
+              echo "macos=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            all_true
+          fi
+          if ! git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+            all_true
+          fi
+
+          win=false
+          tst=false
+          and=false
+          lnx=false
+          mac=false
+
+          while IFS= read -r -d '' f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.md|docs/*|eval/*|.gitignore|LICENSE*)
+                ;;
+              Cargo.toml|*/Cargo.toml|Cargo.lock|crates/engine/*|crates/zenz/*|crates/dictc/*|crates/ui/*|scripts/build-dictionary.ps1|scripts/fetch-sudachidict.ps1|.github/workflows/windows.yml)
+                win=true; tst=true; and=true; lnx=true; mac=true
+                ;;
+              crates/tsf/*|crates/tsf-shim/*|crates/installer/*)
+                win=true; tst=true
+                ;;
+              scripts/build.ps1|scripts/get-zenz.ps1)
+                win=true
+                ;;
+              crates/android/*)
+                and=true; tst=true
+                ;;
+              android/*)
+                and=true
+                ;;
+              crates/fcitx5/*)
+                lnx=true; tst=true
+                ;;
+              nix/*|flake.nix|flake.lock|scripts/package-linux.sh)
+                lnx=true
+                ;;
+              crates/macos/*)
+                mac=true; tst=true
+                ;;
+              macos/*|.github/workflows/macos.yml)
+                mac=true
+                ;;
+              crates/settings/*)
+                win=true; lnx=true; mac=true; tst=true
+                ;;
+              crates/cli/*)
+                tst=true
+                ;;
+              assets/*)
+                win=true; and=true; lnx=true; mac=true
+                ;;
+              crates/*)
+                win=true; tst=true; and=true; lnx=true; mac=true
+                ;;
+              *)
+                win=true; tst=true; and=true; lnx=true; mac=true
+                ;;
+            esac
+          done < <(git diff -z --name-only --no-renames HEAD^1 HEAD)
+
+          {
+            echo "windows=$win"
+            echo "test=$tst"
+            echo "android=$and"
+            echo "linux=$lnx"
+            echo "macos=$mac"
+          } >> "$GITHUB_OUTPUT"
+          echo "Detected: windows=$win test=$tst android=$and linux=$lnx macos=$mac"
+
   windows:
     name: Build the installer
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -88,6 +196,8 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -129,6 +239,8 @@ jobs:
 
   android:
     name: Build the APK
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -226,6 +338,8 @@ jobs:
 
   linux:
     name: Test fcitx5 (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.linux == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -271,6 +385,8 @@ jobs:
 
   linux-package:
     name: Package Linux (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.linux == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -327,6 +443,8 @@ jobs:
 
   macos:
     name: Test macOS
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     uses: ./.github/workflows/macos.yml
 
   release:
