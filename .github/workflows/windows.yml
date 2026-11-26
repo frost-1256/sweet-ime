@@ -67,12 +67,12 @@ jobs:
           lnx=false
           mac=false
 
-          while IFS= read -r f; do
+          while IFS= read -r -d '' f; do
             [ -z "$f" ] && continue
             case "$f" in
               *.md|docs/*|eval/*|.gitignore|LICENSE*)
                 ;;
-              Cargo.toml|Cargo.lock|crates/engine/*|crates/zenz/*|crates/dictc/*|crates/ui/*|scripts/build-dictionary.ps1|scripts/fetch-sudachidict.ps1|.github/workflows/windows.yml)
+              Cargo.toml|*/Cargo.toml|Cargo.lock|crates/engine/*|crates/zenz/*|crates/dictc/*|crates/ui/*|scripts/build-dictionary.ps1|scripts/fetch-sudachidict.ps1|.github/workflows/windows.yml)
                 win=true; tst=true; and=true; lnx=true; mac=true
                 ;;
               crates/tsf/*|crates/tsf-shim/*|crates/installer/*)
@@ -115,7 +115,7 @@ jobs:
                 win=true; tst=true; and=true; lnx=true; mac=true
                 ;;
             esac
-          done < <(git diff --name-only --no-renames HEAD^1 HEAD)
+          done < <(git diff -z --name-only --no-renames HEAD^1 HEAD)
 
           {
             echo "windows=$win"
