@@ -110,5 +110,21 @@ version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$incomin
 /bin/mv "$incoming" "$target"
 installed=true
 printf 'Sweet IME %s をインストールしました。\n' "$version"
+
+model_path="$HOME/Library/Application Support/SweetIME/zenz.swz"
+downloader="$target/Contents/Resources/Sweet IME Settings.app/Contents/Resources/get-zenz.sh"
+if [[ -t 0 && -t 1 && ! -e $model_path && ! -L $model_path && -f $downloader ]]; then
+    printf '%s' 'AI変換モデル zenz xsmall（約100 MB）を追加しますか？ [y/N] '
+    if IFS= read -r answer; then
+        case $answer in
+            [yY]|[yY][eE][sS])
+                if ! /bin/sh "$downloader"; then
+                    printf '%s\n' 'zenz を追加できませんでした。設定の「AI変換」から再試行できます。' >&2
+                fi
+                ;;
+        esac
+    fi
+fi
+
 printf '%s\n' 'ログアウトして再ログインすると、新しいバージョンが読み込まれます。' \
     '初回のみ「システム設定 → キーボード → テキスト入力 → 編集」から Sweet IME を追加してください。'

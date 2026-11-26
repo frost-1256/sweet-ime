@@ -88,6 +88,9 @@ Open **Install Sweet IME.command** beside the app to install or replace it for
 your account. If the ZIP has no installer, copy `Sweet IME.app` into
 `~/Library/Input Methods`, replacing the previous copy if present.
 
+In an interactive terminal, the installer offers to download zenz xsmall
+(about 100 MB) when no model is installed. Press Enter to use dictionary conversion.
+
 Log out and back in to load the installed version. On the first install,
 add **Sweet IME** under Japanese in **System Settings → Keyboard → Text Input
 → Edit** and select it from the input menu. The same menu opens **設定…**
