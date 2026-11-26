@@ -296,12 +296,25 @@ fn font_suffix(desc: &str) -> &str {
 
 fn select_font_size(conf: &str, size: u32) -> String {
     let desc = raw_font_desc(conf);
-    let (family, old_size) = font_parts(conf);
-    let family = if family.is_empty() { "Sans" } else { family };
-    let unit = if old_size.ends_with("px") { "px" } else { "" };
     let suffix = font_suffix(desc);
+    let core = &desc[..desc.len() - suffix.len()];
     let size = size.clamp(8, 24);
-    let value = format!("\"{family}, {size}{unit}{suffix}\"");
+    let replaced = if let Some((prefix, old_size)) = core.rsplit_once(char::is_whitespace)
+        && old_size
+            .strip_suffix("px")
+            .unwrap_or(old_size)
+            .parse::<f32>()
+            .is_ok_and(|n| n.is_finite() && n > 0.0)
+    {
+        let unit = if old_size.ends_with("px") { "px" } else { "" };
+        let prefix = prefix.trim_end();
+        format!("{prefix} {size}{unit}{suffix}")
+    } else if core.trim().is_empty() {
+        format!("Sans {size}{suffix}")
+    } else {
+        format!("{} {size}{suffix}", core.trim_end())
+    };
+    let value = format!("\"{replaced}\"");
     set_keys(conf, vec![("Font", &value)])
 }
 
@@ -536,8 +549,10 @@ mod tests {
         let sized = select_font_size(&new, 16);
         assert_eq!(parse_font_size(&sized), (16, true));
         assert!(sized.contains("Font=\"Noto Serif CJK JP, 16px\""));
+        let bold = select_font_size("Font=\"Sans Bold 13px\"\n", 16);
+        assert_eq!(bold, "Font=\"Sans Bold 16px\"\n");
         let varied = select_font_size("Font=\"Cantarell 12 @wght=700\"\n", 14);
-        assert_eq!(varied, "Font=\"Cantarell, 14 @wght=700\"\n");
+        assert_eq!(varied, "Font=\"Cantarell 14 @wght=700\"\n");
         assert_eq!(parse_font_size(&varied), (14, false));
         let vert = select_vertical(&sized, true);
         assert!(parse_vertical(&vert));
