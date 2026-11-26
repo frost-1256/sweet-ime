@@ -131,6 +131,7 @@ struct ViterbiScratch {
     incoming: Vec<(usize, i32)>,
     outgoing: Vec<(usize, usize)>,
     predecessors: Vec<(u16, i32)>,
+    successors: Vec<u16>,
     next_tag: usize,
 }
 
@@ -140,6 +141,7 @@ impl ViterbiScratch {
             incoming: vec![(usize::MAX, i32::MAX); pos_count],
             outgoing: vec![(usize::MAX, 0); pos_count],
             predecessors: Vec::new(),
+            successors: Vec::new(),
             next_tag: 0,
         }
     }
@@ -241,6 +243,7 @@ impl Converter {
         let crosses = |s: usize, e: usize| boundaries.iter().any(|&b| s < b && b < e);
         let unk = self.dict.unknown_id();
 
+        let mut seen_counters: Vec<(usize, &'static str)> = Vec::new();
         let mut pos = 0;
         while pos < len {
             let rest = &text[pos..];
@@ -297,6 +300,8 @@ impl Converter {
                     .unwrap_or(e);
                 continue;
             }
+            seen_counters.clear();
+            let emit_arabic_counters = self.number_pos.is_some();
             self.dict.common_prefix(rest, |l, e| {
                 if crosses(pos, pos + l) {
                     return;
@@ -316,6 +321,27 @@ impl Converter {
                         origin: None,
                     },
                 );
+                if emit_arabic_counters
+                    && let Some(arabic) = Self::arabic_counter_variant(e.surface)
+                {
+                    let end = pos + l;
+                    if !seen_counters.contains(&(end, arabic)) {
+                        seen_counters.push((end, arabic));
+                        push(
+                            &mut lat,
+                            Node {
+                                start: pos,
+                                end,
+                                lid: e.lid,
+                                rid: e.rid,
+                                wcost: i32::from(e.cost) + super::extras::NUMBER_ARABIC_EXTRA,
+                                surface: arabic,
+                                best: i32::MAX,
+                                origin: Some(Origin::Number),
+                            },
+                        );
+                    }
+                }
             });
             // Always allow a single-character fallback to keep the lattice connected.
             let cl = c.len_utf8();
@@ -377,6 +403,7 @@ impl Converter {
             incoming,
             outgoing,
             predecessors,
+            successors,
             ..
         } = scratch;
         for pos in 0..=len {
@@ -400,23 +427,49 @@ impl Converter {
                 }
                 id = lat.end_next[id as usize];
             }
+            if predecessors.is_empty() {
+                continue;
+            }
+            // Collect unique successor left-POS ids so we can stream each
+            // predecessor's contiguous connection-matrix row once.
+            successors.clear();
+            let mut id = lat.begin_head[pos];
+            while id != NONE {
+                let lid = lat.nodes[id as usize].lid;
+                let entry = &mut incoming[lid as usize];
+                if entry.0 != tag {
+                    *entry = (tag, i32::MAX);
+                    successors.push(lid);
+                }
+                id = lat.begin_next[id as usize];
+            }
+            for &(rid, cost) in predecessors.iter() {
+                if let Some(row) = self.dict.connection_row_le(rid) {
+                    for &lid in successors.iter() {
+                        let c = cost + i32::from(row[lid as usize]);
+                        let best = &mut incoming[lid as usize].1;
+                        if c < *best {
+                            *best = c;
+                        }
+                    }
+                } else {
+                    for &lid in successors.iter() {
+                        let c = cost + self.dict.connection(rid, lid);
+                        let best = &mut incoming[lid as usize].1;
+                        if c < *best {
+                            *best = c;
+                        }
+                    }
+                }
+            }
             let mut id = lat.begin_head[pos];
             while id != NONE {
                 let node = &mut lat.nodes[id as usize];
-                let (lid, wcost) = (node.lid, node.wcost);
-                let entry = &mut incoming[lid as usize];
-                if entry.0 != tag {
-                    let mut best = i32::MAX;
-                    for &(rid, cost) in predecessors.iter() {
-                        best = best.min(cost + self.dict.connection(rid, lid));
-                    }
-                    *entry = (tag, best);
-                }
-                let best = entry.1;
+                let best = incoming[node.lid as usize].1;
                 node.best = if best == i32::MAX {
                     i32::MAX
                 } else {
-                    best + wcost
+                    best + node.wcost
                 };
                 id = lat.begin_next[id as usize];
             }
@@ -496,6 +549,7 @@ impl Converter {
             incoming,
             outgoing,
             predecessors,
+            successors,
             ..
         } = scratch;
         for pos in 0..=len {
@@ -519,23 +573,47 @@ impl Converter {
                 }
                 id = lat.end_next[id as usize];
             }
+            if predecessors.is_empty() {
+                continue;
+            }
+            successors.clear();
+            let mut id = lat.begin_head[pos];
+            while id != NONE {
+                let lid = lat.nodes[id as usize].lid;
+                let entry = &mut incoming[lid as usize];
+                if entry.0 != tag {
+                    *entry = (tag, i32::MAX);
+                    successors.push(lid);
+                }
+                id = lat.begin_next[id as usize];
+            }
+            for &(rid, cost) in predecessors.iter() {
+                if let Some(row) = self.dict.connection_row_le(rid) {
+                    for &lid in successors.iter() {
+                        let c = cost + i32::from(row[lid as usize]);
+                        let best = &mut incoming[lid as usize].1;
+                        if c < *best {
+                            *best = c;
+                        }
+                    }
+                } else {
+                    for &lid in successors.iter() {
+                        let c = cost + self.dict.connection(rid, lid);
+                        let best = &mut incoming[lid as usize].1;
+                        if c < *best {
+                            *best = c;
+                        }
+                    }
+                }
+            }
             let mut id = lat.begin_head[pos];
             while id != NONE {
                 let node = &mut lat.nodes[id as usize];
-                let (lid, wcost) = (node.lid, node.wcost);
-                let entry = &mut incoming[lid as usize];
-                if entry.0 != tag {
-                    let mut best = i32::MAX;
-                    for &(rid, cost) in predecessors.iter() {
-                        best = best.min(cost + self.dict.connection(rid, lid));
-                    }
-                    *entry = (tag, best);
-                }
-                let best = entry.1;
+                let best = incoming[node.lid as usize].1;
                 node.best = if best == i32::MAX {
                     i32::MAX
                 } else {
-                    best + wcost
+                    best + node.wcost
                 };
                 id = lat.begin_next[id as usize];
             }

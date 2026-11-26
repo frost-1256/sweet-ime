@@ -36,7 +36,7 @@ const USER_WORD_COST: i32 = 3000;
 const USER_WORD_BONUS: i32 = 1000;
 /// Cost of a number written in kanji (三千); the Arabic forms cost more.
 const NUMBER_COST: i32 = 2000;
-const NUMBER_ARABIC_EXTRA: i32 = 900;
+pub(super) const NUMBER_ARABIC_EXTRA: i32 = 900;
 /// Extra cost when the reading is also a dictionary word.
 const NUMBER_WORD_PENALTY: i32 = 800;
 /// Extra cost for a number ending in に, which is usually the particle.
@@ -206,62 +206,63 @@ impl Converter {
                 }
             }
         }
-        self.arabic_counter_extras(text, out);
     }
 
-    /// Offers Arabic-digit variants (1人, 2人, 1個, 1本, 1票) for dictionary
-    /// entries written with a leading kanji digit and a counter.
-    fn arabic_counter_extras(&self, text: &str, out: &mut Vec<Extra>) {
-        const COUNTERS: &[&str] = &[
+    /// Returns an Arabic-digit variant (`"1人"`, `"2個"`, ...) when `surface`
+    /// consists of a single kanji digit (`一`..`九`) followed by a common counter.
+    /// Backed by a static table so lattice construction needs neither a second
+    /// FST walk nor per-node string allocations.
+    #[inline]
+    pub(super) fn arabic_counter_variant(surface: &str) -> Option<&'static str> {
+        // Every kanji digit is 3 UTF-8 bytes and every counter below is 3..=6 bytes.
+        let len = surface.len();
+        if !(6..=9).contains(&len) {
+            return None;
+        }
+        let mut chars = surface.chars();
+        let digit_idx = match chars.next()? {
+            '一' => 0,
+            '二' => 1,
+            '三' => 2,
+            '四' => 3,
+            '五' => 4,
+            '六' => 5,
+            '七' => 6,
+            '八' => 7,
+            '九' => 8,
+            _ => return None,
+        };
+        let rest = chars.as_str();
+        const COUNTERS: [&str; 59] = [
             "人", "個", "本", "枚", "冊", "台", "回", "階", "年", "月", "日", "時", "分", "秒",
             "円", "歳", "才", "票", "位", "番", "件", "名", "つ", "度", "軒", "匹", "頭", "羽",
             "杯", "脚", "組", "点", "社", "校", "駅", "曲", "話", "章", "行", "列", "面", "勝",
             "敗", "倍", "割", "歩", "泊", "巻", "着", "足", "丁", "粒", "袋", "箱", "缶", "瓶",
             "皿", "玉", "つ目",
         ];
-        let kanji_digit = |c: char| -> Option<char> {
-            match c {
-                '一' => Some('1'),
-                '二' => Some('2'),
-                '三' => Some('3'),
-                '四' => Some('4'),
-                '五' => Some('5'),
-                '六' => Some('6'),
-                '七' => Some('7'),
-                '八' => Some('8'),
-                '九' => Some('9'),
-                _ => None,
-            }
+        let counter_idx = match rest {
+            "人" => 0, "個" => 1, "本" => 2, "枚" => 3, "冊" => 4, "台" => 5, "回" => 6,
+            "階" => 7, "年" => 8, "月" => 9, "日" => 10, "時" => 11, "分" => 12, "秒" => 13,
+            "円" => 14, "歳" => 15, "才" => 16, "票" => 17, "位" => 18, "番" => 19, "件" => 20,
+            "名" => 21, "つ" => 22, "度" => 23, "軒" => 24, "匹" => 25, "頭" => 26, "羽" => 27,
+            "杯" => 28, "脚" => 29, "組" => 30, "点" => 31, "社" => 32, "校" => 33, "駅" => 34,
+            "曲" => 35, "話" => 36, "章" => 37, "行" => 38, "列" => 39, "面" => 40, "勝" => 41,
+            "敗" => 42, "倍" => 43, "割" => 44, "歩" => 45, "泊" => 46, "巻" => 47, "着" => 48,
+            "足" => 49, "丁" => 50, "粒" => 51, "袋" => 52, "箱" => 53, "缶" => 54, "瓶" => 55,
+            "皿" => 56, "玉" => 57, "つ目" => 58,
+            _ => return None,
         };
-        let mut seen: Vec<(usize, String)> = Vec::new();
-        for (pos, _) in text.char_indices() {
-            seen.clear();
-            self.dict.common_prefix(&text[pos..], |l, e| {
-                let mut chars = e.surface.chars();
-                let Some(first) = chars.next() else { return };
-                let Some(digit) = kanji_digit(first) else {
-                    return;
-                };
-                let rest = chars.as_str();
-                if !COUNTERS.contains(&rest) {
-                    return;
+        static TABLE: std::sync::OnceLock<Vec<Box<str>>> = std::sync::OnceLock::new();
+        let table = TABLE.get_or_init(|| {
+            let mut v = Vec::with_capacity(9 * COUNTERS.len());
+            for d in '1'..='9' {
+                for c in COUNTERS {
+                    v.push(format!("{d}{c}").into_boxed_str());
                 }
-                let surface = format!("{digit}{rest}");
-                let end = pos + l;
-                if !seen.iter().any(|(e, surf)| *e == end && surf == &surface) {
-                    seen.push((end, surface.clone()));
-                    out.push(Extra {
-                        start: pos,
-                        end,
-                        lid: e.lid,
-                        rid: e.rid,
-                        cost: i32::from(e.cost) + NUMBER_ARABIC_EXTRA,
-                        surface,
-                        origin: Origin::Number,
-                    });
-                }
-            });
-        }
+            }
+            v
+        });
+        Some(&table[digit_idx * COUNTERS.len() + counter_idx])
     }
 
     /// Every extra lattice word for `text`: learned and user dictionary
@@ -438,18 +439,47 @@ impl Converter {
             });
             self.n_row_after(spelling, reading, &text[end..], end, out);
         };
-        for (reading, spelling) in crate::english::kana_spelled_readings() {
-            // The romaji spelling of issue reads いっすえ, even inside
-            // Japanese sentences. This reading is distinct from 一末.
-            let anywhere = *spelling == "issue"
-                || reading
-                    .starts_with(['ん', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ']);
-            if anywhere {
-                for (start, _) in text.match_indices(reading.as_str()) {
-                    push_spelling(start, reading, spelling);
+        // Pre-partition kana-spelled readings once so each conversion only checks
+        // `anywhere` entries and `start_only` entries matching `text`'s first char.
+        struct KanaSpelledIndex {
+            anywhere: Vec<(&'static str, &'static str)>,
+            by_first_char: std::collections::HashMap<char, Vec<(&'static str, &'static str)>>,
+        }
+        static KANA_SPELLED: std::sync::OnceLock<KanaSpelledIndex> = std::sync::OnceLock::new();
+        let kana_index = KANA_SPELLED.get_or_init(|| {
+            let mut anywhere = Vec::new();
+            let mut by_first_char: std::collections::HashMap<char, Vec<(&'static str, &'static str)>> =
+                std::collections::HashMap::new();
+            for (reading, spelling) in crate::english::kana_spelled_readings() {
+                let is_anywhere = *spelling == "issue"
+                    || reading
+                        .starts_with(['ん', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ']);
+                if is_anywhere {
+                    anywhere.push((reading.as_str(), *spelling));
+                } else if let Some(first) = reading.chars().next() {
+                    by_first_char
+                        .entry(first)
+                        .or_default()
+                        .push((reading.as_str(), *spelling));
                 }
-            } else if text.starts_with(reading.as_str()) {
-                push_spelling(0, reading, spelling);
+            }
+            KanaSpelledIndex {
+                anywhere,
+                by_first_char,
+            }
+        });
+        for &(reading, spelling) in &kana_index.anywhere {
+            for (start, _) in text.match_indices(reading) {
+                push_spelling(start, reading, spelling);
+            }
+        }
+        if let Some(first) = text.chars().next()
+            && let Some(entries) = kana_index.by_first_char.get(&first)
+        {
+            for &(reading, spelling) in entries {
+                if text.starts_with(reading) {
+                    push_spelling(0, reading, spelling);
+                }
             }
         }
         if !text.bytes().any(|b| b.is_ascii_alphabetic()) {

@@ -2,7 +2,9 @@
 
 use std::cell::RefCell;
 
-use crate::kernels::{axpy_f32, dot_f32, matmul, matmul_bias};
+use crate::kernels::{
+    attention_row_f32, gelu_f32, layer_norm_f32, log_normalizer_f32, matmul, matmul_bias,
+};
 
 mod weights;
 
@@ -15,10 +17,13 @@ struct ForwardScratch {
     ff: Vec<f32>,
     scores: Vec<f32>,
     hf: Vec<f32>,
+    logits: Vec<f32>,
+    anc_data: Vec<usize>,
+    anc_ranges: Vec<(usize, usize)>,
 }
 
 impl ForwardScratch {
-    fn trim(&mut self, max_elems: usize) {
+    fn trim(&mut self, max_elems: usize, max_logits: usize) {
         for buf in [
             &mut self.x,
             &mut self.h,
@@ -31,6 +36,14 @@ impl ForwardScratch {
                 buf.clear();
                 buf.shrink_to(max_elems);
             }
+        }
+        if self.logits.capacity() > max_logits {
+            self.logits.clear();
+            self.logits.shrink_to(max_logits);
+        }
+        if self.anc_data.capacity() > 4096 {
+            self.anc_data.clear();
+            self.anc_data.shrink_to(4096);
         }
     }
 }
@@ -135,32 +148,15 @@ impl KvCache {
 }
 
 fn layer_norm(x: &[f32], w: &[f32], b: &[f32], eps: f32, out: &mut [f32]) {
-    let e = w.len();
-    for (xr, or) in x.chunks_exact(e).zip(out.chunks_exact_mut(e)) {
-        let mean = xr.iter().sum::<f32>() / e as f32;
-        let var = xr.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / e as f32;
-        let inv = 1.0 / (var + eps).sqrt();
-        for i in 0..e {
-            or[i] = (xr[i] - mean) * inv * w[i] + b[i];
-        }
-    }
+    layer_norm_f32(x, w, b, eps, out);
 }
 
 fn gelu_new(v: &mut [f32]) {
-    if v.len() >= 16_384 {
+    if v.len() >= 131_072 {
         use rayon::prelude::*;
-        crate::kernels::pool().install(|| v.par_chunks_mut(4096).for_each(gelu_chunk));
+        crate::kernels::pool().install(|| v.par_chunks_mut(16_384).for_each(gelu_f32));
     } else {
-        gelu_chunk(v);
-    }
-}
-
-fn gelu_chunk(v: &mut [f32]) {
-    // (1 + tanh(z)) / 2 = 1 / (1 + exp(-2z)).
-    const C: f32 = -1.595_769_2; // -2 * sqrt(2/pi)
-    for x in v {
-        let exponent = C * (*x + 0.044715 * *x * *x * *x);
-        *x /= 1.0 + exponent.exp();
+        gelu_f32(v);
     }
 }
 
@@ -190,7 +186,14 @@ impl Model {
     /// Returns logits for every position (`want_all`) or only the last one.
     pub fn forward(&self, tokens: &[u32], cache: &mut KvCache, want_all: bool) -> Vec<f32> {
         let parents: Vec<Option<usize>> = (0..tokens.len()).map(|i| i.checked_sub(1)).collect();
-        self.forward_impl(tokens, &parents, cache, true, if want_all { 0 } else { tokens.len() - 1 })
+        self.forward_impl(
+            tokens,
+            &parents,
+            cache,
+            true,
+            if want_all { 0 } else { tokens.len().saturating_sub(1) },
+            |logits| logits.to_vec(),
+        )
     }
 
     /// Tree attention: evaluates a whole token trie in one pass. `parents[i]`
@@ -199,48 +202,47 @@ impl Model {
     /// The cache is left unchanged. Returns logits `[tokens.len() - logits_from, V]`
     /// for the nodes from index `logits_from` on.
     pub fn forward_tree(&self, tokens: &[u32], parents: &[Option<usize>], cache: &mut KvCache, logits_from: usize) -> Vec<f32> {
-        // Keep the layer work on the same workers as the matrix products.
-        crate::kernels::pool().install(|| self.forward_impl(tokens, parents, cache, false, logits_from))
+        self.forward_tree_with(tokens, parents, cache, logits_from, |logits| logits.to_vec())
     }
 
-    fn forward_impl(
+    /// Like [`Self::forward_tree`], but borrows the reusable scratch logits
+    /// slice directly inside `f` without allocating a fresh `[rows, V]` buffer.
+    pub(crate) fn forward_tree_with<T: Send>(
+        &self,
+        tokens: &[u32],
+        parents: &[Option<usize>],
+        cache: &mut KvCache,
+        logits_from: usize,
+        f: impl FnOnce(&[f32]) -> T + Send,
+    ) -> T {
+        // Keep the layer work on the same workers as the matrix products.
+        crate::kernels::pool().install(|| self.forward_impl(tokens, parents, cache, false, logits_from, f))
+    }
+
+    fn forward_impl<T>(
         &self,
         tokens: &[u32],
         parents: &[Option<usize>],
         cache: &mut KvCache,
         append: bool,
         logits_from: usize,
-    ) -> Vec<f32> {
+        consume: impl FnOnce(&[f32]) -> T,
+    ) -> T {
         let Config { n_embd: e, n_head: nh, eps, vocab_size: vsz, .. } = self.cfg;
         let t = tokens.len();
         if t == 0 {
-            return Vec::new();
+            return consume(&[]);
         }
         let past = cache.len;
         let hd = e / nh;
         let scale = 1.0 / (hd as f32).sqrt();
-        // Ancestor chains (root..=self) within the batch.
-        let mut anc: Vec<Vec<usize>> = Vec::with_capacity(t);
-        for i in 0..t {
-            let mut a = match parents[i] {
-                Some(p) => {
-                    assert!(p < i, "parent must precede child");
-                    anc[p].clone()
-                }
-                None => Vec::new(),
-            };
-            a.push(i);
-            anc.push(a);
-        }
         let d = self.store.data();
         let (wte, wpe) = (&d[self.wte.clone()], &d[self.wpe.clone()]);
-        let max_ctx = past + anc.iter().map(|a| a.len()).max().unwrap_or(0);
         let rows = t - logits_from.min(t - 1);
-        let mut logits = vec![0f32; rows * vsz];
         // Take scratch out of the TLS cell for the duration of this call so
         // Rayon work-stealing can safely run nested inferences on this thread.
         let mut scratch = FORWARD_SCRATCH.with(|cell| cell.take());
-        {
+        let out_val = {
             let ForwardScratch {
                 x,
                 h,
@@ -249,7 +251,28 @@ impl Model {
                 ff,
                 scores,
                 hf,
+                logits,
+                anc_data,
+                anc_ranges,
             } = &mut scratch;
+            // Flat ancestor chains (root..=self) within the batch.
+            anc_data.clear();
+            anc_ranges.clear();
+            anc_ranges.reserve(t);
+            let mut max_depth = 0usize;
+            for i in 0..t {
+                let start = anc_data.len();
+                if let Some(p) = parents[i] {
+                    assert!(p < i, "parent must precede child");
+                    let (ps, pe) = anc_ranges[p];
+                    anc_data.extend_from_within(ps..pe);
+                }
+                anc_data.push(i);
+                let end = anc_data.len();
+                max_depth = max_depth.max(end - start);
+                anc_ranges.push((start, end));
+            }
+            let max_ctx = past + max_depth;
             x.resize(t * e, 0.0);
             h.resize(t * e, 0.0);
             qkv.resize(t * 3 * e, 0.0);
@@ -257,57 +280,44 @@ impl Model {
             ff.resize(t * 4 * e, 0.0);
             scores.resize(max_ctx, 0.0);
             hf.resize(rows * e, 0.0);
+            logits.resize(rows * vsz, 0.0);
             for (i, &tok) in tokens.iter().enumerate() {
-                let pos = (past + anc[i].len() - 1).min(self.cfg.n_positions - 1);
+                let (as_, ae) = anc_ranges[i];
+                let pos = (past + (ae - as_) - 1).min(self.cfg.n_positions - 1);
                 let te = &wte[tok as usize * e..][..e];
                 let pe = &wpe[pos * e..][..e];
+                let xr = &mut x[i * e..][..e];
                 for j in 0..e {
-                    x[i * e + j] = te[j] + pe[j];
+                    xr[j] = te[j] + pe[j];
                 }
             }
             for (li, lr) in self.layers.iter().enumerate() {
                 let l = self.view(d, lr);
-                layer_norm(x, &l.ln1_w, &l.ln1_b, eps, h);
-                matmul_bias(h, &l.attn_w, Some(&l.attn_b), qkv, t, e, 3 * e, false);
+                layer_norm(x, l.ln1_w, l.ln1_b, eps, h);
+                matmul_bias(h, l.attn_w, Some(l.attn_b), qkv, t, e, 3 * e, false);
                 {
                     let kc = &cache.k[li];
                     let vc = &cache.v[li];
+                    let anc_data_ref: &[usize] = anc_data;
+                    let anc_ranges_ref: &[(usize, usize)] = anc_ranges;
                     let run_row = |i: usize, att_row: &mut [f32], row_scores: &mut [f32]| {
-                        let n_ctx = past + anc[i].len();
-                        for hh in 0..nh {
-                            let off = hh * hd;
-                            let q = &qkv[i * 3 * e + off..][..hd];
-                            let mut mx = f32::NEG_INFINITY;
-                            for j in 0..n_ctx {
-                                let k: &[f32] = if j < past {
-                                    &kc[j * e + off..][..hd]
-                                } else {
-                                    &qkv[anc[i][j - past] * 3 * e + e + off..][..hd]
-                                };
-                                let s = dot_f32(q, k) * scale;
-                                row_scores[j] = s;
-                                mx = mx.max(s);
-                            }
-                            let mut sum = 0.0;
-                            for s in &mut row_scores[..n_ctx] {
-                                *s = (*s - mx).exp();
-                                sum += *s;
-                            }
-                            let out = &mut att_row[off..][..hd];
-                            out.fill(0.0);
-                            let inv_sum = sum.recip();
-                            for j in 0..n_ctx {
-                                let w = row_scores[j] * inv_sum;
-                                let v: &[f32] = if j < past {
-                                    &vc[j * e + off..][..hd]
-                                } else {
-                                    &qkv[anc[i][j - past] * 3 * e + 2 * e + off..][..hd]
-                                };
-                                axpy_f32(out, v, w);
-                            }
-                        }
+                        let (as_, ae) = anc_ranges_ref[i];
+                        attention_row_f32(
+                            qkv,
+                            kc,
+                            vc,
+                            &anc_data_ref[as_..ae],
+                            past,
+                            e,
+                            nh,
+                            hd,
+                            scale,
+                            i,
+                            att_row,
+                            row_scores,
+                        );
                     };
-                    if t >= 12 {
+                    if t >= 16 {
                         use rayon::prelude::*;
                         att.par_chunks_exact_mut(e)
                             .enumerate()
@@ -327,25 +337,26 @@ impl Model {
                         cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
                     }
                 }
-                matmul_bias(att, &l.proj_w, Some(&l.proj_b), x, t, e, e, true);
-                layer_norm(x, &l.ln2_w, &l.ln2_b, eps, h);
-                matmul_bias(h, &l.fc_w, Some(&l.fc_b), ff, t, e, 4 * e, false);
+                matmul_bias(att, l.proj_w, Some(l.proj_b), x, t, e, e, true);
+                layer_norm(x, l.ln2_w, l.ln2_b, eps, h);
+                matmul_bias(h, l.fc_w, Some(l.fc_b), ff, t, e, 4 * e, false);
                 gelu_new(ff);
-                matmul_bias(ff, &l.fc2_w, Some(&l.fc2_b), x, t, 4 * e, e, true);
+                matmul_bias(ff, l.fc2_w, Some(l.fc2_b), x, t, 4 * e, e, true);
             }
             let src = &x[(t - rows) * e..];
             layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, hf);
-            matmul(hf, &d[self.wte_t.clone()], &mut logits, rows, e, vsz, false);
-        }
+            matmul(hf, &d[self.wte_t.clone()], logits, rows, e, vsz, false);
+            consume(&logits[..rows * vsz])
+        };
         // Keep steady-state memory bounded after unusually large batches.
-        scratch.trim(256 * 4 * e);
+        scratch.trim(256 * 4 * e, 64 * vsz);
         FORWARD_SCRATCH.with(|cell| {
             *cell.borrow_mut() = scratch;
         });
         if append {
             cache.len = past + t;
         }
-        logits
+        out_val
     }
 }
 
@@ -356,9 +367,7 @@ pub fn log_prob(logits: &[f32], idx: usize) -> f32 {
 }
 
 pub(crate) fn log_normalizer(logits: &[f32]) -> (f32, f32) {
-    let mx = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let sum: f32 = logits.iter().map(|v| (v - mx).exp()).sum();
-    (mx, sum.ln())
+    log_normalizer_f32(logits)
 }
 
 pub fn argmax(logits: &[f32]) -> usize {
