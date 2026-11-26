@@ -217,7 +217,7 @@ impl DictPage {
             ui.horizontal(|ui| {
                 let path = self.file.trim().trim_matches('"').to_string();
                 if ui.add_enabled(!path.is_empty(), egui::Button::new("インポート")).clicked() {
-                    *status = Some(match std::fs::read(&path).map(|b| decode_text(&b)) {
+                    *status = Some(match std::fs::read(&path).and_then(|b| decode_text(&b)) {
                         Ok(text) => match dict.import(&text) {
                             Ok(n) => (format!("{n} 件の単語を追加しました。"), true),
                             Err(e) => (format!("保存できませんでした: {e}"), false),

@@ -61,12 +61,15 @@ fn reading_a_table_file_distinguishes_missing_empty_and_too_large() {
         read_romaji_table(&path).unwrap(),
         Some((vec![Rule::new("ca", "か", "")], 1))
     );
-    // UTF-8 with a NUL keeps its good rows and skips the one with the NUL.
-    std::fs::write(&path, "xxx\0\tい\nka\tか\n").unwrap();
-    assert_eq!(
-        read_romaji_table(&path).unwrap(),
-        Some((vec![Rule::new("ka", "か", "")], 1))
-    );
+    // NUL bytes without a byte order mark could be UTF-16 or UTF-8: an error.
+    std::fs::write(&path, "aa\t\0\tい\nka\tか\n").unwrap();
+    assert!(read_romaji_table(&path).is_err(), "ambiguous encoding");
+    let utf16: Vec<u8> = "ca\tか\n"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    std::fs::write(&path, utf16).unwrap();
+    assert!(read_romaji_table(&path).is_err(), "UTF-16 without a BOM");
     // Exactly at the limit is read; one byte more is not.
     let mut full = "ca\tか\n".repeat(romaji::MAX_TABLE_BYTES as usize / 7);
     full.push_str(&"\n".repeat(romaji::MAX_TABLE_BYTES as usize - full.len()));

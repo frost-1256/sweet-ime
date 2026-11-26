@@ -229,7 +229,8 @@ pub fn romaji_table_file() -> Option<PathBuf> {
 
 /// Reads a romaji table file (UTF-8 or UTF-16): its rows and how many rows
 /// were skipped (see [`crate::romaji::parse_rules_counted`]). `Ok(None)` when
-/// it is missing; an error when it cannot be read or is larger than
+/// it is missing; an error when it cannot be read or decoded (see
+/// [`crate::text_file::decode_text`]) or is larger than
 /// [`crate::romaji::MAX_TABLE_BYTES`].
 pub fn read_romaji_table(
     path: &std::path::Path,
@@ -251,7 +252,7 @@ pub fn read_romaji_table(
             "the table is larger than 1 MiB",
         ));
     }
-    let text = crate::text_file::decode_text(&bytes);
+    let text = crate::text_file::decode_text(&bytes)?;
     Ok(Some(crate::romaji::parse_rules_counted(&text)))
 }
 

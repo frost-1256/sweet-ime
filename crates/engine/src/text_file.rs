@@ -1,9 +1,12 @@
 //! Decoding of text files that other input methods export.
 
 /// Text from a file: UTF-16 with a byte order mark (Microsoft IME and
-/// Google Japanese Input exports), UTF-16 without one (see
-/// [`utf16_without_bom`]), or else UTF-8 with or without a BOM.
-pub fn decode_text(bytes: &[u8]) -> String {
+/// Google Japanese Input exports), or else UTF-8 with or without a BOM.
+///
+/// Without a byte order mark, UTF-16 and UTF-8 with NUL bytes cannot be told
+/// apart reliably, and a wrong guess turns into wrong rows. Such a file is an
+/// error, so the caller keeps what it had instead of saving garbage.
+pub fn decode_text(bytes: &[u8]) -> std::io::Result<String> {
     let utf16 = |b: &[u8], le: bool| {
         let units: Vec<u16> = b
             .chunks_exact(2)
@@ -17,45 +20,21 @@ pub fn decode_text(bytes: &[u8]) -> String {
             .collect();
         String::from_utf16_lossy(&units)
     };
-    match bytes {
+    Ok(match bytes {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        // Text files here are tab- or line-separated, so a UTF-16 reading
-        // without a single tab or line end is a misreading of UTF-8 text.
-        _ => utf16_without_bom(bytes)
-            .map(|le| utf16(bytes, le))
-            .filter(|text| text.contains(['\t', '\n']))
-            .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
-    }
-}
-
-/// Byte order of UTF-16 text without a byte order mark: `Some(true)` for
-/// little endian. UTF-8 text has no zero bytes, while every ASCII character
-/// in UTF-16 (tabs and line ends at least) has one, on the odd bytes in
-/// little endian and on the even bytes in big endian. The zeros must lean
-/// clearly to one side and make up at least one character in sixteen, so a
-/// stray NUL in UTF-8 text does not count.
-fn utf16_without_bom(bytes: &[u8]) -> Option<bool> {
-    if bytes.len() < 2 || bytes.len() % 2 != 0 {
-        return None;
-    }
-    let zeros = |start: usize| {
-        bytes
-            .iter()
-            .skip(start)
-            .step_by(2)
-            .filter(|&&b| b == 0)
-            .count()
-    };
-    let (even, odd) = (zeros(0), zeros(1));
-    let (most, least, le) = if odd > even {
-        (odd, even, true)
-    } else {
-        (even, odd, false)
-    };
-    let units = bytes.len() / 2;
-    (most >= 2 * least && most * 16 >= units).then_some(le)
+        _ => {
+            let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+            if text.contains(&0) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the file has NUL bytes but no byte order mark; \
+                     save it as UTF-8, or as UTF-16 with a byte order mark",
+                ));
+            }
+            String::from_utf8_lossy(text).into_owned()
+        }
+    })
 }
 
 #[cfg(test)]
@@ -75,32 +54,39 @@ mod tests {
     }
 
     #[test]
-    fn decodes_utf8_and_utf16_with_or_without_a_bom() {
+    fn decodes_utf8_and_utf16_with_a_bom() {
         let text = "kya\tきゃ\ntt\tっ\tt\n";
-        assert_eq!(decode_text(text.as_bytes()), text);
-        assert_eq!(
-            decode_text(&[b"\xEF\xBB\xBF".as_slice(), text.as_bytes()].concat()),
-            text
-        );
-        // A table whose first character is not ASCII.
         let japanese_first = "表\t\na\tあ\n";
         for text in [text, japanese_first] {
+            assert_eq!(decode_text(text.as_bytes()).unwrap(), text);
+            let with_bom = [b"\xEF\xBB\xBF".as_slice(), text.as_bytes()].concat();
+            assert_eq!(decode_text(&with_bom).unwrap(), text);
             for le in [true, false] {
-                for bom in [true, false] {
-                    assert_eq!(
-                        decode_text(&utf16(text, le, bom)),
-                        text,
-                        "le={le} bom={bom}"
-                    );
-                }
+                assert_eq!(
+                    decode_text(&utf16(text, le, true)).unwrap(),
+                    text,
+                    "le={le}"
+                );
             }
         }
-        assert_eq!(decode_text(japanese_first.as_bytes()), japanese_first);
-        // A stray NUL in a longer UTF-8 file stays UTF-8.
-        let stray = format!("{}a\0", "あ\tい\n".repeat(8));
-        assert_eq!(decode_text(stray.as_bytes()), stray);
-        // A short UTF-8 file whose zeros would pass for UTF-16.
-        let short = "xxx\0\tい\nka\tか\n";
-        assert_eq!(decode_text(short.as_bytes()), short);
+    }
+
+    #[test]
+    fn rejects_text_that_cannot_be_told_apart_without_a_bom() {
+        // UTF-16 without a byte order mark, including mostly non-ASCII text
+        // whose zero bytes are few.
+        let long = format!("表\t{}\na\tあ\n", "《あ〉い》".repeat(20));
+        for text in ["kya\tきゃ\n", "表\t\na\tあ\n", long.as_str()] {
+            for le in [true, false] {
+                assert!(
+                    decode_text(&utf16(text, le, false)).is_err(),
+                    "{text:?} le={le}"
+                );
+            }
+        }
+        // UTF-8 with NUL bytes, which could also be read as UTF-16.
+        for text in ["xxx\0\tい\nka\tか\n", "aa\t\0\tい\nka\tか\n"] {
+            assert!(decode_text(text.as_bytes()).is_err(), "{text:?}");
+        }
     }
 }
