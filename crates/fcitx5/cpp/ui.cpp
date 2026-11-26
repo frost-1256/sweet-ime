@@ -787,12 +787,13 @@ public:
     using NotifyCb = std::function<void()>;
 
     WaylandPopup(wl_display *display, HoverCb onHover, ClickCb onClick, NotifyCb onReady,
-                 NotifyCb onConfigured)
+                 NotifyCb onConfigured, NotifyCb onInitialClosed)
         : display_(display),
           onHover_(std::move(onHover)),
           onClick_(std::move(onClick)),
           onReady_(std::move(onReady)),
-          onConfigured_(std::move(onConfigured)) {
+          onConfigured_(std::move(onConfigured)),
+          onInitialClosed_(std::move(onInitialClosed)) {
         registry_ = wl_display_get_registry(display_);
         if (registry_) {
             wl_registry_add_listener(registry_, &kRegistryListener, this);
@@ -827,6 +828,8 @@ public:
     bool ready() const {
         return compositor_ != nullptr && shm_ != nullptr && layerShell_ != nullptr;
     }
+
+    bool configured() const { return configured_; }
 
     void hide() {
         if (bgEffectSurface_) {
@@ -1309,7 +1312,11 @@ private:
 
     static void onLayerClosed(void *data, zwlr_layer_surface_v1 *) {
         auto *self = static_cast<WaylandPopup *>(data);
+        const bool wasConfigured = self->configured_;
         self->hide();
+        if (!wasConfigured && self->onInitialClosed_) {
+            self->onInitialClosed_();
+        }
     }
 
     static void onBgEffectCapabilities(void *data, ext_background_effect_manager_v1 *,
@@ -1354,6 +1361,7 @@ private:
     ClickCb onClick_;
     NotifyCb onReady_;
     NotifyCb onConfigured_;
+    NotifyCb onInitialClosed_;
 };
 #endif
 
@@ -1371,11 +1379,29 @@ public:
                         display,
                         [this, name](double x, double y) { onHover(BackendKind::Wayland, name, x, y); },
                         [this, name](double x, double y) { onClick(BackendKind::Wayland, name, x, y); },
-                        [this]() { notifyAvailability(); },
+                        [this]() {
+                            notifyAvailability();
+                            if (!suspended_ && renderer_.visible()) {
+                                renderNow();
+                            }
+                        },
                         [this, name]() {
                             if (!suspended_ && renderer_.visible() &&
                                 presentedKind_ == BackendKind::Wayland && presentedName_ == name) {
+                                retryCount_ = 0;
                                 renderNow();
+                            }
+                        },
+                        [this, name]() {
+                            if (presentedKind_ == BackendKind::Wayland && presentedName_ == name) {
+                                presentedKind_ = BackendKind::None;
+                                presentedName_.clear();
+                                if (!suspended_ && renderer_.visible() && retryCount_ < 3) {
+                                    ++retryCount_;
+                                    ensureTimer();
+                                } else {
+                                    stopTimer();
+                                }
                             }
                         });
                     const bool isReady = popup->ready();
@@ -1608,10 +1634,12 @@ private:
             hidePresented();
         }
         bool ok = false;
+        bool completed = false;
 #ifdef SWEET_HAVE_WAYLAND
         if (kind == BackendKind::Wayland) {
             if (auto it = wlPopups_.find(name); it != wlPopups_.end()) {
                 ok = it->second->present(renderer_, activeCursor_);
+                completed = ok && it->second->configured();
             }
         }
 #endif
@@ -1619,14 +1647,17 @@ private:
         if (kind == BackendKind::Xcb) {
             if (auto it = xcbPopups_.find(name); it != xcbPopups_.end()) {
                 ok = it->second->present(renderer_, activeCursor_);
+                completed = ok;
             }
         }
 #endif
         if (ok) {
             presentedKind_ = kind;
             presentedName_ = name;
-            retryCount_ = 0;
-            return renderer_.needsAnimation();
+            if (completed) {
+                retryCount_ = 0;
+            }
+            return completed && renderer_.needsAnimation();
         }
         hidePresented();
         if (kind != BackendKind::None && retryCount_ < 3) {
