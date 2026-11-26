@@ -1,0 +1,59 @@
+name: Build Mavericks backport
+
+on:
+  push:
+    branches: [backport/macos-10.9]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/backport/macos-10.9'
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust and LLVM linker
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target x86_64-apple-darwin
+          brew install lld
+          mkdir "$RUNNER_TEMP/mavericks-llvm"
+          ln -s "$(xcrun --find clang)" "$RUNNER_TEMP/mavericks-llvm/clang"
+          ln -s "$(xcrun --find llvm-objdump)" "$RUNNER_TEMP/mavericks-llvm/llvm-objdump"
+          ln -s "$(brew --prefix lld)/bin/ld64.lld" "$RUNNER_TEMP/mavericks-llvm/ld64.lld"
+
+      - name: Fetch and verify SDK archives
+        env:
+          SDK_BASE: https://github.com/phracker/MacOSX-SDKs/releases/download/11.3
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 -O "$SDK_BASE/MacOSX10.9.sdk.tar.xz"
+          curl --fail --location --retry 3 -O "$SDK_BASE/MacOSX11.3.sdk.tar.xz"
+          shasum -a 256 -c <<'CHECKSUMS'
+          fcf88ce8ff0dd3248b97f4eb81c7909f2cc786725de277f4d05a2b935cc49de0  MacOSX10.9.sdk.tar.xz
+          cd4f08a75577145b8f05245a2975f7c81401d75e9535dcffbb879ee1deefcbf4  MacOSX11.3.sdk.tar.xz
+          CHECKSUMS
+          tar -xf MacOSX10.9.sdk.tar.xz
+          tar -xf MacOSX11.3.sdk.tar.xz
+
+      - name: Link and verify the Mavericks executable
+        shell: pwsh
+        run: |
+          ./macos/build-mavericks.ps1 -HeadersSdk "$env:RUNNER_TEMP/MacOSX11.3.sdk" `
+            -MavericksSdk "$env:RUNNER_TEMP/MacOSX10.9.sdk" -LlvmBin "$env:RUNNER_TEMP/mavericks-llvm"
+
+      - name: Archive the executable with its permissions
+        run: tar -czf target/mavericks/SweetIME-Mavericks-x86_64.tar.gz -C target/mavericks SweetIME
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SweetIME-Mavericks-x86_64
+          path: target/mavericks/SweetIME-Mavericks-x86_64.tar.gz
+          if-no-files-found: error

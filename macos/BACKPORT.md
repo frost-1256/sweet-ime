@@ -26,3 +26,5 @@ PowerShell 7、Rust の `x86_64-apple-darwin` ターゲット、LLVM の `clang`
 Rust 1.100.0 の配布済み標準ライブラリを用い、旧 SDK にない乱数と時刻の呼び出しは `mavericks_compat.c` で補う。AppKit 側は新しい SDK のヘッダーで可用性を検査し、Mavericks 用に旧 API の経路を選んでコンパイルする。最終リンクは 10.9 SDK を使用する。出力は `target/mavericks/SweetIME`。
 
 この手順で 10.9 を最低 OS とする本体のリンクまで確認した。Rust オブジェクトの最低 OS は 10.12 のままなので、リンクの成功だけでは Mavericks での起動や ABI の互換性は確認できない。バンドルの組み立て、署名、実機テストが残っている。
+
+`backport/macos-10.9` への push で Actions の `Build Mavericks backport` が走る。成果物 `SweetIME-Mavericks-x86_64` には実行ファイルを含む tar.gz が入る。
