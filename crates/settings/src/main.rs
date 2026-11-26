@@ -26,7 +26,7 @@ mod update;
 mod update_ui;
 
 use eframe::egui::{self, RichText};
-use neural_page::{Download, MODELS};
+use neural_page::Download;
 use sweet_engine::learning::Learned;
 use sweet_engine::{Options, UserHistory, paths};
 use sweet_ui::eframe;
@@ -145,7 +145,6 @@ struct App {
     learned: Vec<(String, Learned)>,
     filter: String,
     confirm_clear: bool,
-    model: &'static str,
     download: Option<Download>,
     keys: keys_page::KeysPage,
     romaji: romaji_page::RomajiPage,
@@ -195,7 +194,6 @@ impl App {
             learned: Vec::new(),
             filter: String::new(),
             confirm_clear: false,
-            model: MODELS[0].0,
             download: None,
             keys: keys_page::KeysPage::new(),
             romaji: romaji_page::RomajiPage::new(),
@@ -252,9 +250,7 @@ impl eframe::App for App {
             // Let the installer replace this program.
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if let Some(download) = &mut self.download {
-            download.poll();
-        }
+        self.poll_download();
 
         let theme = appearance::apply(ui, self.opts.theme, &self.user_theme);
         let nav_frame = egui::Frame::new()
@@ -321,7 +317,7 @@ impl eframe::App for App {
                     #[cfg(not(target_os = "macos"))]
                     Page::Theme => {
                         section_header(ui, "候補ウィンドウの表示");
-                        let mut gaming_changed = false;
+                        let mut display_changed = false;
                         card_group(ui, |ui| {
                             self.font_picker
                                 .get_or_insert_with(font_picker::FontPicker::new)
@@ -329,14 +325,25 @@ impl eframe::App for App {
                             setting_divider(ui);
                             setting_row(
                                 ui,
+                                "ウィンドウのフェード",
+                                "候補ウィンドウが表示される時と消える時にフェードアニメーションを行います。",
+                                |ui| {
+                                    display_changed |=
+                                        toggle(ui, &mut self.opts.window_fade).changed();
+                                },
+                            );
+                            setting_divider(ui);
+                            setting_row(
+                                ui,
                                 "ゲーミングモード",
                                 "候補ウィンドウの縁を流れる虹色で光らせます。",
                                 |ui| {
-                                    gaming_changed = toggle(ui, &mut self.opts.gaming_mode).changed();
+                                    display_changed |=
+                                        toggle(ui, &mut self.opts.gaming_mode).changed();
                                 },
                             );
                         });
-                        if gaming_changed {
+                        if display_changed {
                             self.save();
                             #[cfg(not(windows))]
                             if self.status.as_ref().is_none_or(|(_, ok)| *ok) {
@@ -463,6 +470,17 @@ impl App {
                 "入力中に続きの候補を表示します。Tab キーで選択できます。",
                 |ui| {
                     changed |= toggle(ui, &mut self.opts.suggestions).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "常に予測変換を表示する",
+                "1 文字目の入力中や続きの候補が少ないときも、予測変換ウィンドウを常に表示します。",
+                |ui| {
+                    ui.add_enabled_ui(self.opts.suggestions, |ui| {
+                        changed |= toggle(ui, &mut self.opts.always_show_suggestions).changed();
+                    });
                 },
             );
             setting_divider(ui);

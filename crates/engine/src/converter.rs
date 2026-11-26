@@ -296,7 +296,7 @@ impl Converter {
     /// then completions at the end of the best conversion. The unfinished
     /// word can span a boundary in the provisional conversion.
     pub fn predict_sentence(&self, text: &str, n: usize) -> Vec<String> {
-        self.predict_with_conversion(text, n, None)
+        self.predict_with_conversion(text, n, None, 2)
     }
 
     pub(crate) fn predict_with_conversion(
@@ -304,6 +304,7 @@ impl Converter {
         text: &str,
         n: usize,
         best: Option<&Conversion>,
+        min_tail_chars: usize,
     ) -> Vec<String> {
         let mut out = self.predict(text, n);
         if out.len() >= n {
@@ -343,7 +344,8 @@ impl Converter {
                 );
             }
         }
-        if !head.is_empty() && out.len() < n && last.reading.chars().count() >= 2 {
+        let min_tail = min_tail_chars.max(1);
+        if !head.is_empty() && out.len() < n && last.reading.chars().count() >= min_tail {
             Self::append_predictions(
                 &mut out,
                 self.predict_after(&last.reading, n, previous),
@@ -360,7 +362,7 @@ impl Converter {
             }
             tail = &tail[word.reading.len()..];
             surface.push_str(&word.surface);
-            if tail.chars().count() < 2 {
+            if tail.chars().count() < min_tail {
                 break;
             }
             if self.dict.pos_class(word.rid) == PosClass::Noun {

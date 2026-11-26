@@ -1858,3 +1858,32 @@ fn merged_particle_english_spellings_and_punctuation_typos_convert_cleanly() {
         assert_eq!(s.take_commit(), expected, "{keys}");
     }
 }
+
+#[test]
+fn always_show_suggestions_offers_predictions_from_first_kana() {
+    let Some(c) = converter() else { return };
+
+    // Default behavior: 1-char settled kana does not open suggestions.
+    let mut default_session = plain();
+    type_str(&mut default_session, &c, "a");
+    assert!(default_session.candidates().is_none());
+
+    // With always_show_suggestions enabled: 1-char settled kana shows suggestions.
+    let mut always = Session::new();
+    always.options.suggestions = true;
+    always.options.always_show_suggestions = true;
+    type_str(&mut always, &c, "a");
+    let list = always
+        .candidates()
+        .expect("1-char reading should show suggestions when always_show_suggestions is on");
+    assert_eq!(list.kind, ListKind::Suggestion);
+    assert!(!list.items.is_empty());
+
+    // Even when a long reading has no prefix completions, suggestions stay visible.
+    type_str(&mut always, &c, "rigatougozaimashita.");
+    let list = always
+        .candidates()
+        .expect("completed reading should keep suggestions visible when always_show_suggestions is on");
+    assert_eq!(list.kind, ListKind::Suggestion);
+    assert!(!list.items.is_empty());
+}

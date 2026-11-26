@@ -14,6 +14,9 @@ pub struct Options {
     pub live_debounce_ms: u32,
     /// Show predictions while typing.
     pub suggestions: bool,
+    /// Keep showing predictive suggestions even on 1-char readings or when
+    /// dictionary completions are sparse.
+    pub always_show_suggestions: bool,
     /// Add Simeji kaomoji candidates to desktop Space conversions.
     pub simeji_cloud: bool,
     /// Show the original input alongside the Windows composition.
@@ -26,6 +29,8 @@ pub struct Options {
     pub mode_indicator: bool,
     /// Colors of the candidate window and the mode badge.
     pub theme: crate::Theme,
+    /// Fade the candidate window in and out when appearing/disappearing.
+    pub window_fade: bool,
     /// Animate a rainbow border on the Windows candidate window.
     pub gaming_mode: bool,
     /// Look for a newer release on GitHub (settings app and sign-in).
@@ -57,12 +62,14 @@ impl Default for Options {
             live_conversion: true,
             live_debounce_ms: DEFAULT_LIVE_DEBOUNCE_MS,
             suggestions: true,
+            always_show_suggestions: false,
             simeji_cloud: false,
             show_typed_input: false,
             neural: true,
             learning: true,
             mode_indicator: true,
             theme: crate::Theme::Default,
+            window_fade: true,
             gaming_mode: false,
             update_check: true,
             dates: true,
@@ -101,12 +108,14 @@ impl Options {
                     }
                 }
                 "suggestions" => o.suggestions = on,
+                "always_show_suggestions" => o.always_show_suggestions = on,
                 "simeji_cloud" => o.simeji_cloud = on,
                 "show_typed_input" => o.show_typed_input = on,
                 "neural" => o.neural = on,
                 "learning" => o.learning = on,
                 "mode_indicator" => o.mode_indicator = on,
                 "theme" => o.theme = crate::Theme::from_id(v).unwrap_or_default(),
+                "window_fade" => o.window_fade = on,
                 "gaming_mode" => o.gaming_mode = on,
                 "update_check" => o.update_check = on,
                 "dates" => o.dates = on,
@@ -131,12 +140,14 @@ impl Options {
              live_conversion = {}
              live_debounce_ms = {}
              suggestions = {}
+             always_show_suggestions = {}
              simeji_cloud = {}
              show_typed_input = {}
              neural = {}
              learning = {}
              mode_indicator = {}
              theme = {}
+             window_fade = {}
              gaming_mode = {}
              update_check = {}
              dates = {}
@@ -151,12 +162,14 @@ impl Options {
             b(self.live_conversion),
             self.live_debounce_ms.min(MAX_LIVE_DEBOUNCE_MS),
             b(self.suggestions),
+            b(self.always_show_suggestions),
             b(self.simeji_cloud),
             b(self.show_typed_input),
             b(self.neural),
             b(self.learning),
             b(self.mode_indicator),
             self.theme.id(),
+            b(self.window_fade),
             b(self.gaming_mode),
             b(self.update_check),
             b(self.dates),
@@ -192,12 +205,14 @@ mod tests {
             live_conversion: false,
             live_debounce_ms: 140,
             suggestions: true,
+            always_show_suggestions: true,
             simeji_cloud: true,
             show_typed_input: true,
             neural: false,
             learning: true,
             mode_indicator: false,
             theme: crate::Theme::Sakura,
+            window_fade: false,
             gaming_mode: true,
             update_check: false,
             dates: false,

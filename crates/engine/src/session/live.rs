@@ -112,8 +112,10 @@ impl Session {
             && c.after.is_empty()
             && !settled.is_empty()
             && !is_plain_interjection(&settled);
-        let suggest =
-            self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2;
+        let min_suggest_chars = if self.options.always_show_suggestions { 1 } else { 2 };
+        let suggest = self.options.suggestions
+            && c.after.is_empty()
+            && settled.chars().count() >= min_suggest_chars;
         let unresolved = typo::has_unresolved_romaji(&settled);
         let mut correction = None;
         let mut confident = false;
@@ -255,14 +257,37 @@ impl Session {
                 .live
                 .as_ref()
                 .map_or(settled.as_str(), |live| live.reading.as_str());
-            for suggestion in
-                conv.predict_with_conversion(reading, SUGGESTION_LIMIT, live_best.as_ref())
-            {
+            for suggestion in conv.predict_with_conversion(
+                reading,
+                SUGGESTION_LIMIT,
+                live_best.as_ref(),
+                min_suggest_chars,
+            ) {
                 if suggestion != shown && !c.suggestions.contains(&suggestion) {
                     c.suggestions.push(suggestion);
                     if c.suggestions.len() == SUGGESTION_LIMIT {
                         break;
                     }
+                }
+            }
+            // When always_show_suggestions is enabled, fall back to lattice
+            // conversion alternatives if prefix predictions are sparse or empty,
+            // so the suggestion list stays visible for any settled reading.
+            if self.options.always_show_suggestions
+                && !reading.is_empty()
+                && c.suggestions.len() < SUGGESTION_LIMIT
+            {
+                for candidate in conv.convert(reading, &[], SUGGESTION_LIMIT) {
+                    let surface = candidate.surface();
+                    if surface != shown && !c.suggestions.contains(&surface) {
+                        c.suggestions.push(surface);
+                        if c.suggestions.len() == SUGGESTION_LIMIT {
+                            break;
+                        }
+                    }
+                }
+                if c.suggestions.is_empty() {
+                    c.suggestions.push(shown.to_string());
                 }
             }
             // When live conversion turns hiragana into kanji, keep the plain
