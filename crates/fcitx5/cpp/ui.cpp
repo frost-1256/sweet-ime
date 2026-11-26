@@ -25,17 +25,18 @@
 #include <fcitx/userinterfacemanager.h>
 
 #ifdef SWEET_HAVE_WAYLAND
-#include <fcitx-module/wayland/wayland_public.h>
 #include <linux/input-event-codes.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <wayland_public.h>
+#include "ext-background-effect-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #endif
 
 #ifdef SWEET_HAVE_XCB
-#include <fcitx-module/xcb/xcb_public.h>
 #include <xcb/xcb.h>
+#include <xcb_public.h>
 #endif
 
 #include <algorithm>
@@ -277,6 +278,7 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
     bool visible() const { return snap_.visible; }
+    float bgAlpha() const { return theme_.bg_alpha; }
 
     void paint(cairo_t *cr) {
         if (!snap_.visible || width_ <= 0 || height_ <= 0) return;
@@ -741,6 +743,7 @@ public:
         hide();
         if (pointer_) wl_pointer_destroy(pointer_);
         if (seat_) wl_seat_destroy(seat_);
+        if (bgEffectManager_) ext_background_effect_manager_v1_destroy(bgEffectManager_);
         if (layerShell_) zwlr_layer_shell_v1_destroy(layerShell_);
         if (shm_) wl_shm_destroy(shm_);
         if (compositor_) wl_compositor_destroy(compositor_);
@@ -752,6 +755,10 @@ public:
     }
 
     void hide() {
+        if (bgEffectSurface_) {
+            ext_background_effect_surface_v1_destroy(bgEffectSurface_);
+            bgEffectSurface_ = nullptr;
+        }
         if (layerSurface_) {
             zwlr_layer_surface_v1_destroy(layerSurface_);
             layerSurface_ = nullptr;
@@ -805,6 +812,29 @@ public:
         if (!configured_) {
             wl_surface_commit(surface_);
             wl_display_roundtrip(display_);
+        }
+
+        // Apply Wayland ext-background-effect-v1 compositor blur when translucent.
+        if (bgEffectManager_ && blurSupported_) {
+            const bool wantBlur = renderer.bgAlpha() < 0.99f;
+            if (wantBlur) {
+                if (!bgEffectSurface_) {
+                    bgEffectSurface_ = ext_background_effect_manager_v1_get_background_effect(
+                        bgEffectManager_, surface_);
+                }
+                if (bgEffectSurface_) {
+                    wl_region *region = wl_compositor_create_region(compositor_);
+                    const int rx = static_cast<int>(SHADOW_PAD);
+                    const int ry = static_cast<int>(SHADOW_PAD);
+                    const int rw = std::max(0, w - 2 * rx);
+                    const int rh = std::max(0, h - 2 * ry);
+                    wl_region_add(region, rx, ry, rw, rh);
+                    ext_background_effect_surface_v1_set_blur_region(bgEffectSurface_, region);
+                    wl_region_destroy(region);
+                }
+            } else if (bgEffectSurface_) {
+                ext_background_effect_surface_v1_set_blur_region(bgEffectSurface_, nullptr);
+            }
         }
 
         if (!ensureBuffer(w, h)) return;
@@ -876,6 +906,11 @@ private:
         } else if (std::strcmp(iface, zwlr_layer_shell_v1_interface.name) == 0) {
             self->layerShell_ = static_cast<zwlr_layer_shell_v1 *>(
                 wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface, 1));
+        } else if (std::strcmp(iface, ext_background_effect_manager_v1_interface.name) == 0) {
+            self->bgEffectManager_ = static_cast<ext_background_effect_manager_v1 *>(
+                wl_registry_bind(reg, name, &ext_background_effect_manager_v1_interface, 1));
+            ext_background_effect_manager_v1_add_listener(self->bgEffectManager_,
+                                                          &kBgEffectListener, self);
         } else if (std::strcmp(iface, wl_seat_interface.name) == 0 && !self->seat_) {
             self->seat_ = static_cast<wl_seat *>(
                 wl_registry_bind(reg, name, &wl_seat_interface, std::min(version, 5u)));
@@ -975,6 +1010,16 @@ private:
         self->hide();
     }
 
+    static void onBgEffectCapabilities(void *data, ext_background_effect_manager_v1 *,
+                                       uint32_t flags) {
+        auto *self = static_cast<WaylandPopup *>(data);
+        self->blurSupported_ = (flags & EXT_BACKGROUND_EFFECT_MANAGER_V1_CAPABILITY_BLUR) != 0;
+    }
+
+    static constexpr ext_background_effect_manager_v1_listener kBgEffectListener = {
+        .capabilities = onBgEffectCapabilities,
+    };
+
     static constexpr zwlr_layer_surface_v1_listener kLayerSurfaceListener = {
         .configure = onLayerConfigure,
         .closed = onLayerClosed,
@@ -987,6 +1032,9 @@ private:
     wl_seat *seat_ = nullptr;
     wl_pointer *pointer_ = nullptr;
     zwlr_layer_shell_v1 *layerShell_ = nullptr;
+    ext_background_effect_manager_v1 *bgEffectManager_ = nullptr;
+    ext_background_effect_surface_v1 *bgEffectSurface_ = nullptr;
+    bool blurSupported_ = false;
     wl_surface *surface_ = nullptr;
     zwlr_layer_surface_v1 *layerSurface_ = nullptr;
     wl_buffer *buffer_ = nullptr;

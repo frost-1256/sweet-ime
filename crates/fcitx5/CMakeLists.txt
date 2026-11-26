@@ -66,10 +66,13 @@ if(CAIRO_FOUND AND PANGOCAIRO_FOUND)
     if(WAYLAND_CLIENT_FOUND AND Fcitx5ModuleWayland_FOUND AND WAYLAND_SCANNER)
         set(XDG_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/xdg-shell.xml")
         set(LAYER_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml")
+        set(BGFX_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/ext-background-effect-v1.xml")
         set(XDG_H "${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h")
         set(XDG_C "${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.c")
         set(LAYER_H "${CMAKE_CURRENT_BINARY_DIR}/wlr-layer-shell-unstable-v1-client-protocol.h")
         set(LAYER_C "${CMAKE_CURRENT_BINARY_DIR}/wlr-layer-shell-unstable-v1-client-protocol.c")
+        set(BGFX_H "${CMAKE_CURRENT_BINARY_DIR}/ext-background-effect-v1-client-protocol.h")
+        set(BGFX_C "${CMAKE_CURRENT_BINARY_DIR}/ext-background-effect-v1-client-protocol.c")
         add_custom_command(OUTPUT "${XDG_H}"
             COMMAND "${WAYLAND_SCANNER}" client-header "${XDG_XML}" "${XDG_H}"
             DEPENDS "${XDG_XML}")
@@ -82,7 +85,13 @@ if(CAIRO_FOUND AND PANGOCAIRO_FOUND)
         add_custom_command(OUTPUT "${LAYER_C}"
             COMMAND "${WAYLAND_SCANNER}" private-code "${LAYER_XML}" "${LAYER_C}"
             DEPENDS "${LAYER_XML}")
-        list(APPEND SWEETUI_SRCS "${XDG_H}" "${XDG_C}" "${LAYER_H}" "${LAYER_C}")
+        add_custom_command(OUTPUT "${BGFX_H}"
+            COMMAND "${WAYLAND_SCANNER}" client-header "${BGFX_XML}" "${BGFX_H}"
+            DEPENDS "${BGFX_XML}")
+        add_custom_command(OUTPUT "${BGFX_C}"
+            COMMAND "${WAYLAND_SCANNER}" private-code "${BGFX_XML}" "${BGFX_C}"
+            DEPENDS "${BGFX_XML}")
+        list(APPEND SWEETUI_SRCS "${XDG_H}" "${XDG_C}" "${LAYER_H}" "${LAYER_C}" "${BGFX_H}" "${BGFX_C}")
         list(APPEND SWEETUI_LIBS Fcitx5::Module::Wayland PkgConfig::WAYLAND_CLIENT)
         list(APPEND SWEETUI_DEFS SWEET_HAVE_WAYLAND=1)
     endif()
