@@ -49,6 +49,7 @@ jobs:
         with:
           path: data/system.dict
           key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
 
       - name: Build the system dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
@@ -104,6 +105,7 @@ jobs:
         with:
           path: data/system.dict
           key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
 
       - name: Check out the Mozc dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
@@ -144,6 +146,7 @@ jobs:
         with:
           path: data/system.dict
           key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
 
       - name: Check out the Mozc dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
@@ -225,7 +228,9 @@ jobs:
           path: |
             ~/.android/avd/sweet-ime-api36.avd
             ~/.android/avd/sweet-ime-api36.ini
-          key: avd-v1-api36-x86_64-google_apis
+            ~/.android/adbkey
+            ~/.android/adbkey.pub
+          key: avd-v2-api36-x86_64-google_apis
 
       - name: Generate AVD snapshot
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -247,7 +252,9 @@ jobs:
           path: |
             ~/.android/avd/sweet-ime-api36.avd
             ~/.android/avd/sweet-ime-api36.ini
-          key: avd-v1-api36-x86_64-google_apis
+            ~/.android/adbkey
+            ~/.android/adbkey.pub
+          key: avd-v2-api36-x86_64-google_apis
 
       - name: Install and start Sweet IME
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0

@@ -35,6 +35,7 @@ jobs:
         with:
           path: data/system.dict
           key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
       - name: Build the system dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
         shell: pwsh

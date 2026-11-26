@@ -40,22 +40,40 @@ function Invoke-Tool {
     if ($LASTEXITCODE -ne 0) { throw "$($args[0]) failed ($LASTEXITCODE)" }
 }
 
-if (Test-Path -LiteralPath $build) {
-    $staging = Get-Item -LiteralPath $build -Force
-    if ($staging.FullName -ne $build -or !$staging.PSIsContainer -or
-        ($staging.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Invalid staging directory: $build"
-    }
-    Remove-Item -LiteralPath $build -Recurse -Force
-}
-New-Item -ItemType Directory -Force "$build\lib", "$build\assets\licenses", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
-
-Write-Host '== System dictionary'
+$dictSource = $null
+$stagedDict = $null
 if ($Dictionary) {
     if (-not (Test-Path -LiteralPath $Dictionary)) { throw "Dictionary not found: $Dictionary" }
-    Copy-Item -LiteralPath $Dictionary "$build\assets\system.dict"
-} else {
-    & "$root\scripts\build-dictionary.ps1" -Output "$build\assets\system.dict"
+    $dictSource = (Resolve-Path -LiteralPath $Dictionary).Path
+    $buildPrefix = $build.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if ($dictSource.StartsWith($buildPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $stagedDict = Join-Path ([IO.Path]::GetTempPath()) ("sweet-ime-android-dict-" + [Guid]::NewGuid() + '.dict')
+        Copy-Item -LiteralPath $dictSource -Destination $stagedDict
+        $dictSource = $stagedDict
+    }
+}
+
+try {
+    if (Test-Path -LiteralPath $build) {
+        $staging = Get-Item -LiteralPath $build -Force
+        if ($staging.FullName -ne $build -or !$staging.PSIsContainer -or
+            ($staging.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Invalid staging directory: $build"
+        }
+        Remove-Item -LiteralPath $build -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force "$build\lib", "$build\assets\licenses", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
+
+    Write-Host '== System dictionary'
+    if ($dictSource) {
+        Copy-Item -LiteralPath $dictSource "$build\assets\system.dict"
+    } else {
+        & "$root\scripts\build-dictionary.ps1" -Output "$build\assets\system.dict"
+    }
+} finally {
+    if ($stagedDict -and (Test-Path -LiteralPath $stagedDict)) {
+        Remove-Item -LiteralPath $stagedDict -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host '== Rust library'
