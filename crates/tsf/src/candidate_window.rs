@@ -719,7 +719,6 @@ fn hide_now(hwnd: HWND) {
         }
         let from = st.fade_factor();
         st.visible = false;
-        st.input = None;
         if st.fade_enabled && from > 0.01 {
             st.fading_out = Some((Instant::now(), from));
             Some(true)
@@ -748,6 +747,7 @@ fn hide_now(hwnd: HWND) {
 fn finish_hide(hwnd: HWND) {
     with_state(hwnd, |st| {
         st.visible = false;
+        st.input = None;
         st.fading_out = None;
         st.hidden_at = Some(Instant::now());
     });

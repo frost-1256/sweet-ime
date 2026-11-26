@@ -313,6 +313,16 @@ public:
         }
     }
 
+    void hideImmediate() {
+        if (snap_.visible || fadingOut_) {
+            hiddenAt_ = Clock::now();
+        }
+        fadingOut_ = false;
+        snap_.visible = false;
+        itemRects_.clear();
+        hoverIndex_ = -1;
+    }
+
     bool setHover(double x, double y) {
         if (fadingOut_) return false;
         int found = -1;
@@ -1668,6 +1678,17 @@ public:
         }
         snap.visible = !snap.items.empty() || !snap.preedit.empty() || !snap.aux_up.empty() ||
                        !snap.aux_down.empty();
+
+        const bool sameIC = (activeIC_.get() == ic);
+        if (!snap.visible && !sameIC) {
+            renderer_.hideImmediate();
+            hideAll();
+            stopTimer();
+            activeIC_ = ic->watch();
+            activeDisplay_ = ic->display();
+            activeCursor_ = ic->cursorRect();
+            return;
+        }
 
         activeIC_ = ic->watch();
         activeDisplay_ = ic->display();

@@ -573,7 +573,15 @@ fn main() -> Result<()> {
             let visible = || {
                 own_candidate_window().is_some_and(|hwnd| IsWindowVisible(hwnd).as_bool())
             };
+            let wait_hidden = || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+                while visible() && std::time::Instant::now() < deadline {
+                    pump();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            };
             h.clear();
+            wait_hidden();
             h.type_str("k"); // A pending consonant has no prediction list.
             check(
                 "typed input visibility without candidates",
@@ -582,6 +590,7 @@ fn main() -> Result<()> {
                 &mut fails,
             );
             h.key(0x08);
+            wait_hidden();
             check("typed input hidden when cleared", visible().to_string(), "false", &mut fails);
             if options.show_typed_input {
                 h.type_str("konnnitiha");
@@ -593,13 +602,16 @@ fn main() -> Result<()> {
                     screenshot(&path);
                 }
                 h.key(0x0D);
+                wait_hidden();
                 check("typed input hidden after commit", visible().to_string(), "false", &mut fails);
                 check("typed input is not committed", h.text(), "こんにちは", &mut fails);
                 h.clear();
+                wait_hidden();
                 h.store.input_scope.set(IS_PASSWORD);
                 h.type_str("k");
                 check("typed input hidden in password field", visible().to_string(), "false", &mut fails);
                 h.key(0x1B);
+                wait_hidden();
                 h.store.input_scope.set(IS_DEFAULT);
             } else {
                 use windows::Win32::UI::TextServices::ITfThreadFocusSink;
@@ -799,6 +811,16 @@ fn main() -> Result<()> {
 
         // Some editors publish text geometry only after the edit completes.
         h.clear();
+        {
+            use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while own_candidate_window().is_some_and(|hwnd| IsWindowVisible(hwnd).as_bool())
+                && std::time::Instant::now() < deadline
+            {
+                pump();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         h.store.layout_missing.set(true);
         h.type_str("kisha");
         h.key(0x20);
