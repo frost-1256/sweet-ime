@@ -2,8 +2,13 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Condvar, Mutex, Once};
+use std::time::{Duration, Instant};
 
 use crate::Converter;
+
+/// Short settle window before running neural live refinement so rapid typing
+/// does not flicker the composition text on intermediate keystrokes.
+const LIVE_DEBOUNCE: Duration = Duration::from_millis(80);
 
 type Completion = Box<dyn FnOnce(String, String) + Send>;
 
@@ -12,12 +17,18 @@ struct Job {
     reading: String,
     left_context: String,
     done: Completion,
+    submitted_at: Instant,
+}
+
+struct PendingState {
+    job: Option<Job>,
+    generation: u64,
 }
 
 /// A process-lifetime worker that retains only the latest pending request.
 pub struct LiveConversionWorker {
     started: Once,
-    pending: Mutex<Option<Job>>,
+    pending: Mutex<PendingState>,
     ready: Condvar,
 }
 
@@ -31,7 +42,10 @@ impl LiveConversionWorker {
     pub const fn new() -> Self {
         Self {
             started: Once::new(),
-            pending: Mutex::new(None),
+            pending: Mutex::new(PendingState {
+                job: None,
+                generation: 0,
+            }),
             ready: Condvar::new(),
         }
     }
@@ -50,16 +64,17 @@ impl LiveConversionWorker {
                 .name("sweet-ime-live".into())
                 .spawn(|| self.run());
         });
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(Job {
+        let replaced = {
+            let mut state = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            state.generation = state.generation.wrapping_add(1);
+            state.job.replace(Job {
                 converter,
                 reading,
                 left_context,
                 done: Box::new(done),
-            });
+                submitted_at: Instant::now(),
+            })
+        };
         self.ready.notify_one();
         drop(replaced);
     }
@@ -67,12 +82,28 @@ impl LiveConversionWorker {
     fn run(&self) {
         loop {
             let job = {
-                let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-                self.ready
-                    .wait_while(pending, |pending| pending.is_none())
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .unwrap()
+                let mut state = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    state = self
+                        .ready
+                        .wait_while(state, |s| s.job.is_none())
+                        .unwrap_or_else(|e| e.into_inner());
+                    let generation = state.generation;
+                    let elapsed = state.job.as_ref().unwrap().submitted_at.elapsed();
+                    if let Some(wait) = LIVE_DEBOUNCE.checked_sub(elapsed) {
+                        let (next_state, _) = self
+                            .ready
+                            .wait_timeout_while(state, wait, |s| s.generation == generation)
+                            .unwrap_or_else(|e| e.into_inner());
+                        state = next_state;
+                        if state.generation != generation {
+                            continue;
+                        }
+                    }
+                    if let Some(job) = state.job.take() {
+                        break job;
+                    }
+                }
             };
             let result = catch_unwind(AssertUnwindSafe(|| {
                 job.converter.refine_live(&job.reading, &job.left_context)
