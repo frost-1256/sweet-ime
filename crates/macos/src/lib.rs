@@ -30,6 +30,7 @@ impl Context {
         self.converter.apply_options(&options);
         self.session.options = options;
         self.keymap = paths::load_keymap();
+        paths::apply_romaji_table();
     }
 
     fn handle(&mut self, vk: u16, character: u32, modifiers: u8) -> bool {

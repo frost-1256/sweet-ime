@@ -237,7 +237,7 @@ impl DictPage {
 
 /// Text from a file: UTF-16 with a byte order mark (Microsoft IME exports)
 /// or UTF-8.
-fn decode_text(bytes: &[u8]) -> String {
+pub(crate) fn decode_text(bytes: &[u8]) -> String {
     let utf16 = |b: &[u8], le: bool| {
         let units: Vec<u16> = b
             .chunks_exact(2)

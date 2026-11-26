@@ -159,6 +159,8 @@ Because the zenz model is licensed under CC BY-SA 4.0, it is downloaded separate
 
 Customize any binding on the **キー** page of Settings (`keymap.txt`).
 
+Edit the romaji-to-kana table on the **ローマ字** page (`romaji.tsv`). Rows have an input, an output, and an optional next input (`tt` → `っ` + `t`). You can import and export tables in the Mozc / Google Japanese Input format.
+
 ### English inside Japanese
 - **Shift starts an English word:** Type `Shift+letter`, release Shift, and keep typing (`Space` commits with a space, `Enter` commits alone, `Esc` cancels). Known words end automatically when Japanese follows (`Googlehakensaku` → `Googleは検索`).
 - **Mid-sentence English & tech terms:** `korehabestdesu` → `これはベストです`, `ime` / `github` → `IME` / `GitHub`.
@@ -178,6 +180,7 @@ Open **設定 → テーマ** (Windows & Linux):
 |---|---|---|
 | `config.txt` | General options | General options |
 | `keymap.txt` | Key bindings | Key bindings |
+| `romaji.tsv` | Romaji table (Mozc compatible; built-in table when missing) | Romaji table |
 | `user_theme.txt` | Active custom user theme | Active custom user theme |
 | `user_themes.txt` | Saved named user themes | Saved named user themes |
 | `history.tsv` | Learned words | Learned words |

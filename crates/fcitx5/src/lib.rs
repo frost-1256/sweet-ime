@@ -85,10 +85,11 @@ fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
         .map(sweet_zenz::ZenzReranker::new)
 }
 
-fn settings_stamp() -> [Option<SystemTime>; 2] {
+fn settings_stamp() -> [Option<SystemTime>; 3] {
     [
         paths::modified(paths::config_file()),
         paths::modified(paths::keymap_file()),
+        paths::modified(paths::romaji_table_file()),
     ]
 }
 
@@ -125,7 +126,7 @@ pub struct SweetContext {
     session: Session,
     keymap: Keymap,
     open: bool,
-    stamp: [Option<SystemTime>; 2],
+    stamp: [Option<SystemTime>; 3],
     live: Arc<LiveShared>,
     snap: Snapshot,
 }
@@ -149,7 +150,7 @@ impl SweetContext {
             session: Session::new(),
             keymap: Keymap::default(),
             open: true,
-            stamp: [None, None],
+            stamp: [None; 3],
             live: Arc::default(),
             snap: Snapshot::default(),
         }
@@ -163,6 +164,7 @@ impl SweetContext {
         }
         self.session.options = o;
         self.keymap = paths::load_keymap();
+        paths::apply_romaji_table();
     }
 
     fn reload_settings_if_changed(&mut self) {

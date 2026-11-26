@@ -1098,6 +1098,37 @@ fn main() -> Result<()> {
             }
         }
 
+        // 7. user romaji table (romaji.tsv) applies on focus and goes away with the file
+        {
+            use sweet_engine::romaji::{Rule, default_rules};
+            use windows::Win32::UI::TextServices::ITfThreadFocusSink;
+
+            let focus: ITfThreadFocusSink = tip.cast()?;
+            let reading = |keys: &str| -> String {
+                h.clear();
+                h.type_str(keys);
+                h.key(0x1B); // Esc shows the reading under live conversion
+                let text = h.text();
+                h.key(0x1B);
+                h.key(0x1B);
+                text
+            };
+            let mut rules = default_rules();
+            rules.push(Rule::new("ca", "か", ""));
+            rules.push(Rule::new("cq", "ち", "y"));
+            sweet_engine::paths::save_romaji_rules(&rules).expect("write romaji.tsv");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table row", reading("camera"), "かめら", &mut fails);
+            check("romaji table next input", reading("cqa"), "ちや", &mut fails);
+            check("romaji table keeps built-in rows", reading("kyouha"), "きょうは", &mut fails);
+            sweet_engine::paths::reset_romaji_rules().expect("remove romaji.tsv");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table reset", reading("camera"), "cあめら", &mut fails);
+            h.clear();
+        }
+
         tip.Deactivate()?;
 
         // Per-application modes: this process is harness.exe.

@@ -7,6 +7,8 @@ body:
     id: platform
     attributes:
       label: 対象プラットフォーム
+      description: 当てはまるものをすべて選んでください。
+      multiple: true
       options:
         - 全プラットフォーム
         - Windows

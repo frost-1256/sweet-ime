@@ -222,6 +222,40 @@ pub fn save_keymap(k: &crate::Keymap) -> std::io::Result<()> {
     std::fs::write(p, k.to_text())
 }
 
+/// The user's romaji table (see [`crate::romaji::parse_rules`]).
+pub fn romaji_table_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("romaji.tsv"))
+}
+
+/// Reads the user's romaji table; `None` when there is none (the built-in
+/// table applies).
+pub fn load_romaji_rules() -> Option<Vec<crate::romaji::Rule>> {
+    let text = std::fs::read_to_string(romaji_table_file()?).ok()?;
+    Some(crate::romaji::parse_rules(&text)).filter(|rules| !rules.is_empty())
+}
+
+/// Reads the user's romaji table and makes it the one composers use.
+pub fn apply_romaji_table() {
+    crate::romaji::set_rules(load_romaji_rules().as_deref());
+}
+
+/// Writes the user's romaji table.
+pub fn save_romaji_rules(rules: &[crate::romaji::Rule]) -> std::io::Result<()> {
+    let p = romaji_table_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(p, crate::romaji::format_rules(rules))
+}
+
+/// Removes the user's romaji table (back to the built-in table).
+pub fn reset_romaji_rules() -> std::io::Result<()> {
+    match romaji_table_file().map(std::fs::remove_file) {
+        Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Removes the key bindings file (back to the built-in layout).
 pub fn reset_keymap() -> std::io::Result<()> {
     match keymap_file().map(std::fs::remove_file) {

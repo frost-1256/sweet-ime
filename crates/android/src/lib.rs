@@ -73,6 +73,7 @@ pub fn converter() -> Option<Arc<Converter>> {
 /// the settings.
 pub fn refresh_converter() {
     let Some(dict) = DICT_PATH.get() else { return };
+    paths::apply_romaji_table();
     let o = paths::load_options();
     let zenz = wanted_zenz(o.neural);
     let mut slot = CONV.write().unwrap_or_else(|e| e.into_inner());

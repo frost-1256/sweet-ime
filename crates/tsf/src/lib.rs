@@ -112,6 +112,7 @@ pub(crate) fn launch_settings() {
 /// activated in an application.
 pub(crate) fn load_options() -> sweet_engine::Options {
     let o = sweet_engine::paths::load_options();
+    sweet_engine::paths::apply_romaji_table();
     set_theme(o.theme);
     if let Some(c) = converter() {
         c.apply_options(&o);
@@ -142,7 +143,7 @@ pub(crate) fn theme_colors() -> sweet_engine::theme::Colors {
     }
 }
 
-pub(crate) type SettingsStamp = [Option<std::time::SystemTime>; 5];
+pub(crate) type SettingsStamp = [Option<std::time::SystemTime>; 6];
 
 /// Modification times of the settings files; a change means the settings
 /// app saved something and the service should reload.
@@ -153,6 +154,7 @@ pub(crate) fn settings_stamp() -> SettingsStamp {
         sweet_engine::paths::modified(sweet_engine::paths::apps_file()),
         sweet_engine::paths::modified(sweet_engine::paths::candidate_font_file()),
         sweet_engine::paths::modified(sweet_engine::paths::user_theme_file()),
+        sweet_engine::paths::modified(sweet_engine::paths::romaji_table_file()),
     ]
 }
 
