@@ -1,5 +1,6 @@
 //! Lattice construction, Viterbi and N-best search, and bunsetsu segmentation.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 
@@ -7,6 +8,12 @@ use crate::dict::PosClass;
 
 use super::extras::{Extra, Origin};
 use super::{Conversion, Converter, Segment, Word};
+
+const NONE: u32 = u32::MAX;
+
+thread_local! {
+    static VITERBI_SCRATCH: RefCell<ViterbiScratch> = RefCell::new(ViterbiScratch::new(0));
+}
 
 /// Cost of a single-character unknown word (hiragana passthrough).
 const UNKNOWN_CHAR_COST: i32 = 12_000;
@@ -29,10 +36,12 @@ struct Node<'a> {
 
 struct Lattice<'a> {
     nodes: Vec<Node<'a>>,
-    /// Node indices ending at each byte position.
-    ends: Vec<Vec<u32>>,
-    /// Node indices starting at each byte position.
-    begins: Vec<Vec<u32>>,
+    /// Intrusive singly-linked lists of node indices ending/starting at each byte position
+    /// (stored in reverse insertion order).
+    end_head: Vec<u32>,
+    end_next: Vec<u32>,
+    begin_head: Vec<u32>,
+    begin_next: Vec<u32>,
 }
 
 impl Lattice<'_> {
@@ -40,6 +49,78 @@ impl Lattice<'_> {
         path.iter()
             .map(|&i| self.nodes[i as usize].surface)
             .collect()
+    }
+
+    #[inline]
+    fn ends_at(&self, pos: usize) -> ListIter<'_> {
+        ListIter {
+            cur: self.end_head[pos],
+            next: &self.end_next,
+        }
+    }
+}
+
+struct ListIter<'a> {
+    cur: u32,
+    next: &'a [u32],
+}
+
+impl Iterator for ListIter<'_> {
+    type Item = u32;
+
+    #[inline]
+    fn next(&mut self) -> Option<u32> {
+        if self.cur == NONE {
+            return None;
+        }
+        let id = self.cur;
+        self.cur = self.next[id as usize];
+        Some(id)
+    }
+}
+
+/// Compact, reusable lattice for cost-only Viterbi scoring (used by typo correction).
+#[derive(Clone, Copy)]
+struct CostNode {
+    lid: u16,
+    rid: u16,
+    wcost: i32,
+    best: i32,
+}
+
+#[derive(Default)]
+struct CostLattice {
+    nodes: Vec<CostNode>,
+    end_head: Vec<u32>,
+    end_next: Vec<u32>,
+    begin_head: Vec<u32>,
+    begin_next: Vec<u32>,
+}
+
+impl CostLattice {
+    fn reset(&mut self, len: usize) {
+        self.nodes.clear();
+        self.end_next.clear();
+        self.begin_next.clear();
+        self.end_head.clear();
+        self.end_head.resize(len + 1, NONE);
+        self.begin_head.clear();
+        self.begin_head.resize(len + 1, NONE);
+    }
+
+    #[inline]
+    fn push(&mut self, start: usize, end: usize, lid: u16, rid: u16, wcost: i32) {
+        let id = self.nodes.len() as u32;
+        self.nodes.push(CostNode {
+            lid,
+            rid,
+            wcost,
+            best: i32::MAX,
+        });
+        self.end_next.push(self.end_head[end]);
+        self.end_head[end] = id;
+        self.begin_next.push(self.begin_head[start]);
+        self.begin_head[start] = id;
     }
 }
 
@@ -61,6 +142,21 @@ impl ViterbiScratch {
             predecessors: Vec::new(),
             next_tag: 0,
         }
+    }
+
+    fn prepare(&mut self, pos_count: usize, span: usize) -> usize {
+        if self.incoming.len() < pos_count {
+            self.incoming.resize(pos_count, (usize::MAX, i32::MAX));
+            self.outgoing.resize(pos_count, (usize::MAX, 0));
+        }
+        if self.next_tag.checked_add(span).is_none_or(|end| end == usize::MAX) {
+            self.incoming.fill((usize::MAX, i32::MAX));
+            self.outgoing.fill((usize::MAX, 0));
+            self.next_tag = 0;
+        }
+        let first_tag = self.next_tag;
+        self.next_tag += span;
+        first_tag
     }
 }
 
@@ -99,15 +195,20 @@ impl Converter {
         extras: &'a [Extra],
     ) -> Lattice<'a> {
         let len = text.len();
+        let cap = len * 8;
         let mut lat = Lattice {
-            nodes: Vec::with_capacity(len * 8),
-            ends: vec![Vec::new(); len + 1],
-            begins: vec![Vec::new(); len + 1],
+            nodes: Vec::with_capacity(cap),
+            end_head: vec![NONE; len + 1],
+            end_next: Vec::with_capacity(cap),
+            begin_head: vec![NONE; len + 1],
+            begin_next: Vec::with_capacity(cap),
         };
         let push = |lat: &mut Lattice<'a>, n: Node<'a>| {
             let id = lat.nodes.len() as u32;
-            lat.ends[n.end].push(id);
-            lat.begins[n.start].push(id);
+            lat.end_next.push(lat.end_head[n.end]);
+            lat.end_head[n.end] = id;
+            lat.begin_next.push(lat.begin_head[n.start]);
+            lat.begin_head[n.start] = id;
             lat.nodes.push(n);
         };
         // BOS / EOS
@@ -121,7 +222,9 @@ impl Converter {
             best: 0,
             origin: None,
         });
-        lat.ends[0].push(BOS);
+        lat.end_next.push(NONE);
+        lat.end_head[0] = BOS;
+        lat.begin_next.push(NONE);
         lat.nodes.push(Node {
             start: len,
             end: len,
@@ -132,6 +235,8 @@ impl Converter {
             best: i32::MAX,
             origin: None,
         });
+        lat.end_next.push(NONE);
+        lat.begin_next.push(NONE);
 
         let crosses = |s: usize, e: usize| boundaries.iter().any(|&b| s < b && b < e);
         let unk = self.dict.unknown_id();
@@ -151,13 +256,21 @@ impl Converter {
                 if let Some(&b) = boundaries.iter().find(|&&b| pos < b && b < e) {
                     e = b;
                 }
+                let num_id = self
+                    .number_pos
+                    .filter(|_| {
+                        text[pos..e]
+                            .chars()
+                            .all(|ch| ch.is_ascii_digit() || ('０'..='９').contains(&ch))
+                    })
+                    .map_or(unk, |(_, arabic_id)| arabic_id);
                 push(
                     &mut lat,
                     Node {
                         start: pos,
                         end: e,
-                        lid: unk,
-                        rid: unk,
+                        lid: num_id,
+                        rid: num_id,
                         wcost: UNKNOWN_RUN_COST,
                         surface: &text[pos..e],
                         best: i32::MAX,
@@ -242,22 +355,24 @@ impl Converter {
                 );
             }
         }
-        lat.begins[len].push(EOS);
+        lat.begin_next[EOS as usize] = lat.begin_head[len];
+        lat.begin_head[len] = EOS;
         lat
     }
 
     fn viterbi(&self, lat: &mut Lattice<'_>) {
-        let mut scratch = ViterbiScratch::new(self.dict.pos_count());
-        self.viterbi_with_scratch(lat, &mut scratch);
+        VITERBI_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            self.viterbi_with_scratch(lat, &mut scratch);
+        });
     }
 
     fn viterbi_with_scratch(&self, lat: &mut Lattice<'_>, scratch: &mut ViterbiScratch) {
-        let len = lat.ends.len() - 1;
+        let len = lat.end_head.len() - 1;
         // Alternative spellings with the same left POS share their incoming
         // transition cost at this position. Tags span lattices so typo scoring
-        // can reuse the POS tables without clearing them for each variant.
-        let first_tag = scratch.next_tag;
-        scratch.next_tag += lat.ends.len();
+        // and repeated calls reuse the POS tables without clearing them.
+        let first_tag = scratch.prepare(self.dict.pos_count(), lat.end_head.len());
         let ViterbiScratch {
             incoming,
             outgoing,
@@ -265,28 +380,30 @@ impl Converter {
             ..
         } = scratch;
         for pos in 0..=len {
-            if lat.begins[pos].is_empty() || lat.ends[pos].is_empty() {
+            if lat.begin_head[pos] == NONE || lat.end_head[pos] == NONE {
                 continue;
             }
             let tag = first_tag + pos;
             predecessors.clear();
-            for &id in &lat.ends[pos] {
+            let mut id = lat.end_head[pos];
+            while id != NONE {
                 let prev = &lat.nodes[id as usize];
-                if prev.best == i32::MAX {
-                    continue;
+                if prev.best != i32::MAX {
+                    let entry = &mut outgoing[prev.rid as usize];
+                    if entry.0 == tag {
+                        let best = &mut predecessors[entry.1].1;
+                        *best = (*best).min(prev.best);
+                    } else {
+                        *entry = (tag, predecessors.len());
+                        predecessors.push((prev.rid, prev.best));
+                    }
                 }
-                let entry = &mut outgoing[prev.rid as usize];
-                if entry.0 == tag {
-                    let best = &mut predecessors[entry.1].1;
-                    *best = (*best).min(prev.best);
-                } else {
-                    *entry = (tag, predecessors.len());
-                    predecessors.push((prev.rid, prev.best));
-                }
+                id = lat.end_next[id as usize];
             }
-            for bi in 0..lat.begins[pos].len() {
-                let id = lat.begins[pos][bi] as usize;
-                let (lid, wcost) = (lat.nodes[id].lid, lat.nodes[id].wcost);
+            let mut id = lat.begin_head[pos];
+            while id != NONE {
+                let node = &mut lat.nodes[id as usize];
+                let (lid, wcost) = (node.lid, node.wcost);
                 let entry = &mut incoming[lid as usize];
                 if entry.0 != tag {
                     let mut best = i32::MAX;
@@ -296,23 +413,144 @@ impl Converter {
                     *entry = (tag, best);
                 }
                 let best = entry.1;
-                lat.nodes[id].best = if best == i32::MAX {
+                node.best = if best == i32::MAX {
                     i32::MAX
                 } else {
                     best + wcost
                 };
+                id = lat.begin_next[id as usize];
             }
         }
     }
 
-    /// The best path can be traced from the saved Viterbi costs. Walk
-    /// predecessors in reverse insertion order to match A* on ties.
+    fn build_and_score_cost_lattice(
+        &self,
+        text: &str,
+        extras: &[Extra],
+        lat: &mut CostLattice,
+        scratch: &mut ViterbiScratch,
+    ) -> i32 {
+        let len = text.len();
+        lat.reset(len);
+        // BOS (0) and EOS (1)
+        lat.nodes.push(CostNode {
+            lid: 0,
+            rid: 0,
+            wcost: 0,
+            best: 0,
+        });
+        lat.end_next.push(NONE);
+        lat.end_head[0] = BOS;
+        lat.begin_next.push(NONE);
+        lat.nodes.push(CostNode {
+            lid: 0,
+            rid: 0,
+            wcost: 0,
+            best: i32::MAX,
+        });
+        lat.end_next.push(NONE);
+        lat.begin_next.push(NONE);
+
+        let unk = self.dict.unknown_id();
+        let mut pos = 0;
+        while pos < len {
+            let rest = &text[pos..];
+            let c = rest.chars().next().unwrap();
+            if !is_kana(c) {
+                let run: usize = rest
+                    .char_indices()
+                    .find(|&(_, ch)| is_kana(ch))
+                    .map(|(i, _)| i)
+                    .unwrap_or(rest.len());
+                let e = pos + run;
+                lat.push(pos, e, unk, unk, UNKNOWN_RUN_COST);
+                pos = e;
+                continue;
+            }
+            self.dict.common_prefix_costs(rest, |l, lid, rid, cost| {
+                lat.push(pos, pos + l, lid, rid, i32::from(cost));
+            });
+            let cl = c.len_utf8();
+            lat.push(pos, pos + cl, unk, unk, UNKNOWN_CHAR_COST);
+            pos += cl;
+        }
+        for x in extras {
+            lat.push(
+                x.start,
+                x.end,
+                x.lid,
+                x.rid,
+                x.cost
+                    + if x.origin == Origin::Learned {
+                        standalone_penalty(text, &x.surface)
+                    } else {
+                        0
+                    },
+            );
+        }
+        lat.begin_next[EOS as usize] = lat.begin_head[len];
+        lat.begin_head[len] = EOS;
+
+        let first_tag = scratch.prepare(self.dict.pos_count(), len + 1);
+        let ViterbiScratch {
+            incoming,
+            outgoing,
+            predecessors,
+            ..
+        } = scratch;
+        for pos in 0..=len {
+            if lat.begin_head[pos] == NONE || lat.end_head[pos] == NONE {
+                continue;
+            }
+            let tag = first_tag + pos;
+            predecessors.clear();
+            let mut id = lat.end_head[pos];
+            while id != NONE {
+                let prev = &lat.nodes[id as usize];
+                if prev.best != i32::MAX {
+                    let entry = &mut outgoing[prev.rid as usize];
+                    if entry.0 == tag {
+                        let best = &mut predecessors[entry.1].1;
+                        *best = (*best).min(prev.best);
+                    } else {
+                        *entry = (tag, predecessors.len());
+                        predecessors.push((prev.rid, prev.best));
+                    }
+                }
+                id = lat.end_next[id as usize];
+            }
+            let mut id = lat.begin_head[pos];
+            while id != NONE {
+                let node = &mut lat.nodes[id as usize];
+                let (lid, wcost) = (node.lid, node.wcost);
+                let entry = &mut incoming[lid as usize];
+                if entry.0 != tag {
+                    let mut best = i32::MAX;
+                    for &(rid, cost) in predecessors.iter() {
+                        best = best.min(cost + self.dict.connection(rid, lid));
+                    }
+                    *entry = (tag, best);
+                }
+                let best = entry.1;
+                node.best = if best == i32::MAX {
+                    i32::MAX
+                } else {
+                    best + wcost
+                };
+                id = lat.begin_next[id as usize];
+            }
+        }
+        lat.nodes[EOS as usize].best
+    }
+
+    /// The best path can be traced from the saved Viterbi costs. `ends_at`
+    /// already yields predecessors in reverse insertion order to match A* on ties.
     fn best_path(&self, lat: &Lattice<'_>) -> Option<Vec<u32>> {
         let mut path = Vec::new();
         let mut current = EOS;
         while current != BOS {
             let node = &lat.nodes[current as usize];
-            let next = lat.ends[node.start].iter().rev().copied().find(|&id| {
+            let next = lat.ends_at(node.start).find(|&id| {
                 let prev = &lat.nodes[id as usize];
                 prev.best != i32::MAX
                     && prev.best + self.dict.connection(prev.rid, node.lid)
@@ -358,7 +596,7 @@ impl Converter {
                 }
                 let nd = &lat.nodes[node as usize];
                 let g2 = g + nd.wcost;
-                for &p in &lat.ends[nd.start] {
+                for p in lat.ends_at(nd.start) {
                     let prev = &lat.nodes[p as usize];
                     if prev.best == i32::MAX {
                         continue;
@@ -439,14 +677,15 @@ impl Converter {
         if let Some(h) = history.as_mut() {
             h.reload_if_changed();
         }
-        let mut scratch = ViterbiScratch::new(self.dict.pos_count());
-        evaluate(&mut |text| {
-            let extras = history
-                .as_ref()
-                .map_or_else(Vec::new, |h| self.learned_extras_from(text, h));
-            let mut lat = self.build_lattice(text, &[], &extras);
-            self.viterbi_with_scratch(&mut lat, &mut scratch);
-            lat.nodes[EOS as usize].best
+        let mut lat = CostLattice::default();
+        VITERBI_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            evaluate(&mut |text| {
+                let extras = history
+                    .as_ref()
+                    .map_or_else(Vec::new, |h| self.learned_extras_from(text, h));
+                self.build_and_score_cost_lattice(text, &extras, &mut lat, &mut scratch)
+            })
         })
     }
 

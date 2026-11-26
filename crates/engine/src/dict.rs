@@ -246,6 +246,35 @@ impl Dictionary {
         }
     }
 
+    /// Calls `f(reading_len_bytes, lid, rid, cost)` for every word whose
+    /// reading is a prefix of `text`, without decoding surface strings.
+    pub(crate) fn common_prefix_costs(
+        &self,
+        text: &str,
+        mut f: impl FnMut(usize, u16, u16, i16),
+    ) {
+        let fst = self.fst.as_fst();
+        let mut node = fst.root();
+        let mut out = Output::zero();
+        let b: &[u8] = &self.map;
+        for (i, &byte) in text.as_bytes().iter().enumerate() {
+            let Some(ti) = node.find_input(byte) else { return };
+            let t = node.transition(ti);
+            out = out.cat(t.out);
+            node = fst.node(t.addr);
+            if node.is_final() {
+                let packed = out.cat(node.final_output()).value();
+                let first = (packed >> 24) as usize;
+                let count = (packed & 0xff_ffff) as usize;
+                let len = i + 1;
+                for idx in first..first + count {
+                    let o = self.ent_off + idx * ENTRY_LEN;
+                    f(len, rd_u16(b, o), rd_u16(b, o + 2), rd_u16(b, o + 4) as i16);
+                }
+            }
+        }
+    }
+
     /// Calls `f(reading_len_bytes, entry)` for every word whose reading is a
     /// prefix of `text`.
     pub fn common_prefix<'s>(&'s self, text: &str, mut f: impl FnMut(usize, Entry<'s>)) {
