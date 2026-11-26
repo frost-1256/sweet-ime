@@ -348,7 +348,7 @@ impl eframe::App for App {
                                 );
                             }
                         }
-                        #[cfg(windows)]
+                        #[cfg(not(target_os = "macos"))]
                         card(
                             ui,
                             "ゲーミングモード",
@@ -356,6 +356,10 @@ impl eframe::App for App {
                             |ui| {
                                 if toggle(ui, &mut self.opts.gaming_mode).changed() {
                                     self.save();
+                                    #[cfg(not(windows))]
+                                    {
+                                        let _ = fcitx_theme::apply(self.opts.theme, &self.user_theme);
+                                    }
                                 }
                             },
                         );

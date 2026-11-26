@@ -56,6 +56,22 @@ uint32_t sweet_candidate_page_start(SweetContext *ctx);
 uint32_t sweet_candidate_total(SweetContext *ctx);
 uint32_t sweet_candidate_kind(SweetContext *ctx);
 
+typedef struct SweetUiTheme {
+    uint8_t bg[3];
+    uint8_t text[3];
+    uint8_t sub[3];
+    uint8_t hover[3];
+    uint8_t accent[3];
+    uint8_t border[3];
+    float bg_alpha;
+    float hover_alpha;
+    uint8_t panel_padding;
+    bool dark;
+    bool gaming_mode;
+} SweetUiTheme;
+
+void sweet_ui_load_theme(SweetUiTheme *out);
+
 #ifdef __cplusplus
 }
 #endif

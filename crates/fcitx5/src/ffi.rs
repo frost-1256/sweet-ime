@@ -271,3 +271,77 @@ pub unsafe extern "C" fn sweet_candidate_total(p: *mut SweetContext) -> u32 {
 pub unsafe extern "C" fn sweet_candidate_kind(p: *mut SweetContext) -> u32 {
     unsafe { ctx(p) }.snap.kind
 }
+
+#[repr(C)]
+pub struct SweetUiTheme {
+    pub bg: [u8; 3],
+    pub text: [u8; 3],
+    pub sub: [u8; 3],
+    pub hover: [u8; 3],
+    pub accent: [u8; 3],
+    pub border: [u8; 3],
+    pub bg_alpha: f32,
+    pub hover_alpha: f32,
+    pub panel_padding: u8,
+    pub dark: bool,
+    pub gaming_mode: bool,
+}
+
+/// Loads the active Sweet IME theme (including custom User Theme and opacity)
+/// for the native fcitx5 UI addon.
+///
+/// # Safety
+/// `out` must be a valid writable pointer to [`SweetUiTheme`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sweet_ui_load_theme(out: *mut SweetUiTheme) {
+    if out.is_null() {
+        return;
+    }
+    let theme = guard(
+        SweetUiTheme {
+            bg: [0x2c, 0x2c, 0x2c],
+            text: [0xff, 0xff, 0xff],
+            sub: [0xc5, 0xc5, 0xc5],
+            hover: [0xff, 0xff, 0xff],
+            accent: [0x60, 0xcd, 0xff],
+            border: [0x40, 0x40, 0x40],
+            bg_alpha: 1.0,
+            hover_alpha: 0.08,
+            panel_padding: 6,
+            dark: true,
+            gaming_mode: false,
+        },
+        || {
+            let opts = sweet_engine::paths::load_options();
+            let c = if opts.theme == sweet_engine::Theme::Custom {
+                sweet_engine::paths::load_user_theme().colors()
+            } else {
+                opts.theme.colors(false)
+            };
+            let accent = c.accent.unwrap_or(if c.dark {
+                sweet_engine::theme::Rgb(0x60, 0xcd, 0xff)
+            } else {
+                sweet_engine::theme::Rgb(0x00, 0x5f, 0xb8)
+            });
+            SweetUiTheme {
+                bg: [c.bg.0, c.bg.1, c.bg.2],
+                text: [c.text.0, c.text.1, c.text.2],
+                sub: [c.sub.0, c.sub.1, c.sub.2],
+                hover: [c.hover.0, c.hover.1, c.hover.2],
+                accent: [accent.0, accent.1, accent.2],
+                border: [c.border.0, c.border.1, c.border.2],
+                bg_alpha: c.bg_alpha.clamp(sweet_engine::theme::MIN_BG_ALPHA, 1.0),
+                hover_alpha: c.hover_alpha.clamp(0.0, 1.0),
+                panel_padding: c.panel_padding.clamp(
+                    sweet_engine::theme::MIN_PANEL_PADDING,
+                    sweet_engine::theme::MAX_PANEL_PADDING,
+                ),
+                dark: c.dark,
+                gaming_mode: opts.gaming_mode,
+            }
+        },
+    );
+    unsafe {
+        *out = theme;
+    }
+}

@@ -464,22 +464,26 @@ fn write_classicui(config: &Path, edit: impl FnOnce(&str) -> String, hint: &str)
     Ok(())
 }
 
-/// Asks the running fcitx5 to reload the classicui theme.
+/// Asks the running fcitx5 to reload the classicui and sweetui themes.
 fn reload() {
     use std::process::{Command, Stdio};
-    let dbus = Command::new("dbus-send")
-        .args([
-            "--session",
-            "--print-reply",
-            "--dest=org.fcitx.Fcitx5",
-            "/controller",
-            "org.fcitx.Fcitx.Controller1.ReloadAddonConfig",
-            "string:classicui",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if !dbus.is_ok_and(|s| s.success()) {
+    let mut ok = false;
+    for addon in ["classicui", "sweetui"] {
+        let dbus = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.fcitx.Fcitx5",
+                "/controller",
+                "org.fcitx.Fcitx.Controller1.ReloadAddonConfig",
+                &format!("string:{addon}"),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        ok |= dbus.is_ok_and(|s| s.success());
+    }
+    if !ok {
         let _ = Command::new("fcitx5-remote").arg("-r").stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
 }

@@ -135,9 +135,11 @@ fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
     rm -f "${ADDON_DIR}/sweetime.so" \
+        "${ADDON_DIR}/sweetui.so" \
         "${PREFIX}/bin/sweet-settings" \
         "${PREFIX}/bin/sweet-zenz-pack" \
         "${PREFIX}/share/fcitx5/addon/sweetime.conf" \
+        "${PREFIX}/share/fcitx5/addon/sweetui.conf" \
         "${PREFIX}/share/fcitx5/inputmethod/sweetime.conf" \
         "${PREFIX}/share/applications/sweet-settings.desktop"
     rm -rf "${PREFIX}/share/sweet-ime" "${PREFIX}/share/fcitx5/themes"/sweet-ime-*
@@ -146,6 +148,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 install -Dm755 "$SCRIPT_DIR/files/lib/fcitx5/sweetime.so" "${ADDON_DIR}/sweetime.so"
+if [ -f "$SCRIPT_DIR/files/lib/fcitx5/sweetui.so" ]; then
+    install -Dm755 "$SCRIPT_DIR/files/lib/fcitx5/sweetui.so" "${ADDON_DIR}/sweetui.so"
+fi
 install -Dm755 "$SCRIPT_DIR/files/bin/sweet-settings" "${PREFIX}/bin/sweet-settings"
 install -Dm755 "$SCRIPT_DIR/files/bin/sweet-zenz-pack" "${PREFIX}/bin/sweet-zenz-pack"
 mkdir -p "${PREFIX}/share"

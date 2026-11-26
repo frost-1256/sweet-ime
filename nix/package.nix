@@ -9,6 +9,11 @@
   pkg-config,
   makeWrapper,
   fcitx5,
+  cairo,
+  pango,
+  wayland,
+  wayland-scanner,
+  xorg,
   fetchFromGitHub,
   fetchurl,
   unzip,
@@ -66,8 +71,15 @@ stdenv.mkDerivation (finalAttrs: {
     rustPlatform.cargoSetupHook
     makeWrapper
     unzip
+    wayland-scanner
   ];
-  buildInputs = [ fcitx5 ];
+  buildInputs = [
+    fcitx5
+    cairo
+    pango
+    wayland
+    xorg.libxcb
+  ];
 
   cmakeDir = "../crates/fcitx5";
   cmakeFlags = [
