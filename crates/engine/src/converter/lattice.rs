@@ -575,11 +575,11 @@ impl Converter {
         // arena entries: (node, parent arena index, g = cost after node)
         let mut arena: Vec<(u32, u32, i32)> = vec![(EOS, u32::MAX, 0)];
         let mut heap = BinaryHeap::new();
-        heap.push((Reverse(lat.nodes[EOS as usize].best), 0u32));
+        heap.push((Reverse(lat.nodes[EOS as usize].best), Reverse(0u32)));
         let mut pops = 0;
         std::iter::from_fn(move || {
             while pops < 20_000 {
-                let (Reverse(f), ai) = heap.pop()?;
+                let (Reverse(f), Reverse(ai)) = heap.pop()?;
                 pops += 1;
                 let (node, _, g) = arena[ai as usize];
                 if node == BOS {
@@ -603,7 +603,7 @@ impl Converter {
                     }
                     let g3 = g2 + self.dict.connection(prev.rid, nd.lid);
                     arena.push((p, ai, g3));
-                    heap.push((Reverse(prev.best + g3), (arena.len() - 1) as u32));
+                    heap.push((Reverse(prev.best + g3), Reverse((arena.len() - 1) as u32)));
                 }
             }
             None
