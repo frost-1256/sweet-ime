@@ -258,6 +258,7 @@ const RERANK_CACHE: usize = 16;
 
 impl Converter {
     pub fn with_reranker(mut self, r: Box<dyn Reranker>) -> Self {
+        self.rerank = RerankState::default();
         self.reranker = Some(r);
         self
     }
@@ -657,8 +658,9 @@ mod tests {
                 None
             }
             fn generate(&self, _: &str, _: &str, _: &Conversion) -> Option<String> {
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                self.started.wait();
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.started.wait();
+                }
                 std::thread::sleep(std::time::Duration::from_millis(40));
                 Some("安曇野".into())
             }
