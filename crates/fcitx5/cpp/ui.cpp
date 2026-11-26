@@ -795,7 +795,7 @@ public:
         if (pointer_) wl_pointer_destroy(pointer_);
         if (seat_) wl_seat_destroy(seat_);
         for (auto &out : outputs_) {
-            if (out->output) wl_output_destroy(out->output);
+            out->destroy();
         }
         outputs_.clear();
         if (bgEffectManager_) ext_background_effect_manager_v1_destroy(bgEffectManager_);
@@ -998,12 +998,24 @@ private:
     }
 
     struct OutputInfo {
+        WaylandPopup *owner = nullptr;
         uint32_t name = 0;
+        uint32_t version = 1;
         wl_output *output = nullptr;
         int32_t modeW = 0;
         int32_t modeH = 0;
         int32_t scale = 1;
         int32_t transform = WL_OUTPUT_TRANSFORM_NORMAL;
+
+        void destroy() {
+            if (!output) return;
+            if (version >= 3) {
+                wl_output_release(output);
+            } else {
+                wl_output_destroy(output);
+            }
+            output = nullptr;
+        }
 
         int logicalW() const {
             if (modeW <= 0 || modeH <= 0) return 0;
@@ -1035,11 +1047,17 @@ private:
             }
         }
         // Before wl_surface.enter reports the hosting output, use the sole output on single-output
-        // setups; on multi-output setups avoid clamping against a potentially unrelated monitor.
-        if (outputs_.size() == 1) {
-            return {outputs_[0]->logicalW(), outputs_[0]->logicalH()};
+        // setups, or the conservative minimum across all outputs on multi-output setups so the
+        // initial surface is guaranteed visible and receives wl_surface.enter.
+        int minW = 0;
+        int minH = 0;
+        for (const auto &out : outputs_) {
+            const int lw = out->logicalW();
+            const int lh = out->logicalH();
+            if (lw > 0 && (minW == 0 || lw < minW)) minW = lw;
+            if (lh > 0 && (minH == 0 || lh < minH)) minH = lh;
         }
-        return {0, 0};
+        return {minW, minH};
     }
 
     void applyPlacement() {
@@ -1117,9 +1135,11 @@ private:
                                                           &kBgEffectListener, self);
         } else if (std::strcmp(iface, wl_output_interface.name) == 0) {
             auto info = std::make_unique<OutputInfo>();
+            info->owner = self;
             info->name = name;
+            info->version = std::min(version, 3u);
             info->output = static_cast<wl_output *>(
-                wl_registry_bind(reg, name, &wl_output_interface, std::min(version, 2u)));
+                wl_registry_bind(reg, name, &wl_output_interface, info->version));
             if (info->output) {
                 wl_output_add_listener(info->output, &kOutputListener, info.get());
                 self->outputs_.push_back(std::move(info));
@@ -1138,9 +1158,7 @@ private:
                 if (self->hostingOutput_ == (*it)->output) {
                     self->hostingOutput_ = nullptr;
                 }
-                if ((*it)->output) {
-                    wl_output_destroy((*it)->output);
-                }
+                (*it)->destroy();
                 self->outputs_.erase(it);
                 break;
             }
@@ -1164,7 +1182,18 @@ private:
             info->modeH = h;
         }
     }
-    static void onOutputDone(void *, wl_output *) {}
+    static void onOutputDone(void *data, wl_output *) {
+        auto *info = static_cast<OutputInfo *>(data);
+        auto *self = info->owner;
+        if (!self || !self->surface_ || !self->layerSurface_ || !self->configured_) {
+            return;
+        }
+        if (self->hostingOutput_ == info->output || self->hostingOutput_ == nullptr) {
+            self->applyPlacement();
+            wl_surface_commit(self->surface_);
+            wl_display_flush(self->display_);
+        }
+    }
     static void onOutputScale(void *data, wl_output *, int32_t factor) {
         if (factor > 0) {
             static_cast<OutputInfo *>(data)->scale = factor;
