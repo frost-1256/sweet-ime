@@ -32,6 +32,8 @@ pub(super) fn apply(ui: &mut Ui, theme: Theme, user_theme: &UserTheme) -> Appear
     let surface = background.lerp_to_gamma(Color32::WHITE, if colors.dark { 0.045 } else { 0.8 });
 
     let style = ui.style_mut();
+    // Reserve dedicated space for scrollbars so they never cover right-aligned buttons.
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
     for (role, size) in [
         (egui::TextStyle::Body, 16.0),
         (egui::TextStyle::Button, 16.0),

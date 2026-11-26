@@ -115,6 +115,7 @@ impl App {
             let mut forget = None;
             let row_h = 30.0;
             egui::ScrollArea::vertical()
+                .id_salt("learned_words")
                 .max_height(320.0)
                 .auto_shrink([false, true])
                 .show_rows(ui, row_h, rows.len(), |ui, range| {
@@ -127,6 +128,7 @@ impl App {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    ui.add_space(6.0);
                                     if ui.small_button("削除").clicked() {
                                         forget = Some(i);
                                     }

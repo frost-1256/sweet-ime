@@ -42,6 +42,10 @@
 #include <xcb_public.h>
 #endif
 
+#ifdef SWEET_HAVE_NOTIFICATIONITEM
+#include <notificationitem_public.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -780,13 +784,22 @@ class WaylandPopup {
 public:
     using HoverCb = std::function<void(double, double)>;
     using ClickCb = std::function<void(double, double)>;
+    using NotifyCb = std::function<void()>;
 
-    WaylandPopup(wl_display *display, HoverCb onHover, ClickCb onClick)
-        : display_(display), onHover_(std::move(onHover)), onClick_(std::move(onClick)) {
+    WaylandPopup(wl_display *display, HoverCb onHover, ClickCb onClick, NotifyCb onReady,
+                 NotifyCb onConfigured)
+        : display_(display),
+          onHover_(std::move(onHover)),
+          onClick_(std::move(onClick)),
+          onReady_(std::move(onReady)),
+          onConfigured_(std::move(onConfigured)) {
         registry_ = wl_display_get_registry(display_);
         if (registry_) {
             wl_registry_add_listener(registry_, &kRegistryListener, this);
-            wl_display_roundtrip(display_);
+            // Never call wl_display_roundtrip() on fcitx5's shared wl_display*:
+            // fcitx5 drives the Wayland event loop itself, and synchronous roundtrips
+            // inside callbacks or key dispatch can deadlock or corrupt waylandim.
+            wl_display_flush(display_);
         }
     }
 
@@ -871,12 +884,11 @@ public:
                                        static_cast<uint32_t>(h));
 
         if (!configured_) {
+            // Commit the initial role state and wait asynchronously for
+            // zwlr_layer_surface_v1.configure via fcitx5's Wayland event loop.
             wl_surface_commit(surface_);
-            wl_display_roundtrip(display_);
-            // Compositor may have sent `closed` during the roundtrip.
-            if (!surface_ || !layerSurface_) {
-                return false;
-            }
+            wl_display_flush(display_);
+            return true;
         }
 
         // Apply Wayland ext-background-effect-v1 compositor blur when translucent.
@@ -1118,6 +1130,7 @@ private:
     static void onGlobal(void *data, wl_registry *reg, uint32_t name, const char *iface,
                          uint32_t version) {
         auto *self = static_cast<WaylandPopup *>(data);
+        const bool wasReady = self->ready();
         if (std::strcmp(iface, wl_compositor_interface.name) == 0) {
             self->compositor_ = static_cast<wl_compositor *>(
                 wl_registry_bind(reg, name, &wl_compositor_interface, std::min(version, 4u)));
@@ -1148,6 +1161,9 @@ private:
             self->seat_ = static_cast<wl_seat *>(
                 wl_registry_bind(reg, name, &wl_seat_interface, std::min(version, 5u)));
             wl_seat_add_listener(self->seat_, &kSeatListener, self);
+        }
+        if (!wasReady && self->ready() && self->onReady_) {
+            self->onReady_();
         }
     }
 
@@ -1284,7 +1300,11 @@ private:
                                  uint32_t, uint32_t) {
         auto *self = static_cast<WaylandPopup *>(data);
         zwlr_layer_surface_v1_ack_configure(ls, serial);
+        const bool first = !self->configured_;
         self->configured_ = true;
+        if (first && self->onConfigured_) {
+            self->onConfigured_();
+        }
     }
 
     static void onLayerClosed(void *data, zwlr_layer_surface_v1 *) {
@@ -1332,6 +1352,8 @@ private:
     double ptrY_ = 0.0;
     HoverCb onHover_;
     ClickCb onClick_;
+    NotifyCb onReady_;
+    NotifyCb onConfigured_;
 };
 #endif
 
@@ -1348,9 +1370,17 @@ public:
                     auto popup = std::make_unique<WaylandPopup>(
                         display,
                         [this, name](double x, double y) { onHover(BackendKind::Wayland, name, x, y); },
-                        [this, name](double x, double y) { onClick(BackendKind::Wayland, name, x, y); });
-                    if (popup->ready()) {
-                        wlPopups_[name] = std::move(popup);
+                        [this, name](double x, double y) { onClick(BackendKind::Wayland, name, x, y); },
+                        [this]() { notifyAvailability(); },
+                        [this, name]() {
+                            if (!suspended_ && renderer_.visible() &&
+                                presentedKind_ == BackendKind::Wayland && presentedName_ == name) {
+                                renderNow();
+                            }
+                        });
+                    const bool isReady = popup->ready();
+                    wlPopups_[name] = std::move(popup);
+                    if (isReady) {
                         notifyAvailability();
                     }
                 });
@@ -1393,12 +1423,20 @@ public:
         constructing_ = false;
     }
 
-    ~SweetUI() override { stopTimer(); }
+    ~SweetUI() override {
+        setNotificationItemEnabled(false);
+        stopTimer();
+    }
 
     bool available() override {
         bool ok = false;
 #ifdef SWEET_HAVE_WAYLAND
-        ok = ok || !wlPopups_.empty();
+        for (const auto &[_, p] : wlPopups_) {
+            if (p->ready()) {
+                ok = true;
+                break;
+            }
+        }
 #endif
 #ifdef SWEET_HAVE_XCB
         ok = ok || !xcbPopups_.empty();
@@ -1410,11 +1448,13 @@ public:
         suspended_ = true;
         hideAll();
         stopTimer();
+        setNotificationItemEnabled(false);
     }
 
     void resume() override {
         suspended_ = false;
         renderer_.reloadConfig();
+        setNotificationItemEnabled(true);
     }
 
     void reloadConfig() override {
@@ -1468,11 +1508,29 @@ private:
         }
     }
 
+    void setNotificationItemEnabled(bool enable) {
+#ifdef SWEET_HAVE_NOTIFICATIONITEM
+        if (sniEnabled_ == enable) {
+            return;
+        }
+        if (auto *sni = instance_->addonManager().addon("notificationitem", true)) {
+            if (enable) {
+                sni->call<fcitx::INotificationItem::enable>();
+            } else {
+                sni->call<fcitx::INotificationItem::disable>();
+            }
+            sniEnabled_ = enable;
+        }
+#else
+        (void)enable;
+#endif
+    }
+
     std::pair<BackendKind, std::string> resolveTarget() const {
         if (activeDisplay_.rfind("wayland:", 0) == 0) {
             const std::string name = activeDisplay_.substr(8);
 #ifdef SWEET_HAVE_WAYLAND
-            if (wlPopups_.find(name) != wlPopups_.end()) {
+            if (auto it = wlPopups_.find(name); it != wlPopups_.end() && it->second->ready()) {
                 return {BackendKind::Wayland, name};
             }
 #endif
@@ -1498,8 +1556,10 @@ private:
         // Only fall back to a default connection when no explicit display was named.
         if (activeDisplay_.empty()) {
 #ifdef SWEET_HAVE_WAYLAND
-            if (!wlPopups_.empty()) {
-                return {BackendKind::Wayland, wlPopups_.begin()->first};
+            for (const auto &[name, popup] : wlPopups_) {
+                if (popup->ready()) {
+                    return {BackendKind::Wayland, name};
+                }
             }
 #endif
 #ifdef SWEET_HAVE_XCB
@@ -1674,6 +1734,7 @@ private:
     std::unique_ptr<fcitx::EventSourceTime> animTimer_;
     bool constructing_ = true;
     bool suspended_ = false;
+    bool sniEnabled_ = false;
 
 #ifdef SWEET_HAVE_WAYLAND
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::WaylandConnectionCreated>> wlCreated_;

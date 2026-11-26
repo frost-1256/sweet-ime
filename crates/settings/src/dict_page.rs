@@ -157,6 +157,7 @@ impl DictPage {
             let (mut remove, mut edit) = (None, None);
             let row_h = 30.0;
             egui::ScrollArea::vertical()
+                .id_salt("user_dict_words")
                 .max_height(300.0)
                 .auto_shrink([false, true])
                 .show_rows(ui, row_h, rows.len(), |ui, range| {
@@ -173,6 +174,7 @@ impl DictPage {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    ui.add_space(6.0);
                                     if ui.small_button("削除").clicked() {
                                         remove = Some(i);
                                     }
