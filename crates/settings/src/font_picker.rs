@@ -35,34 +35,42 @@ impl FontPicker {
                 &self.family
             };
             let mut selected = None;
-            egui::ComboBox::from_id_salt("candidate-font")
-                .selected_text(current)
-                .height(300.0)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show_ui(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text("フォント名で絞り込み"),
-                    );
-                    if ui
-                        .selectable_label(self.family.is_empty(), "標準")
-                        .clicked()
-                    {
-                        selected = Some(String::new());
-                        ui.close();
-                    }
-                    let filter = self.filter.trim().to_lowercase();
-                    for family in &self.families {
-                        if family.to_lowercase().contains(&filter)
-                            && ui
-                                .selectable_label(&self.family == family, family)
+            let combo_max_width = (ui.available_width() - 140.0).max(0.0).min(200.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(combo_max_width, ui.spacing().interact_size.y),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    egui::ComboBox::from_id_salt("candidate-font")
+                        .selected_text(current)
+                        .truncate()
+                        .height(300.0)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show_ui(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.filter)
+                                    .hint_text("フォント名で絞り込み"),
+                            );
+                            if ui
+                                .selectable_label(self.family.is_empty(), "標準")
                                 .clicked()
-                        {
-                            selected = Some(family.clone());
-                            ui.close();
-                        }
-                    }
-                });
+                            {
+                                selected = Some(String::new());
+                                ui.close();
+                            }
+                            let filter = self.filter.trim().to_lowercase();
+                            for family in &self.families {
+                                if family.to_lowercase().contains(&filter)
+                                    && ui
+                                        .selectable_label(&self.family == family, family)
+                                        .clicked()
+                                {
+                                    selected = Some(family.clone());
+                                    ui.close();
+                                }
+                            }
+                        });
+                },
+            );
             if self.families.is_empty() {
                 ui.label("インストール済みフォントを取得できませんでした。");
             }

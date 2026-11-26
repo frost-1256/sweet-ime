@@ -19,11 +19,10 @@ pub(super) fn apply(ui: &mut Ui, theme: Theme) -> Appearance {
     let background = color(colors.bg);
     let text = color(colors.text);
     let border = color(colors.border);
-    let accent = match colors.accent {
-        Some(accent) => color(accent),
-        None if colors.dark => Color32::from_rgb(96, 205, 255),
-        None => Color32::from_rgb(0, 95, 184),
-    };
+    let accent = colors
+        .accent
+        .map(color)
+        .unwrap_or_else(|| system_accent(colors.dark));
     let selected = background.lerp_to_gamma(color(colors.hover), colors.hover_alpha);
     let sidebar = background.lerp_to_gamma(text, 0.035);
     let surface = background.lerp_to_gamma(Color32::WHITE, if colors.dark { 0.045 } else { 0.8 });
@@ -104,6 +103,80 @@ impl Appearance {
 
 fn color(rgb: Rgb) -> Color32 {
     Color32::from_rgb(rgb.0, rgb.1, rgb.2)
+}
+
+/// System accent color, using the Windows accent palette when available.
+pub(crate) fn system_accent(dark: bool) -> Color32 {
+    #[cfg(windows)]
+    if let Some(accent) = windows_accent(dark) {
+        return accent;
+    }
+    if dark {
+        Color32::from_rgb(96, 205, 255)
+    } else {
+        Color32::from_rgb(0, 95, 184)
+    }
+}
+
+#[cfg(windows)]
+fn windows_accent(dark: bool) -> Option<Color32> {
+    use windows::Win32::System::Registry::{
+        HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
+    };
+    use windows::core::w;
+
+    // AccentPalette stores 8 RGBA entries (Light3, Light2, Light1, Base, Dark1, Dark2, Dark3, ...).
+    // Windows 11 uses Light2 (index 1) on dark surfaces and Dark1 (index 4) on light surfaces.
+    let mut palette = [0u8; 32];
+    let mut size = palette.len() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent"),
+            w!("AccentPalette"),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(palette.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status.is_ok() && size >= 20 {
+        let offset = if dark { 4 } else { 16 };
+        return Some(Color32::from_rgb(
+            palette[offset],
+            palette[offset + 1],
+            palette[offset + 2],
+        ));
+    }
+
+    // Fallback to DWM AccentColor (stored as 0xAABBGGRR).
+    let mut value = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\DWM"),
+            w!("AccentColor"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut value as *mut u32).cast()),
+            Some(&mut size),
+        )
+    };
+    if status.is_ok() {
+        let (r, g, b) = (
+            (value & 0xff) as u8,
+            ((value >> 8) & 0xff) as u8,
+            ((value >> 16) & 0xff) as u8,
+        );
+        return Some(if dark {
+            let lighten = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
+            Color32::from_rgb(lighten(r), lighten(g), lighten(b))
+        } else {
+            Color32::from_rgb(r, g, b)
+        });
+    }
+    None
 }
 
 #[cfg(test)]
