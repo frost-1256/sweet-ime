@@ -10,6 +10,8 @@ pub struct FontPicker {
     #[cfg(not(windows))]
     font_size: u32,
     #[cfg(not(windows))]
+    font_size_px: bool,
+    #[cfg(not(windows))]
     vertical: bool,
 }
 
@@ -19,6 +21,8 @@ impl FontPicker {
         let family = sweet_engine::paths::load_candidate_font();
         #[cfg(not(windows))]
         let family = crate::fcitx_theme::candidate_font();
+        #[cfg(not(windows))]
+        let (font_size, font_size_px) = crate::fcitx_theme::candidate_font_size();
         let mut families = installed_fonts();
         families.sort_by_cached_key(|name| name.to_lowercase());
         families.dedup();
@@ -27,7 +31,9 @@ impl FontPicker {
             families,
             filter: String::new(),
             #[cfg(not(windows))]
-            font_size: crate::fcitx_theme::candidate_font_size(),
+            font_size,
+            #[cfg(not(windows))]
+            font_size_px,
             #[cfg(not(windows))]
             vertical: crate::fcitx_theme::vertical_candidate_list(),
         }
@@ -103,7 +109,8 @@ impl FontPicker {
                 "候補の文字サイズ",
                 "fcitx5 の候補ウィンドウの文字サイズを変えます。",
                 |ui| {
-                    let resp = ui.add(egui::Slider::new(&mut self.font_size, 8..=24).suffix("pt"));
+                    let unit = if self.font_size_px { "px" } else { "pt" };
+                    let resp = ui.add(egui::Slider::new(&mut self.font_size, 8..=24).suffix(unit));
                     if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
                         *status = Some(
                             match crate::fcitx_theme::apply_candidate_font_size(self.font_size) {

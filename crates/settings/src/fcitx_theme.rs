@@ -273,23 +273,50 @@ fn select_font(conf: &str, family: &str) -> String {
     set_keys(conf, vec![("Font", &value)])
 }
 
+fn raw_font_desc(conf: &str) -> &str {
+    let desc = conf
+        .lines()
+        .take_while(|line| !is_section(line))
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(key, value)| (key.trim() == "Font").then_some(value.trim()))
+        .last()
+        .unwrap_or("Sans 10");
+    desc.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(desc)
+}
+
+fn font_suffix(desc: &str) -> &str {
+    let idx = [desc.find(" @"), desc.find(" #")]
+        .into_iter()
+        .flatten()
+        .min();
+    idx.map_or("", |i| &desc[i..])
+}
+
 fn select_font_size(conf: &str, size: u32) -> String {
-    let (family, _) = font_parts(conf);
+    let desc = raw_font_desc(conf);
+    let (family, old_size) = font_parts(conf);
     let family = if family.is_empty() { "Sans" } else { family };
+    let unit = if old_size.ends_with("px") { "px" } else { "" };
+    let suffix = font_suffix(desc);
     let size = size.clamp(8, 24);
-    let value = format!("\"{family}, {size}\"");
+    let value = format!("\"{family}, {size}{unit}{suffix}\"");
     set_keys(conf, vec![("Font", &value)])
 }
 
-fn parse_font_size(conf: &str) -> u32 {
+fn parse_font_size(conf: &str) -> (u32, bool) {
     let (_, size) = font_parts(conf);
-    size.strip_suffix("px")
+    let is_px = size.ends_with("px");
+    let n = size
+        .strip_suffix("px")
         .unwrap_or(size)
         .parse::<f32>()
         .ok()
         .filter(|n| n.is_finite())
         .map(|n| n.round().clamp(8.0, 24.0) as u32)
-        .unwrap_or(10)
+        .unwrap_or(10);
+    (n, is_px)
 }
 
 fn parse_vertical(conf: &str) -> bool {
@@ -309,7 +336,7 @@ fn select_vertical(conf: &str, vertical: bool) -> String {
 }
 
 #[cfg(not(windows))]
-pub fn candidate_font_size() -> u32 {
+pub fn candidate_font_size() -> (u32, bool) {
     let conf = xdg("XDG_CONFIG_HOME", ".config")
         .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
         .unwrap_or_default();
@@ -507,8 +534,11 @@ mod tests {
             "Font=\"Serif, 14\"\n"
         );
         let sized = select_font_size(&new, 16);
-        assert_eq!(parse_font_size(&sized), 16);
-        assert!(sized.contains("Font=\"Noto Serif CJK JP, 16\""));
+        assert_eq!(parse_font_size(&sized), (16, true));
+        assert!(sized.contains("Font=\"Noto Serif CJK JP, 16px\""));
+        let varied = select_font_size("Font=\"Cantarell 12 @wght=700\"\n", 14);
+        assert_eq!(varied, "Font=\"Cantarell, 14 @wght=700\"\n");
+        assert_eq!(parse_font_size(&varied), (14, false));
         let vert = select_vertical(&sized, true);
         assert!(parse_vertical(&vert));
         assert!(!parse_vertical(&select_vertical(&vert, false)));

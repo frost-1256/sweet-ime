@@ -225,9 +225,9 @@ fn is_date_form(s: &str) -> bool {
 }
 
 fn is_time_form(s: &str) -> bool {
-    // HH:MM
+    // H:MM or HH:MM
     if let Some((h, m)) = s.split_once(':')
-        && is_ascii_digits(h, 2, 2)
+        && is_ascii_digits(h, 1, 2)
         && is_ascii_digits(m, 2, 2)
     {
         return true;
@@ -506,6 +506,10 @@ mod tests {
             for c in date_candidates(r, T) {
                 assert!(is_ephemeral_candidate(r, &c), "{r} -> {c}");
             }
+        }
+        let morning = DateTime { hour: 9, minute: 5, ..T };
+        for c in date_candidates("いま", morning) {
+            assert!(is_ephemeral_candidate("いま", &c), "いま (9:05) -> {c}");
         }
         assert!(is_ephemeral_candidate("ことし", "令和元年"));
         assert!(!is_ephemeral_candidate("いま", "今"));
