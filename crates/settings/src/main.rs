@@ -280,9 +280,11 @@ impl eframe::App for App {
                             .ui(ui, &mut self.status);
                         let theme_change =
                             theme_page::ui(ui, &mut self.opts.theme, &mut self.user_theme);
+                        let mut save_ok = true;
                         if theme_change.user_theme_edited {
                             if let Err(e) = paths::save_user_theme(&self.user_theme) {
                                 self.status = Some((format!("保存できませんでした: {e}"), false));
+                                save_ok = false;
                             } else if !theme_change.theme_selected {
                                 self.status = Some((
                                     "保存しました。アプリを切り替えると反映されます。".into(),
@@ -290,10 +292,11 @@ impl eframe::App for App {
                                 ));
                             }
                         }
-                        if theme_change.theme_selected {
+                        if save_ok && theme_change.theme_selected {
                             self.save();
+                            save_ok = self.status.as_ref().is_none_or(|(_, ok)| *ok);
                         }
-                        if theme_change.any() {
+                        if save_ok && theme_change.any() {
                             #[cfg(not(windows))]
                             {
                                 self.status = Some(

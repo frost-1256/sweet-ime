@@ -174,15 +174,121 @@ fn is_date_reading(reading: &str) -> bool {
     )
 }
 
+fn is_ascii_digits(s: &str, min: usize, max: usize) -> bool {
+    (min..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn is_date_form(s: &str) -> bool {
+    // YYYY/MM/DD or YYYY-MM-DD
+    for sep in ['/', '-'] {
+        let mut parts = s.split(sep);
+        if let (Some(y), Some(m), Some(d), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+            && is_ascii_digits(y, 4, 4)
+            && is_ascii_digits(m, 2, 2)
+            && is_ascii_digits(d, 2, 2)
+        {
+            return true;
+        }
+    }
+    // YYYY年M月D日 or 令和(元|N)年M月D日
+    if let Some((year, rest)) = s.split_once('年')
+        && let Some((month, rest)) = rest.split_once('月')
+        && let Some((day, "")) = rest.split_once('日')
+        && is_ascii_digits(month, 1, 2)
+        && is_ascii_digits(day, 1, 2)
+    {
+        if is_ascii_digits(year, 4, 4) {
+            return true;
+        }
+        if let Some(era) = year.strip_prefix("令和")
+            && (era == "元" || is_ascii_digits(era, 1, 3))
+        {
+            return true;
+        }
+    }
+    // M月D日(曜)
+    if let Some((month, rest)) = s.split_once('月')
+        && let Some((day, rest)) = rest.split_once("日(")
+        && let Some(wd) = rest.strip_suffix(')')
+        && is_ascii_digits(month, 1, 2)
+        && is_ascii_digits(day, 1, 2)
+        && matches!(wd, "日" | "月" | "火" | "水" | "木" | "金" | "土")
+    {
+        return true;
+    }
+    // X曜日
+    matches!(
+        s,
+        "日曜日" | "月曜日" | "火曜日" | "水曜日" | "木曜日" | "金曜日" | "土曜日"
+    )
+}
+
+fn is_time_form(s: &str) -> bool {
+    // HH:MM
+    if let Some((h, m)) = s.split_once(':')
+        && is_ascii_digits(h, 2, 2)
+        && is_ascii_digits(m, 2, 2)
+    {
+        return true;
+    }
+    // H時M分 or (午前|午後)H時M分
+    let rest = s
+        .strip_prefix("午前")
+        .or_else(|| s.strip_prefix("午後"))
+        .unwrap_or(s);
+    if let Some((h, rest)) = rest.split_once('時')
+        && let Some((m, "")) = rest.split_once('分')
+        && is_ascii_digits(h, 1, 2)
+        && is_ascii_digits(m, 1, 2)
+    {
+        return true;
+    }
+    false
+}
+
+fn is_year_or_month_form(s: &str) -> bool {
+    // YYYY年 or 令和(元|N)年
+    if let Some(year) = s.strip_suffix('年') {
+        if is_ascii_digits(year, 4, 4) {
+            return true;
+        }
+        if let Some(era) = year.strip_prefix("令和")
+            && (era == "元" || is_ascii_digits(era, 1, 3))
+        {
+            return true;
+        }
+    }
+    // M月 or YYYY年M月
+    if let Some(rest) = s.strip_suffix('月') {
+        if is_ascii_digits(rest, 1, 2) {
+            return true;
+        }
+        if let Some((y, m)) = rest.split_once('年')
+            && is_ascii_digits(y, 4, 4)
+            && is_ascii_digits(m, 1, 2)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// True if `(reading, surface)` is a time- or calculation-dependent candidate
 /// that should not be saved to user learning history.
 pub fn is_ephemeral_candidate(reading: &str, surface: &str) -> bool {
     if is_date_reading(reading) {
-        return matches!(
-            surface,
-            "日曜日" | "月曜日" | "火曜日" | "水曜日" | "木曜日" | "金曜日" | "土曜日"
-        ) || surface.starts_with("令和")
-            || surface.bytes().any(|b| b.is_ascii_digit());
+        if is_date_form(surface) || is_time_form(surface) || is_year_or_month_form(surface) {
+            return true;
+        }
+        // "YYYY/MM/DD HH:MM"
+        if let Some((d, t)) = surface.split_once(' ')
+            && is_date_form(d)
+            && is_time_form(t)
+        {
+            return true;
+        }
+        return false;
     }
     calculator_candidates(reading).iter().any(|c| c == surface)
 }
@@ -403,6 +509,8 @@ mod tests {
         }
         assert!(is_ephemeral_candidate("ことし", "令和元年"));
         assert!(!is_ephemeral_candidate("いま", "今"));
+        assert!(!is_ephemeral_candidate("いま", "今が1番"));
+        assert!(!is_ephemeral_candidate("ことし", "令和の時代"));
         assert!(!is_ephemeral_candidate("きょう", "今日"));
         assert!(!is_ephemeral_candidate("ようび", "曜日"));
         assert!(is_ephemeral_candidate("1+2=", "3"));

@@ -34,17 +34,19 @@ if [ ! -f data/system.dict ]; then
     mkdir -p data
     "$CARGO_TARGET_DIR/release/sweet-dictc" \
         third_party/mozc-data/src/data/dictionary_oss \
-        data/system.dict \
+        "$STAGE_DIR/system.dict.tmp" \
         "$SUDACHI_DIR"
+    mv "$STAGE_DIR/system.dict.tmp" data/system.dict
 fi
 
 # Build the fcitx5 addon via CMake.
+# Use bare "sweet-settings" so execvp resolves it via PATH regardless of --prefix.
 cmake -S crates/fcitx5 -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DSWEET_DATADIR="${PREFIX}/share/sweet-ime" \
-    -DSWEET_SETTINGS="${PREFIX}/bin/sweet-settings"
+    -DSWEET_SETTINGS="sweet-settings"
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 DESTDIR="$PKG_ROOT" cmake --install "$BUILD_DIR"
 
@@ -77,6 +79,7 @@ set -euo pipefail
 
 PREFIX="/usr/local"
 CUSTOM_PREFIX=0
+ADDON_DIR=""
 UNINSTALL=0
 
 while [ $# -gt 0 ]; do
@@ -86,12 +89,16 @@ while [ $# -gt 0 ]; do
             CUSTOM_PREFIX=1
             shift 2
             ;;
+        --addon-dir)
+            ADDON_DIR="$2"
+            shift 2
+            ;;
         --uninstall)
             UNINSTALL=1
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--prefix /usr/local] [--uninstall]"
+            echo "Usage: $0 [--prefix /usr/local] [--addon-dir DIR] [--uninstall]"
             exit 0
             ;;
         *)
@@ -102,9 +109,25 @@ while [ $# -gt 0 ]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ADDON_DIR=""
-if [ "$CUSTOM_PREFIX" -eq 0 ] && command -v pkg-config >/dev/null 2>&1; then
-    ADDON_DIR="$(pkg-config --variable=addondir Fcitx5Core 2>/dev/null || true)"
+if [ -z "$ADDON_DIR" ] && [ "$CUSTOM_PREFIX" -eq 0 ]; then
+    if command -v pkg-config >/dev/null 2>&1; then
+        FCITX_LIBDIR="$(pkg-config --variable=libdir Fcitx5Core 2>/dev/null || true)"
+        if [ -n "$FCITX_LIBDIR" ]; then
+            ADDON_DIR="${FCITX_LIBDIR}/fcitx5"
+        fi
+    fi
+    if [ -z "$ADDON_DIR" ]; then
+        for candidate in \
+            /usr/lib/x86_64-linux-gnu/fcitx5 \
+            /usr/lib/aarch64-linux-gnu/fcitx5 \
+            /usr/lib64/fcitx5 \
+            /usr/lib/fcitx5; do
+            if [ -d "$candidate" ]; then
+                ADDON_DIR="$candidate"
+                break
+            fi
+        done
+    fi
 fi
 if [ -z "$ADDON_DIR" ]; then
     ADDON_DIR="${PREFIX}/lib/fcitx5"

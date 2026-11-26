@@ -338,9 +338,17 @@ impl UserTheme {
     pub fn parse(text: &str) -> Self {
         let mut t = Self::default();
         for line in text.lines() {
-            let line = line.split('#').next().unwrap_or(line);
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let Some((k, v)) = line.split_once('=') else { continue };
-            let (k, v) = (k.trim(), v.trim());
+            let k = k.trim();
+            // Strip trailing `# comment` without removing a leading `#rrggbb`.
+            let v = v.trim();
+            let v = v
+                .find(|c: char| c.is_whitespace())
+                .map_or(v, |i| &v[..i]);
             match k {
                 "bg" => if let Some(c) = parse_hex(v) { t.bg = c; },
                 "text" => if let Some(c) = parse_hex(v) { t.text = c; },
@@ -441,8 +449,9 @@ mod tests {
         assert_eq!(parsed.dark, ut.dark);
         assert!((parsed.bg_alpha - 0.72).abs() < 0.01);
         assert!((parsed.hover_alpha - 0.25).abs() < 0.01);
-        // Out-of-range alpha is clamped.
-        let clamped = UserTheme::parse("bg_alpha = 0.05\n");
+        // Out-of-range alpha is clamped, and `#rrggbb` with trailing comment parses.
+        let clamped = UserTheme::parse("bg = #112233 # comment\nbg_alpha = 0.05\n");
+        assert_eq!(clamped.bg, [0x11, 0x22, 0x33]);
         assert_eq!(clamped.bg_alpha, MIN_BG_ALPHA);
     }
 }
