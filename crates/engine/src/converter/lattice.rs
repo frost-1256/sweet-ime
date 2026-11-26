@@ -773,7 +773,7 @@ impl Converter {
         n: usize,
     ) -> impl Iterator<Item = (i32, Vec<u32>)> + 'a {
         // arena entries: (node, parent arena index, g = cost after node)
-        let cap = (n * 4).clamp(64, 4096);
+        let cap = n.saturating_mul(4).clamp(64, 4096);
         let mut arena: Vec<(u32, u32, i32)> = Vec::with_capacity(cap);
         arena.push((EOS, u32::MAX, 0));
         let mut heap = BinaryHeap::with_capacity(cap);
@@ -959,8 +959,9 @@ impl Converter {
                 cost: lat.nodes[EOS as usize].best,
             }];
         }
-        let mut seen = HashSet::with_capacity(n);
-        let mut res = Vec::with_capacity(n);
+        let initial_cap = n.min(MAX_HOMOPHONE_CANDIDATES);
+        let mut seen = HashSet::with_capacity(initial_cap);
+        let mut res = Vec::with_capacity(initial_cap);
         let mut limit = n;
         let maximum = if expand_homophones {
             n.max(MAX_HOMOPHONE_CANDIDATES)
