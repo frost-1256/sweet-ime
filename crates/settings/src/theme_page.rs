@@ -1,15 +1,15 @@
 //! Theme picker: a small preview of the candidate window per theme, plus a
-//! separate customizable user theme with background opacity.
+//! separate customizable user theme with background opacity and saved presets.
 
 #[cfg(not(windows))]
 use sweet_engine::theme::{MAX_PANEL_PADDING, MIN_PANEL_PADDING};
-use sweet_engine::theme::{Colors, MIN_BG_ALPHA, Rgb};
+use sweet_engine::theme::{Colors, MIN_BG_ALPHA, Rgb, SavedUserTheme, sanitize_theme_name};
 use sweet_engine::{Theme, UserTheme};
+use sweet_ui::card_frame;
 use sweet_ui::eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, StrokeKind, Vec2, pos2,
     vec2,
 };
-use sweet_ui::{card_frame, toggle};
 
 const TILE: Vec2 = Vec2::new(176.0, 150.0);
 
@@ -22,6 +22,7 @@ fn c32(v: Rgb) -> Color32 {
 pub struct ThemeChange {
     pub theme_selected: bool,
     pub user_theme_edited: bool,
+    pub saved_themes_changed: bool,
 }
 
 impl ThemeChange {
@@ -31,7 +32,14 @@ impl ThemeChange {
 }
 
 /// Draws the built-in theme gallery and the separate user theme editor.
-pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) -> ThemeChange {
+pub fn ui(
+    ui: &mut egui::Ui,
+    current: &mut Theme,
+    user_theme: &mut UserTheme,
+    saved_themes: &mut Vec<SavedUserTheme>,
+    saved_themes_error: Option<&str>,
+    save_name: &mut String,
+) -> ThemeChange {
     let mut change = ThemeChange::default();
     let sys_light = crate::appearance::system_light(ui);
     card_frame(ui).show(ui, |ui| {
@@ -75,16 +83,16 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) ->
         });
         ui.label(
             RichText::new(
-                "既存テーマとは別に、色や背景の透過度を自由に設定できます。",
+                "既存テーマとは別に、色や背景の透過度を自由に設定して保存できます。",
             )
             .small()
             .weak(),
         );
-        ui.add_space(6.0);
+        ui.add_space(8.0);
 
         let mut edited = false;
         ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing = vec2(16.0, 8.0);
+            ui.spacing_mut().item_spacing = vec2(20.0, 10.0);
             let colors = user_theme.colors();
             if tile(
                 ui,
@@ -101,6 +109,9 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) ->
             }
 
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+                ui.spacing_mut().slider_width = 180.0;
+
                 ui.horizontal_wrapped(|ui| {
                     egui::ComboBox::from_id_salt("user_theme_preset")
                         .selected_text("既存テーマからコピー")
@@ -120,58 +131,67 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) ->
                     }
                 });
 
-                ui.add_space(6.0);
-                let mut bg_pct = (user_theme.bg_alpha.clamp(MIN_BG_ALPHA, 1.0) * 100.0).round() as u32;
-                ui.horizontal(|ui| {
-                    ui.label("背景の不透明度");
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut bg_pct, (MIN_BG_ALPHA * 100.0) as u32..=100)
-                                .suffix("%"),
-                        )
-                        .changed()
-                    {
-                        user_theme.bg_alpha = (bg_pct as f32 / 100.0).clamp(MIN_BG_ALPHA, 1.0);
-                        edited = true;
-                    }
-                });
-
-                let mut hover_pct = (user_theme.hover_alpha.clamp(0.0, 0.5) * 100.0).round() as u32;
-                ui.horizontal(|ui| {
-                    ui.label("選択行の不透明度");
-                    if ui
-                        .add(egui::Slider::new(&mut hover_pct, 0..=50).suffix("%"))
-                        .changed()
-                    {
-                        user_theme.hover_alpha = (hover_pct as f32 / 100.0).clamp(0.0, 0.5);
-                        edited = true;
-                    }
-                });
-
-                #[cfg(not(windows))]
-                {
-                    let mut pad = user_theme
-                        .panel_padding
-                        .clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING);
-                    ui.horizontal(|ui| {
-                        ui.label("パネルの余白");
+                egui::Grid::new("user_theme_sliders")
+                    .num_columns(2)
+                    .spacing(vec2(14.0, 8.0))
+                    .show(ui, |ui| {
+                        let mut bg_pct =
+                            (user_theme.bg_alpha.clamp(MIN_BG_ALPHA, 1.0) * 100.0).round() as u32;
+                        ui.label("背景の不透明度");
                         if ui
                             .add(
-                                egui::Slider::new(&mut pad, MIN_PANEL_PADDING..=MAX_PANEL_PADDING)
-                                    .suffix("px"),
+                                egui::Slider::new(
+                                    &mut bg_pct,
+                                    (MIN_BG_ALPHA * 100.0) as u32..=100,
+                                )
+                                .suffix("%"),
                             )
                             .changed()
                         {
-                            user_theme.panel_padding = pad;
+                            user_theme.bg_alpha = (bg_pct as f32 / 100.0).clamp(MIN_BG_ALPHA, 1.0);
                             edited = true;
                         }
-                    });
-                }
+                        ui.end_row();
 
-                ui.add_space(4.0);
+                        let mut hover_pct =
+                            (user_theme.hover_alpha.clamp(0.0, 0.5) * 100.0).round() as u32;
+                        ui.label("選択行の不透明度");
+                        if ui
+                            .add(egui::Slider::new(&mut hover_pct, 0..=50).suffix("%"))
+                            .changed()
+                        {
+                            user_theme.hover_alpha = (hover_pct as f32 / 100.0).clamp(0.0, 0.5);
+                            edited = true;
+                        }
+                        ui.end_row();
+
+                        #[cfg(not(windows))]
+                        {
+                            let mut pad = user_theme
+                                .panel_padding
+                                .clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING);
+                            ui.label("パネルの余白");
+                            if ui
+                                .add(
+                                    egui::Slider::new(
+                                        &mut pad,
+                                        MIN_PANEL_PADDING..=MAX_PANEL_PADDING,
+                                    )
+                                    .suffix("px"),
+                                )
+                                .changed()
+                            {
+                                user_theme.panel_padding = pad;
+                                edited = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                ui.add_space(2.0);
                 egui::Grid::new("user_theme_colors")
-                    .num_columns(4)
-                    .spacing(vec2(12.0, 6.0))
+                    .num_columns(2)
+                    .spacing(vec2(24.0, 8.0))
                     .show(ui, |ui| {
                         edited |= color_field(ui, "背景", &mut user_theme.bg);
                         edited |= color_field(ui, "文字", &mut user_theme.text);
@@ -185,14 +205,77 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) ->
                     });
 
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("ダークベース");
-                    if toggle(ui, &mut user_theme.dark).changed() {
-                        edited = true;
-                    }
-                });
+                if let Some(err) = saved_themes_error {
+                    ui.label(
+                        RichText::new(format!(
+                            "保存済みテーマを読み込めませんでした ({err})。保護のため保存を無効にしています。"
+                        ))
+                        .small()
+                        .color(ui.visuals().error_fg_color),
+                    );
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(save_name)
+                                .hint_text("テーマ名を入力")
+                                .desired_width(170.0),
+                        );
+                        let clean_name = sanitize_theme_name(save_name);
+                        if ui
+                            .add_enabled(!clean_name.is_empty(), egui::Button::new("保存"))
+                            .clicked()
+                        {
+                            if let Some(existing) =
+                                saved_themes.iter_mut().find(|t| t.name == clean_name)
+                            {
+                                existing.theme = *user_theme;
+                            } else {
+                                saved_themes.push(SavedUserTheme {
+                                    name: clean_name,
+                                    theme: *user_theme,
+                                });
+                            }
+                            change.saved_themes_changed = true;
+                        }
+                    });
+                }
             });
         });
+
+        if !saved_themes.is_empty() {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(RichText::new("保存したユーザーテーマ").size(14.5));
+            ui.add_space(6.0);
+            let mut remove_idx = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+                for (i, saved) in saved_themes.iter().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                        let is_active =
+                            *current == Theme::Custom && saved.theme.colors() == user_theme.colors();
+                        if tile(ui, &saved.name, &saved.name, saved.theme.colors(), is_active)
+                            .clicked()
+                        {
+                            *user_theme = saved.theme;
+                            *save_name = saved.name.clone();
+                            edited = true;
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("削除").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    });
+                }
+            });
+            if let Some(i) = remove_idx {
+                saved_themes.remove(i);
+                change.saved_themes_changed = true;
+            }
+        }
 
         if edited {
             change.user_theme_edited = true;
@@ -207,8 +290,15 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) ->
 }
 
 fn color_field(ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3]) -> bool {
-    ui.label(label);
-    ui.color_edit_button_srgb(rgb).changed()
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.add_sized([74.0, 22.0], egui::Label::new(label));
+        changed = ui.color_edit_button_srgb(rgb).changed();
+        let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+        ui.label(RichText::new(hex).small().weak().monospace());
+    });
+    changed
 }
 
 fn tile(

@@ -65,6 +65,42 @@ pub fn save_user_theme(theme: &crate::UserTheme) -> std::io::Result<()> {
     std::fs::write(p, theme.to_text())
 }
 
+/// Named user-theme presets (`user_themes.txt`).
+pub fn saved_user_themes_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("user_themes.txt"))
+}
+
+pub fn load_saved_user_themes() -> std::io::Result<Vec<crate::theme::SavedUserTheme>> {
+    let Some(p) = saved_user_themes_file() else {
+        return Ok(Vec::new());
+    };
+    match std::fs::read_to_string(p) {
+        Ok(text) => Ok(crate::theme::parse_saved_user_themes(&text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn save_saved_user_themes(themes: &[crate::theme::SavedUserTheme]) -> std::io::Result<()> {
+    let p =
+        saved_user_themes_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    let dir = p
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("user_themes.{}.tmp", std::process::id()));
+    let content = crate::theme::format_saved_user_themes(themes);
+    if let Err(e) = std::fs::write(&tmp, content) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// The Windows candidate window's font family, one name per file.
 #[cfg(windows)]
 pub fn candidate_font_file() -> Option<PathBuf> {

@@ -55,8 +55,11 @@ pub(super) fn apply(ui: &mut Ui, theme: Theme, user_theme: &UserTheme) -> Appear
     visuals.faint_bg_color = surface;
     visuals.extreme_bg_color = background;
     visuals.weak_text_color = Some(color(colors.sub).lerp_to_gamma(text, 0.35));
+    visuals.slider_trailing_fill = true;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border);
-    visuals.widgets.inactive.bg_fill = surface;
+    // Keep slider tracks and inactive control fills distinct from card surfaces.
+    let track = surface.lerp_to_gamma(text, if colors.dark { 0.18 } else { 0.14 });
+    visuals.widgets.inactive.bg_fill = track;
     visuals.widgets.inactive.weak_bg_fill = surface;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, border);
     visuals.widgets.hovered.bg_fill = selected;

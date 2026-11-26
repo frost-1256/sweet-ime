@@ -297,6 +297,18 @@ impl Default for UserTheme {
     }
 }
 
+fn is_dark_rgb(c: [u8; 3]) -> bool {
+    let lin = |v: u8| {
+        let s = v as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]) < 0.179
+}
+
 impl UserTheme {
     /// Initializes a user theme by copying a built-in theme's colors.
     pub fn from_colors(c: Colors) -> Self {
@@ -305,8 +317,9 @@ impl UserTheme {
         } else {
             Rgb(0x00, 0x5f, 0xb8)
         });
+        let bg = [c.bg.0, c.bg.1, c.bg.2];
         Self {
-            bg: [c.bg.0, c.bg.1, c.bg.2],
+            bg,
             text: [c.text.0, c.text.1, c.text.2],
             sub: [c.sub.0, c.sub.1, c.sub.2],
             hover: [c.hover.0, c.hover.1, c.hover.2],
@@ -315,7 +328,7 @@ impl UserTheme {
             border: [c.border.0, c.border.1, c.border.2],
             bg_alpha: c.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
             panel_padding: c.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
-            dark: c.dark,
+            dark: is_dark_rgb(bg),
         }
     }
 
@@ -331,7 +344,7 @@ impl UserTheme {
             border: Rgb(self.border[0], self.border[1], self.border[2]),
             badge_border: Rgb(self.border[0], self.border[1], self.border[2]),
             panel_padding: self.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
-            dark: self.dark,
+            dark: is_dark_rgb(self.bg),
         }
     }
 
@@ -403,6 +416,76 @@ fn fmt_hex(c: [u8; 3]) -> String {
     format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
+/// A named user-theme preset persisted in `user_themes.txt`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedUserTheme {
+    pub name: String,
+    pub theme: UserTheme,
+}
+
+pub fn sanitize_theme_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '[' | ']' | '\r' | '\n' => ' ',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+pub fn parse_saved_user_themes(text: &str) -> Vec<SavedUserTheme> {
+    let mut out = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut buf = String::new();
+    let flush = |name: Option<String>, buf: &mut String, out: &mut Vec<SavedUserTheme>| {
+        if let Some(name) = name
+            && !name.is_empty()
+        {
+            out.push(SavedUserTheme {
+                name,
+                theme: UserTheme::parse(buf),
+            });
+        }
+        buf.clear();
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix('[')
+            && let Some(name) = rest.strip_suffix(']')
+        {
+            flush(current_name.take(), &mut buf, &mut out);
+            let name = sanitize_theme_name(name);
+            if !name.is_empty() {
+                current_name = Some(name);
+            }
+            continue;
+        }
+        if current_name.is_some() {
+            buf.push_str(line);
+            buf.push('\n');
+        }
+    }
+    flush(current_name, &mut buf, &mut out);
+    out
+}
+
+pub fn format_saved_user_themes(themes: &[SavedUserTheme]) -> String {
+    let mut out = String::new();
+    for entry in themes {
+        let name = sanitize_theme_name(&entry.name);
+        if name.is_empty() {
+            continue;
+        }
+        out.push('[');
+        out.push_str(&name);
+        out.push_str("]\n");
+        out.push_str(&entry.theme.to_text());
+        out.push('\n');
+    }
+    out
+}
+
 fn parse_hex(s: &str) -> Option<[u8; 3]> {
     let s = s.trim().trim_start_matches('#');
     if s.len() != 6 || !s.is_ascii() {
@@ -453,5 +536,27 @@ mod tests {
         let clamped = UserTheme::parse("bg = #112233 # comment\nbg_alpha = 0.05\n");
         assert_eq!(clamped.bg, [0x11, 0x22, 0x33]);
         assert_eq!(clamped.bg_alpha, MIN_BG_ALPHA);
+        // Dark mode is automatically derived from bg luminance.
+        assert!(clamped.colors().dark);
+        assert!(!ut.colors().dark);
+    }
+
+    #[test]
+    fn saved_user_themes_round_trip() {
+        let list = vec![
+            SavedUserTheme {
+                name: "ガラス風".into(),
+                theme: UserTheme::default(),
+            },
+            SavedUserTheme {
+                name: "さくら透過".into(),
+                theme: UserTheme::from_colors(Theme::Sakura.colors(true)),
+            },
+        ];
+        let parsed = parse_saved_user_themes(&format_saved_user_themes(&list));
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "ガラス風");
+        assert_eq!(parsed[1].name, "さくら透過");
+        assert_eq!(parsed[1].theme.bg, list[1].theme.bg);
     }
 }
