@@ -11,7 +11,10 @@
 # cargo-ndk, the Android Rust targets and the Mozc sources under
 # third_party/mozc-data. The pinned SudachiDict sources are fetched as needed.
 
-param([switch]$Install)
+param(
+    [switch]$Install,
+    [string]$Dictionary = ''
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -48,7 +51,12 @@ if (Test-Path -LiteralPath $build) {
 New-Item -ItemType Directory -Force "$build\lib", "$build\assets\licenses", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
 
 Write-Host '== System dictionary'
-& "$root\scripts\build-dictionary.ps1" -Output "$build\assets\system.dict"
+if ($Dictionary) {
+    if (-not (Test-Path -LiteralPath $Dictionary)) { throw "Dictionary not found: $Dictionary" }
+    Copy-Item -LiteralPath $Dictionary "$build\assets\system.dict"
+} else {
+    & "$root\scripts\build-dictionary.ps1" -Output "$build\assets\system.dict"
+}
 
 Write-Host '== Rust library'
 $env:CARGO_PROFILE_RELEASE_DEBUG = '0'
