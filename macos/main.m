@@ -53,7 +53,11 @@ static uint16_t VirtualKey(NSEvent *event) {
         case kVK_JIS_Eisu: return 0xF0;
         case kVK_JIS_Kana: return 0xF2;
     }
-    NSString *unshifted = [[event charactersByApplyingModifiers:0] uppercaseString];
+    NSString *characters = event.charactersIgnoringModifiers;
+#ifndef SWEET_MAVERICKS
+    if (@available(macOS 10.15, *)) characters = [event charactersByApplyingModifiers:0];
+#endif
+    NSString *unshifted = characters.uppercaseString;
     if (unshifted.length != 1) return 0;
     unichar ch = [unshifted characterAtIndex:0];
     if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return ch;
@@ -241,13 +245,15 @@ static uint16_t VirtualKey(NSEvent *event) {
 - (void)openSettings:(id)sender {
     NSURL *url = [[NSBundle mainBundle] URLForResource:@"Sweet IME Settings" withExtension:@"app"];
     if (!url) return;
+#ifndef SWEET_MAVERICKS
     if (@available(macOS 10.15, *)) {
         [[NSWorkspace sharedWorkspace] openApplicationAtURL:url
                                             configuration:[NSWorkspaceOpenConfiguration configuration]
                                         completionHandler:nil];
-    } else {
-        [[NSWorkspace sharedWorkspace] openFile:url.path];
+        return;
     }
+#endif
+    [[NSWorkspace sharedWorkspace] openFile:url.path];
 }
 
 @end

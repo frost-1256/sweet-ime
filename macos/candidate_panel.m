@@ -55,10 +55,12 @@ static NSColor *SelectionTextColor(NSColor *background) {
 - (void)drawRect:(NSRect)dirtyRect {
     NSColor *textColor = NSColor.controlTextColor;
     NSColor *selection = NSColor.selectedControlColor;
+#ifndef SWEET_MAVERICKS
     if (@available(macOS 10.14, *)) {
         textColor = NSColor.labelColor;
         selection = NSColor.selectedContentBackgroundColor;
     }
+#endif
     if (self.highlightedCandidate) {
         NSColor *background = selection;
         [background setFill];
@@ -72,8 +74,17 @@ static NSColor *SelectionTextColor(NSColor *background) {
     NSRect text = NSInsetRect(self.bounds, 5, 0);
     text.origin.y = floor(NSMidY(self.bounds) - height / 2);
     text.size.height = height;
-    [title drawWithRect:text options:NSStringDrawingUsesLineFragmentOrigin |
-                                     NSStringDrawingTruncatesLastVisibleLine context:nil];
+    NSStringDrawingOptions options = NSStringDrawingUsesLineFragmentOrigin |
+                                     NSStringDrawingTruncatesLastVisibleLine;
+#ifndef SWEET_MAVERICKS
+    if (@available(macOS 10.11, *)) {
+        [title drawWithRect:text options:options context:nil];
+    }
+    else
+#endif
+    {
+        [title drawWithRect:text options:options];
+    }
 }
 
 @end
@@ -109,6 +120,7 @@ static NSColor *SelectionTextColor(NSColor *background) {
         self.backgroundColor = NSColor.clearColor;
         self.hasShadow = YES;
         NSView *background;
+#ifndef SWEET_MAVERICKS
         if (@available(macOS 10.14, *)) {
             NSVisualEffectView *effect = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
             effect.material = NSVisualEffectMaterialMenu;
@@ -116,18 +128,23 @@ static NSColor *SelectionTextColor(NSColor *background) {
             effect.state = NSVisualEffectStateActive;
             effect.wantsLayer = YES;
             background = effect;
-        } else {
+        }
+        else
+#endif
+        {
             background = [[NSView alloc] initWithFrame:NSZeroRect];
             background.wantsLayer = YES;
             background.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
         }
         background.layer.cornerRadius = 8;
         background.layer.masksToBounds = YES;
+#ifndef SWEET_MAVERICKS
         if (@available(macOS 10.10, *)) {
             [background setAccessibilityElement:YES];
             [background setAccessibilityRole:NSAccessibilityListRole];
             [background setAccessibilityLabel:@"変換候補"];
         }
+#endif
         self.contentView = background;
     }
     return self;
@@ -162,13 +179,17 @@ static NSColor *SelectionTextColor(NSColor *background) {
             row.tag = (NSInteger)i;
             row.target = self;
             row.action = @selector(choose:);
+#ifndef SWEET_MAVERICKS
             if (@available(macOS 10.10, *)) [row setAccessibilityLabel:candidates[i]];
+#endif
             _preferredWidth = MAX(_preferredWidth, ceil(row.attributedTitle.size.width) + 20);
             [self.contentView addSubview:row];
             [rows addObject:row];
         }
         _rows = rows;
+#ifndef SWEET_MAVERICKS
         if (@available(macOS 10.10, *)) [self.contentView setAccessibilityChildren:_rows];
+#endif
     }
     NSRect frame = SweetCandidatePanelFrame(candidates.count, _preferredWidth, anchor, screen.visibleFrame);
     [self setFrame:frame display:NO];
@@ -185,10 +206,12 @@ static NSColor *SelectionTextColor(NSColor *background) {
     if (!self.visible) [self orderFrontRegardless];
     if (changed || _selectedRow != selected) {
         _selectedRow = selected;
+#ifndef SWEET_MAVERICKS
         if (@available(macOS 10.10, *)) {
             [self.contentView setAccessibilitySelectedChildren:selected < _rows.count ? @[_rows[selected]] : @[]];
             NSAccessibilityPostNotification(self.contentView, NSAccessibilitySelectedChildrenChangedNotification);
         }
+#endif
     }
 }
 
@@ -227,9 +250,13 @@ BOOL SweetCandidatePanelPreview(NSString *path) {
     if (rows.count != candidates.count) return NO;
     SweetCandidateRow *first = rows[0];
     SweetCandidateRow *second = rows[1];
-    if (first.highlightedCandidate || !second.highlightedCandidate ||
-        first.isAccessibilitySelected || !second.isAccessibilitySelected ||
-        ![[panel.contentView accessibilitySelectedChildren] isEqual:@[second]]) return NO;
+    if (first.highlightedCandidate || !second.highlightedCandidate) return NO;
+#ifndef SWEET_MAVERICKS
+    if (@available(macOS 10.10, *)) {
+        if (first.isAccessibilitySelected || !second.isAccessibilitySelected ||
+            ![[panel.contentView accessibilitySelectedChildren] isEqual:@[second]]) return NO;
+    }
+#endif
     [second performClick:nil];
     if (clicked != 1) return NO;
     [panel showCandidates:@[@"仮名"] selectedRow:0 anchor:anchor];
