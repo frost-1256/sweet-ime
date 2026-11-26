@@ -64,7 +64,10 @@ pub fn bundled_readings<'a>(spellings: impl Iterator<Item = (&'a str, Option<&'a
     let mut out: Vec<(String, &'a str)> = Vec::new();
     for (spelling, _) in spellings {
         for r in readings_of(spelling, 2) {
-            if spelling.len() == 2 && r.bytes().filter(u8::is_ascii_alphabetic).count() < 2 {
+            if spelling.len() == 2
+                && r.bytes().filter(u8::is_ascii_alphabetic).count() < 2
+                && !r.starts_with('c')
+            {
                 continue;
             }
             if !out.iter().any(|(x, _)| *x == r) {
