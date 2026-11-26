@@ -316,7 +316,8 @@ impl Converter {
                 let c = res.remove(i);
                 res.insert(0, c);
             }
-            if let Some(best) = res.first()
+            if boundaries.is_empty()
+                && let Some(best) = res.first()
                 && personal_spans(best).is_empty()
                 && super::extras::casual_phrase(text).is_none()
                 && let Some(surface) = r.generate(text, left_context, best)

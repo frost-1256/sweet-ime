@@ -27,13 +27,13 @@ unsafe impl Sync for SendPtr {}
 /// contiguous 16-column strips `[n_blocks, k, 16]` so small-batch GEMM streams
 /// 1 byte/weight sequentially with zero runtime packing or stride conflicts.
 pub struct Q8Matrix {
-    pub k: usize,
-    pub n: usize,
-    pub n_blocks: usize,
+    k: usize,
+    n: usize,
+    n_blocks: usize,
     /// Pre-packed int8 weights of length `n_blocks * k * 16`.
-    pub q: Vec<i8>,
+    q: Vec<i8>,
     /// Per-column dequantization scales of length `n_blocks * 16`.
-    pub scales: Vec<f32>,
+    scales: Vec<f32>,
 }
 
 impl Q8Matrix {
@@ -109,11 +109,12 @@ pub fn matmul_q8_bias(
     accumulate: bool,
 ) {
     let (k, n, n_blocks) = (w.k, w.n, w.n_blocks);
-    assert!(x.len() >= m * k && y.len() >= m * n);
+    assert!(m.checked_mul(k).is_some_and(|len| x.len() >= len));
+    assert!(m.checked_mul(n).is_some_and(|len| y.len() >= len));
     if let Some(b) = bias {
         assert!(b.len() >= n);
     }
-    let work = m * k * n;
+    let work = m.saturating_mul(k).saturating_mul(n);
     let threads = if work < 1 << 17 {
         1
     } else {

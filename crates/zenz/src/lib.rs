@@ -313,6 +313,26 @@ impl ZenzReranker {
     }
 }
 
+fn protected_spellings() -> &'static HashSet<(&'static str, &'static str)> {
+    static SPELLINGS: OnceLock<HashSet<(&str, &str)>> = OnceLock::new();
+    SPELLINGS.get_or_init(|| {
+        VRCHAT_TERMS
+            .lines()
+            .chain(TECH_TERMS.lines())
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                Some((fields.next()?, fields.next()?))
+            })
+            .collect()
+    })
+}
+
+fn is_protected_word(w: &sweet_engine::Word) -> bool {
+    protected_spellings().contains(&(w.reading.as_str(), w.surface.as_str()))
+        || sweet_engine::english::is_spelling(&w.reading, &w.surface)
+}
+
 impl sweet_engine::Reranker for ZenzReranker {
     fn candidates(&self) -> usize {
         self.n
@@ -333,23 +353,11 @@ impl sweet_engine::Reranker for ZenzReranker {
     }
 
     fn choose(&self, reading: &str, left_context: &str, cands: &[sweet_engine::Conversion]) -> Option<usize> {
-        static SPELLINGS: OnceLock<HashSet<(&str, &str)>> = OnceLock::new();
-        let spellings = SPELLINGS.get_or_init(|| {
-            VRCHAT_TERMS.lines().chain(TECH_TERMS.lines()).filter(|line| !line.starts_with('#')).filter_map(|line| {
-                let mut fields = line.split('\t');
-                Some((fields.next()?, fields.next()?))
-            })
-            .collect()
-        });
         // Preserve dictionary spellings such as IME and UdonSharp when the model
         // prefers spelling them phonetically. Still rerank the surrounding text.
         let coverage: Vec<usize> = cands.iter().map(|c| {
             c.segments.iter().flat_map(|s| &s.words)
-                .filter(|w| {
-                    spellings.contains(&(w.reading.as_str(), w.surface.as_str()))
-                        // English words typed by their spelling (ぎてゅb -> GitHub, てst -> test).
-                        || sweet_engine::english::is_spelling(&w.reading, &w.surface)
-                })
+                .filter(|w| is_protected_word(w))
                 .map(|w| w.reading.len())
                 .sum()
         }).collect();
@@ -430,6 +438,11 @@ impl sweet_engine::Reranker for ZenzReranker {
         if !(4..=48).contains(&reading_chars)
             || reading.bytes().any(|b| b.is_ascii_alphabetic() || b.is_ascii_digit())
             || best.repeated_kanji_reading().is_some()
+            || best
+                .segments
+                .iter()
+                .flat_map(|s| &s.words)
+                .any(is_protected_word)
         {
             return None;
         }
