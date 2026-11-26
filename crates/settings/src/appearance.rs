@@ -1,4 +1,4 @@
-use sweet_engine::{Theme, theme::Rgb};
+use sweet_engine::{Theme, UserTheme, theme::Rgb};
 use sweet_ui::eframe::egui::{self, Color32, CornerRadius, Stroke, Ui, Vec2};
 
 pub(super) struct Appearance {
@@ -14,8 +14,12 @@ pub(super) fn system_light(ui: &Ui) -> bool {
     ctx.system_theme().unwrap_or_else(|| ctx.theme()) == egui::Theme::Light
 }
 
-pub(super) fn apply(ui: &mut Ui, theme: Theme) -> Appearance {
-    let colors = theme.colors(system_light(ui));
+pub(super) fn apply(ui: &mut Ui, theme: Theme, user_theme: &UserTheme) -> Appearance {
+    let colors = if theme == Theme::Custom {
+        user_theme.colors()
+    } else {
+        theme.colors(system_light(ui))
+    };
     let background = color(colors.bg);
     let text = color(colors.text);
     let border = color(colors.border);
@@ -186,8 +190,9 @@ mod tests {
     #[test]
     fn settings_text_uses_readable_sizes() {
         let ctx = egui::Context::default();
+        let ut = UserTheme::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            apply(ui, Theme::Default);
+            apply(ui, Theme::Default, &ut);
             for (role, minimum) in [
                 (egui::TextStyle::Body, 16.0),
                 (egui::TextStyle::Button, 16.0),
@@ -201,6 +206,7 @@ mod tests {
 
     #[test]
     fn settings_use_the_candidate_palette_in_light_and_dark_modes() {
+        let ut = UserTheme::default();
         for system_theme in [egui::Theme::Light, egui::Theme::Dark] {
             let ctx = egui::Context::default();
             let input = egui::RawInput {
@@ -210,8 +216,12 @@ mod tests {
             let mut output = ctx.run_ui(input, |ui| {
                 assert_eq!(system_light(ui), system_theme == egui::Theme::Light);
                 for theme in Theme::ALL {
-                    let expected = theme.colors(system_theme == egui::Theme::Light);
-                    let appearance = apply(ui, theme);
+                    let expected = if theme == Theme::Custom {
+                        ut.colors()
+                    } else {
+                        theme.colors(system_theme == egui::Theme::Light)
+                    };
+                    let appearance = apply(ui, theme, &ut);
                     assert_eq!(appearance.background, color(expected.bg), "{theme:?}");
                     assert_eq!(appearance.border, color(expected.border), "{theme:?}");
                     assert_eq!(ui.visuals().text_color(), color(expected.text), "{theme:?}");
@@ -224,6 +234,7 @@ mod tests {
 
     #[test]
     fn description_text_has_sufficient_contrast_on_every_theme() {
+        let ut = UserTheme::default();
         for system_theme in [egui::Theme::Light, egui::Theme::Dark] {
             let ctx = egui::Context::default();
             let input = egui::RawInput {
@@ -232,7 +243,7 @@ mod tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 for theme in Theme::ALL {
-                    apply(ui, theme);
+                    apply(ui, theme, &ut);
                     let visuals = ui.visuals();
                     let text = luminance(visuals.weak_text_color());
                     let card = luminance(visuals.faint_bg_color);
@@ -249,6 +260,7 @@ mod tests {
 
     #[test]
     fn selected_text_and_switch_thumbs_contrast_with_the_accent() {
+        let ut = UserTheme::default();
         for system_theme in [egui::Theme::Light, egui::Theme::Dark] {
             let ctx = egui::Context::default();
             let input = egui::RawInput {
@@ -257,7 +269,7 @@ mod tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 for theme in Theme::ALL {
-                    apply(ui, theme);
+                    apply(ui, theme, &ut);
                     let selection = ui.visuals().selection;
                     let accent = selection.bg_fill;
                     for ink in [selection.stroke.color, sweet_ui::contrasting_ink(accent)] {

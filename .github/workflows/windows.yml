@@ -269,6 +269,61 @@ jobs:
             cachix push "$CACHIX_CACHE_NAME" ./result
           fi
 
+  linux-package:
+    name: Package Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out the Mozc dictionary
+        uses: actions/checkout@v7
+        with:
+          repository: google/mozc
+          ref: ${{ env.MOZC_REF }}
+          path: third_party/mozc-data
+          sparse-checkout: src/data/dictionary_oss
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config unzip curl libfcitx5core-dev \
+            libfontconfig1-dev libwayland-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libx11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache the system dictionary
+        id: dict-cache
+        uses: actions/cache@v4
+        with:
+          path: data/system.dict
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          enableCrossOsArchive: true
+
+      - name: Build the Linux binary archive
+        run: bash scripts/package-linux.sh "${{ matrix.arch }}" "out/SweetIME-Linux-${{ matrix.arch }}.tar.gz"
+
+      - name: Store the Linux package
+        uses: actions/upload-artifact@v7
+        with:
+          name: SweetIME-Linux-${{ matrix.arch }}
+          path: out/SweetIME-Linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
   macos:
     name: Test macOS
     uses: ./.github/workflows/macos.yml
@@ -276,7 +331,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, test, android-smoke, linux, macos]
+    needs: [windows, test, android-smoke, linux, linux-package, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -304,13 +359,29 @@ jobs:
           name: SweetIME-macOS
           path: out
 
-      - name: Attach the Windows, Android and macOS packages
+      - uses: actions/download-artifact@v8
+        with:
+          name: SweetIME-Linux-x86_64
+          path: out
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: SweetIME-Linux-aarch64
+          path: out
+
+      - name: Attach the release packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          files=(out/SweetIME-Setup.exe out/SweetIME-Android.apk out/SweetIME-macOS.zip)
+          files=(
+            out/SweetIME-Setup.exe
+            out/SweetIME-Android.apk
+            out/SweetIME-macOS.zip
+            out/SweetIME-Linux-x86_64.tar.gz
+            out/SweetIME-Linux-aarch64.tar.gz
+          )
           tag_ref="refs/tags/$RELEASE_TAG"
           notes=""
           if [[ "$(git cat-file -t "$tag_ref")" == tag ]]; then

@@ -127,6 +127,7 @@ struct App {
     #[cfg(windows)]
     activation: single_instance::Activation,
     opts: Options,
+    user_theme: sweet_engine::UserTheme,
     #[cfg(not(target_os = "macos"))]
     font_picker: Option<font_picker::FontPicker>,
     status: Option<(String, bool)>,
@@ -151,6 +152,7 @@ impl App {
         sweet_ui::setup(&cc.egui_ctx);
         let history = paths::history_file().map(UserHistory::with_file);
         let opts = paths::load_options();
+        let user_theme = paths::load_user_theme();
         let updater = {
             let mut updater = update::Updater::new();
             if opts.update_check {
@@ -163,6 +165,7 @@ impl App {
             #[cfg(windows)]
             activation: single_instance::Activation::register(cc)?,
             opts,
+            user_theme,
             #[cfg(not(target_os = "macos"))]
             font_picker: None,
             status: None,
@@ -230,7 +233,7 @@ impl eframe::App for App {
             download.poll();
         }
 
-        let theme = appearance::apply(ui, self.opts.theme);
+        let theme = appearance::apply(ui, self.opts.theme, &self.user_theme);
         let nav_frame = egui::Frame::new()
             .fill(theme.sidebar)
             .stroke(egui::Stroke::new(1.0, theme.border))
@@ -275,14 +278,33 @@ impl eframe::App for App {
                         self.font_picker
                             .get_or_insert_with(font_picker::FontPicker::new)
                             .ui(ui, &mut self.status);
-                        if theme_page::ui(ui, &mut self.opts.theme) {
+                        let theme_change =
+                            theme_page::ui(ui, &mut self.opts.theme, &mut self.user_theme);
+                        let mut save_ok = true;
+                        if theme_change.user_theme_edited {
+                            if let Err(e) = paths::save_user_theme(&self.user_theme) {
+                                self.status = Some((format!("保存できませんでした: {e}"), false));
+                                save_ok = false;
+                            } else if !theme_change.theme_selected {
+                                self.status = Some((
+                                    "保存しました。アプリを切り替えると反映されます。".into(),
+                                    true,
+                                ));
+                            }
+                        }
+                        if save_ok && theme_change.theme_selected {
                             self.save();
+                            save_ok = self.status.as_ref().is_none_or(|(_, ok)| *ok);
+                        }
+                        if save_ok && theme_change.any() {
                             #[cfg(not(windows))]
                             {
-                                self.status = Some(match fcitx_theme::apply(self.opts.theme) {
-                                    Ok(()) => ("fcitx5 のテーマに設定しました。".into(), true),
-                                    Err(e) => (e, false),
-                                });
+                                self.status = Some(
+                                    match fcitx_theme::apply(self.opts.theme, &self.user_theme) {
+                                        Ok(()) => ("fcitx5 のテーマに設定しました。".into(), true),
+                                        Err(e) => (e, false),
+                                    },
+                                );
                             }
                         }
                         #[cfg(windows)]

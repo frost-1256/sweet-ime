@@ -146,7 +146,7 @@ fn card_inner(
         let row_size = Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
         ui.allocate_ui_with_layout(
             row_size,
-            egui::Layout::right_to_left(egui::Align::Center),
+            egui::Layout::right_to_left(egui::Align::Min),
             |ui| {
                 control(ui);
                 ui.add_space(6.0);

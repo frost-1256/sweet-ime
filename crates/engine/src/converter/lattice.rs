@@ -757,8 +757,11 @@ impl Converter {
 
     /// Remembers that the user chose `surface` for `reading`.
     pub fn learn(&self, reading: &str, surface: &str) {
-        if reading == surface || !self.learning_enabled() {
-            return; // plain hiragana needs no learning
+        if reading == surface
+            || !self.learning_enabled()
+            || crate::special::is_ephemeral_candidate(reading, surface)
+        {
+            return; // plain hiragana or ephemeral date/time/calc needs no learning
         }
         // Left/right POS ids: from a lattice path producing exactly this
         // surface, else a dictionary entry, else the unknown-word id.

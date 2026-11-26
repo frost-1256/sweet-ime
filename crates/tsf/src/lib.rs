@@ -134,17 +134,25 @@ pub(crate) fn theme() -> sweet_engine::Theme {
 
 /// Colors of the current theme for the current Windows app theme.
 pub(crate) fn theme_colors() -> sweet_engine::theme::Colors {
-    theme().colors(candidate_window::system_light())
+    let t = theme();
+    if t == sweet_engine::Theme::Custom {
+        sweet_engine::paths::load_user_theme().colors()
+    } else {
+        t.colors(candidate_window::system_light())
+    }
 }
+
+pub(crate) type SettingsStamp = [Option<std::time::SystemTime>; 5];
 
 /// Modification times of the settings files; a change means the settings
 /// app saved something and the service should reload.
-pub(crate) fn settings_stamp() -> [Option<std::time::SystemTime>; 4] {
+pub(crate) fn settings_stamp() -> SettingsStamp {
     [
         sweet_engine::paths::modified(sweet_engine::paths::config_file()),
         sweet_engine::paths::modified(sweet_engine::paths::keymap_file()),
         sweet_engine::paths::modified(sweet_engine::paths::apps_file()),
         sweet_engine::paths::modified(sweet_engine::paths::candidate_font_file()),
+        sweet_engine::paths::modified(sweet_engine::paths::user_theme_file()),
     ]
 }
 

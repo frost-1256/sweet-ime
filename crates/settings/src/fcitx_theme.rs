@@ -5,7 +5,7 @@
 #![cfg_attr(windows, allow(dead_code))]
 
 use std::path::{Path, PathBuf};
-use sweet_engine::Theme;
+use sweet_engine::{Theme, UserTheme};
 use sweet_engine::theme::{Colors, Rgb};
 
 /// One classicui theme to write.
@@ -30,7 +30,14 @@ pub fn theme_name(theme: Theme, system_light: bool) -> String {
 }
 
 /// The themes `theme` uses: both variants of one that follows the system.
-fn themes_for(theme: Theme) -> Vec<Spec> {
+fn themes_for(theme: Theme, user_theme: &UserTheme) -> Vec<Spec> {
+    if theme == Theme::Custom {
+        return vec![Spec {
+            name: theme_name(Theme::Custom, true),
+            colors: user_theme.colors(),
+            gtk: false,
+        }];
+    }
     let variants: &[bool] = if theme.follows_system() { &[true, false] } else { &[true] };
     variants
         .iter()
@@ -38,10 +45,15 @@ fn themes_for(theme: Theme) -> Vec<Spec> {
         .collect()
 }
 
-/// Every classicui theme: the package installs them all. The default
+/// Every built-in classicui theme: the package installs them all. The default
 /// theme's variants are the light and dark themes.
 pub fn all_themes() -> Vec<Spec> {
-    Theme::ALL.into_iter().filter(|&t| t != Theme::Default).flat_map(themes_for).collect()
+    let default_user = UserTheme::default();
+    Theme::BUILTINS
+        .into_iter()
+        .filter(|&t| t != Theme::Default)
+        .flat_map(|t| themes_for(t, &default_user))
+        .collect()
 }
 
 /// Selection bar color when the theme follows the system accent (as the
@@ -68,14 +80,16 @@ pub fn theme_files(spec: &Spec) -> Vec<(&'static str, String)> {
     // 9-slice images: the corners (Margin) keep their size, the rest stretches.
     // The GTK shape draws a shadow in a transparent border (ShadowMargin).
     let (shadow, panel_margin, row_radius) = if spec.gtk { (12, 26, 6) } else { (0, 8, 4) };
+    let bg_alpha = c.bg_alpha.clamp(sweet_engine::theme::MIN_BG_ALPHA, 1.0);
+    let enable_blur = if bg_alpha < 0.99 { "True" } else { "False" };
     let panel = if spec.gtk {
         let opacity = if c.dark { 0.5 } else { 0.22 };
         format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4"/></filter></defs><rect x="12" y="14" width="56" height="56" rx="12" fill="#000000" fill-opacity="{opacity}" filter="url(#s)"/><rect x="12.5" y="12.5" width="55" height="55" rx="11.5" fill="{bg}" stroke="{border}"/></svg>"##
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><defs><filter id="s" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4"/></filter></defs><rect x="12" y="14" width="56" height="56" rx="12" fill="#000000" fill-opacity="{opacity}" filter="url(#s)"/><rect x="12.5" y="12.5" width="55" height="55" rx="11.5" fill="{bg}" fill-opacity="{bg_alpha:.2}" stroke="{border}"/></svg>"##
         )
     } else {
         format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="{bg}" stroke="{border}"/></svg>"#
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="{bg}" fill-opacity="{bg_alpha:.2}" stroke="{border}"/></svg>"#
         )
     };
     let menu_highlight = format!(
@@ -110,17 +124,22 @@ pub fn theme_files(spec: &Spec) -> Vec<(&'static str, String)> {
          Description=Sweet IME candidate window colors\nScaleWithDPI=True\n\n\
          [InputPanel]\nNormalColor={text}\nHighlightCandidateColor={text}\n\
          HighlightColor={text}\nHighlightBackgroundColor={}\nSpacing=0\n\
-         EnableBlur=False\nFullWidthHighlight=True\n\n\
+         EnableBlur={enable_blur}\nFullWidthHighlight=True\n\n\
          [InputPanel/Background]\nImage=panel.svg\n\n",
         hexa(accent(c), 0.25)
     );
-    let (m, content) = (panel_margin, shadow + 5);
+    let pad_v = u32::from(
+        c.panel_padding
+            .clamp(sweet_engine::theme::MIN_PANEL_PADDING, sweet_engine::theme::MAX_PANEL_PADDING),
+    );
+    let pad_h = pad_v + 4;
+    let (m, content) = (panel_margin, shadow + pad_v.saturating_sub(1).max(2));
     conf += &margin("InputPanel/Background/Margin", m, m, m, m);
     conf += &margin("InputPanel/ContentMargin", content, content, content, content);
     if shadow > 0 {
         conf += &margin("InputPanel/ShadowMargin", shadow, shadow, shadow, shadow);
     }
-    conf += &margin("InputPanel/TextMargin", 10, 10, 6, 6);
+    conf += &margin("InputPanel/TextMargin", pad_h, pad_h, pad_v, pad_v);
     conf += "[InputPanel/Highlight]\nImage=highlight.svg\n\n";
     conf += &margin("InputPanel/Highlight/Margin", 8, 8, 8, 8);
     conf += "[InputPanel/PrevPage]\nImage=prev.svg\n\n";
@@ -254,6 +273,122 @@ fn select_font(conf: &str, family: &str) -> String {
     set_keys(conf, vec![("Font", &value)])
 }
 
+fn raw_font_desc(conf: &str) -> &str {
+    let desc = conf
+        .lines()
+        .take_while(|line| !is_section(line))
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(key, value)| (key.trim() == "Font").then_some(value.trim()))
+        .last()
+        .unwrap_or("Sans 10");
+    desc.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(desc)
+}
+
+fn font_suffix(desc: &str) -> &str {
+    let idx = [desc.find(" @"), desc.find(" #")]
+        .into_iter()
+        .flatten()
+        .min();
+    idx.map_or("", |i| &desc[i..])
+}
+
+fn select_font_size(conf: &str, size: u32) -> String {
+    let desc = raw_font_desc(conf);
+    let suffix = font_suffix(desc);
+    let core = &desc[..desc.len() - suffix.len()];
+    let size = size.clamp(8, 24);
+    let replaced = if let Some((prefix, old_size)) = core.rsplit_once(char::is_whitespace)
+        && old_size
+            .strip_suffix("px")
+            .unwrap_or(old_size)
+            .parse::<f32>()
+            .is_ok_and(|n| n.is_finite() && n > 0.0)
+    {
+        let unit = if old_size.ends_with("px") { "px" } else { "" };
+        let prefix = prefix.trim_end();
+        format!("{prefix} {size}{unit}{suffix}")
+    } else if core.trim().is_empty() {
+        format!("Sans {size}{suffix}")
+    } else {
+        format!("{} {size}{suffix}", core.trim_end())
+    };
+    let value = format!("\"{replaced}\"");
+    set_keys(conf, vec![("Font", &value)])
+}
+
+fn parse_font_size(conf: &str) -> (u32, bool) {
+    let (_, size) = font_parts(conf);
+    let is_px = size.ends_with("px");
+    let n = size
+        .strip_suffix("px")
+        .unwrap_or(size)
+        .parse::<f32>()
+        .ok()
+        .filter(|n| n.is_finite())
+        .map(|n| n.round().clamp(8.0, 24.0) as u32)
+        .unwrap_or(10);
+    (n, is_px)
+}
+
+fn parse_vertical(conf: &str) -> bool {
+    conf.lines()
+        .take_while(|line| !is_section(line))
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(k, v)| (k.trim() == "Vertical Candidate List").then_some(v.trim()))
+        .last()
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+fn select_vertical(conf: &str, vertical: bool) -> String {
+    set_keys(
+        conf,
+        vec![("Vertical Candidate List", if vertical { "True" } else { "False" })],
+    )
+}
+
+#[cfg(not(windows))]
+pub fn candidate_font_size() -> (u32, bool) {
+    let conf = xdg("XDG_CONFIG_HOME", ".config")
+        .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
+        .unwrap_or_default();
+    parse_font_size(&conf)
+}
+
+#[cfg(not(windows))]
+pub fn apply_candidate_font_size(size: u32) -> Result<(), String> {
+    let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
+    let size = size.clamp(8, 24);
+    write_classicui(
+        &config,
+        |conf| select_font_size(conf, size),
+        &format!("Font size={size}"),
+    )
+}
+
+#[cfg(not(windows))]
+pub fn vertical_candidate_list() -> bool {
+    let conf = xdg("XDG_CONFIG_HOME", ".config")
+        .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
+        .unwrap_or_default();
+    parse_vertical(&conf)
+}
+
+#[cfg(not(windows))]
+pub fn apply_vertical_candidate_list(vertical: bool) -> Result<(), String> {
+    let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
+    write_classicui(
+        &config,
+        |conf| select_vertical(conf, vertical),
+        if vertical {
+            "Vertical Candidate List=True"
+        } else {
+            "Vertical Candidate List=False"
+        },
+    )
+}
+
 #[cfg(not(windows))]
 pub fn apply_candidate_font(family: &str) -> Result<(), String> {
     let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
@@ -289,10 +424,10 @@ fn write_theme(dir: &Path, spec: &Spec) -> std::io::Result<()> {
 }
 
 /// Writes the themes, selects them, and asks fcitx5 to reload classicui.
-pub fn apply(theme: Theme) -> Result<(), String> {
+pub fn apply(theme: Theme, user_theme: &UserTheme) -> Result<(), String> {
     let data = xdg("XDG_DATA_HOME", ".local/share").ok_or("ホームフォルダが見つかりません")?;
     let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
-    write_themes(&data.join("fcitx5/themes"), &themes_for(theme))
+    write_themes(&data.join("fcitx5/themes"), &themes_for(theme, user_theme))
         .map_err(|e| format!("テーマを書き込めませんでした: {e}"))?;
     let (light, dark) = (theme_name(theme, true), theme_name(theme, false));
     let hint = if light == dark { format!("Theme={light}") } else { format!("Theme={light}, DarkTheme={dark}") };
@@ -355,7 +490,8 @@ mod tests {
 
     #[test]
     fn theme_uses_the_theme_colors() {
-        let files = theme_files(&themes_for(Theme::Sakura)[0]);
+        let ut = UserTheme::default();
+        let files = theme_files(&themes_for(Theme::Sakura, &ut)[0]);
         let conf = &files[0].1;
         assert!(conf.contains("NormalColor=#4a2332"), "{conf}");
         assert!(files.iter().any(|(f, s)| *f == "panel.svg" && s.contains("#fff4f7") && s.contains("#f5c6d6")));
@@ -364,12 +500,16 @@ mod tests {
         for image in conf.lines().filter_map(|l| l.strip_prefix("Image=")) {
             assert!(files.iter().any(|(f, _)| *f == image), "{image}");
         }
+        // Translucent user theme enables blur and writes fill-opacity.
+        let custom_files = theme_files(&themes_for(Theme::Custom, &ut)[0]);
+        assert!(custom_files[0].1.contains("EnableBlur=True"));
+        assert!(custom_files.iter().any(|(f, s)| *f == "panel.svg" && s.contains("fill-opacity=\"0.88\"")));
     }
 
     #[test]
     fn package_has_every_theme_the_app_selects() {
         let names: Vec<String> = all_themes().into_iter().map(|s| s.name).collect();
-        for t in Theme::ALL {
+        for t in Theme::BUILTINS {
             for light in [true, false] {
                 assert!(names.contains(&theme_name(t, light)), "{}", theme_name(t, light));
             }
@@ -406,5 +546,16 @@ mod tests {
             select_font("Font=Sans 12\nFont=Sans 14\n", "Serif"),
             "Font=\"Serif, 14\"\n"
         );
+        let sized = select_font_size(&new, 16);
+        assert_eq!(parse_font_size(&sized), (16, true));
+        assert!(sized.contains("Font=\"Noto Serif CJK JP, 16px\""));
+        let bold = select_font_size("Font=\"Sans Bold 13px\"\n", 16);
+        assert_eq!(bold, "Font=\"Sans Bold 16px\"\n");
+        let varied = select_font_size("Font=\"Cantarell 12 @wght=700\"\n", 14);
+        assert_eq!(varied, "Font=\"Cantarell 14 @wght=700\"\n");
+        assert_eq!(parse_font_size(&varied), (14, false));
+        let vert = select_vertical(&sized, true);
+        assert!(parse_vertical(&vert));
+        assert!(!parse_vertical(&select_vertical(&vert, false)));
     }
 }
