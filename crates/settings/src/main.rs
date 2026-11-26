@@ -266,7 +266,10 @@ impl eframe::App for App {
             .exact_size(168.0)
             .frame(nav_frame)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("nav_scroll")
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
                     egui::Frame::new()
                         .inner_margin(egui::Margin { left: 14, top: 3, ..egui::Margin::ZERO })
                         .show(ui, |ui| {
@@ -286,7 +289,10 @@ impl eframe::App for App {
             .fill(theme.background)
             .inner_margin(egui::Margin::symmetric(22, 16));
         egui::CentralPanel::default().frame(content_frame).show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("page_scroll")
+                .auto_shrink(false)
+                .show(ui, |ui| {
                 sweet_ui::title(ui, self.page.label());
                 ui.add_space(4.0);
                 if self.page != Page::About {

@@ -138,7 +138,10 @@ impl RomajiPage {
                     egui::Label::new(RichText::new(text).strong()),
                 );
             };
-            let width = ((ui.available_width() - 150.0) / 3.0).clamp(80.0, 200.0);
+            let scroll_reserve = ui.spacing().scroll.allocated_width();
+            let col_gap = ui.spacing().item_spacing.x;
+            let right_reserve = 140.0 + scroll_reserve + col_gap * 3.0;
+            let width = ((ui.available_width() - right_reserve) / 3.0).max(80.0);
             ui.horizontal(|ui| {
                 column(ui, "入力", width);
                 column(ui, "出力", width);
@@ -150,9 +153,10 @@ impl RomajiPage {
             }
             let row_h = self.row_h;
             let mut measured = None;
+            let table_max_h = (ui.ctx().content_rect().height() - 360.0).clamp(240.0, 600.0);
             egui::ScrollArea::vertical()
                 .id_salt("romaji_rows")
-                .max_height(360.0)
+                .max_height(table_max_h)
                 .auto_shrink([false, true])
                 .show_rows(ui, row_h, rows.len(), |ui, range| {
                     for &i in &rows[range] {
@@ -193,6 +197,7 @@ impl RomajiPage {
                                 );
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(6.0);
                                 if ui.small_button("削除").clicked() {
                                     remove = Some(i);
                                 }

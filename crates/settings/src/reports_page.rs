@@ -102,12 +102,17 @@ impl ReportsSection {
                 ui.label(RichText::new("まだありません。").weak());
             }
             let mut remove = None;
-            egui::ScrollArea::vertical().max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("conversion_reports")
+                .max_height(240.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
                 for (i, r) in self.reports.iter().enumerate() {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&r.text).size(16.0));
                         ui.label(RichText::new(&r.reading).weak());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(6.0);
                             if ui.small_button("削除").clicked() {
                                 remove = Some(i);
                             }
