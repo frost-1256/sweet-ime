@@ -440,7 +440,10 @@ impl App {
                     ui.add_enabled_ui(self.opts.live_conversion, |ui| {
                         ui.spacing_mut().slider_width = 140.0;
                         let resp = ui.add(
-                            egui::Slider::new(&mut self.opts.live_debounce_ms, 0..=300)
+                            egui::Slider::new(
+                                &mut self.opts.live_debounce_ms,
+                                0..=Options::MAX_LIVE_DEBOUNCE_MS,
+                            )
                                 .step_by(10.0)
                                 .suffix(" ms"),
                         );

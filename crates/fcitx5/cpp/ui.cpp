@@ -836,13 +836,17 @@ public:
     using NotifyCb = std::function<void()>;
 
     WaylandPopup(wl_display *display, HoverCb onHover, ClickCb onClick, NotifyCb onReady,
-                 NotifyCb onConfigured, NotifyCb onInitialClosed)
+                 NotifyCb onConfigured, NotifyCb onInitialClosed, NotifyCb onBufferReleased)
         : display_(display),
           onHover_(std::move(onHover)),
           onClick_(std::move(onClick)),
           onReady_(std::move(onReady)),
           onConfigured_(std::move(onConfigured)),
-          onInitialClosed_(std::move(onInitialClosed)) {
+          onInitialClosed_(std::move(onInitialClosed)),
+          onBufferReleased_(std::move(onBufferReleased)) {
+        for (auto &slot : slots_) {
+            slot.owner = this;
+        }
         registry_ = wl_display_get_registry(display_);
         if (registry_) {
             wl_registry_add_listener(registry_, &kRegistryListener, this);
@@ -1019,6 +1023,7 @@ public:
 
 private:
     struct ShmSlot {
+        WaylandPopup *owner = nullptr;
         wl_buffer *buffer = nullptr;
         void *data = nullptr;
         size_t size = 0;
@@ -1074,7 +1079,11 @@ private:
         }
 
         static void onRelease(void *user, wl_buffer *) {
-            static_cast<ShmSlot *>(user)->busy = false;
+            auto *slot = static_cast<ShmSlot *>(user);
+            slot->busy = false;
+            if (slot->owner && slot->owner->onBufferReleased_) {
+                slot->owner->onBufferReleased_();
+            }
         }
 
         static constexpr wl_buffer_listener kBufferListener = {
@@ -1448,6 +1457,7 @@ private:
     NotifyCb onReady_;
     NotifyCb onConfigured_;
     NotifyCb onInitialClosed_;
+    NotifyCb onBufferReleased_;
 };
 #endif
 
@@ -1488,6 +1498,13 @@ public:
                                 } else {
                                     stopTimer();
                                 }
+                            }
+                        },
+                        [this, name]() {
+                            if (!suspended_ && pendingPresent_ && renderer_.visible() &&
+                                presentedKind_ == BackendKind::Wayland && presentedName_ == name) {
+                                busyTicks_ = 0;
+                                ensureTimer();
                             }
                         });
                     const bool isReady = popup->ready();
@@ -1607,6 +1624,7 @@ public:
         activeDisplay_ = ic->display();
         activeCursor_ = ic->cursorRect();
         retryCount_ = 0;
+        ++snapshotGen_;
         renderer_.updateData(snap);
         if (snap.visible && presentedKind_ != BackendKind::None) {
             const auto elapsedMs =
@@ -1614,6 +1632,7 @@ public:
             if (elapsedMs < 16.0) {
                 // Coalesce rapid keystrokes to display refresh rate (~60fps) to avoid
                 // mid-frame buffer churn and visible flickering while typing fast.
+                pendingPresent_ = true;
                 ensureTimer();
                 return;
             }
@@ -1763,6 +1782,8 @@ private:
             presentedName_ = name;
             if (completed) {
                 lastPresentAt_ = Clock::now();
+                presentedGen_ = snapshotGen_;
+                pendingPresent_ = false;
                 retryCount_ = 0;
                 busyTicks_ = 0;
             }
@@ -1770,7 +1791,10 @@ private:
         }
         if (busy) {
             // Keep the currently visible frame intact while all SHM buffers are
-            // still held by the compositor, and retry for up to ~240 ms.
+            // still held by the compositor. Retry on a short timer, and if all
+            // slots stay busy past the cap, keep pendingPresent_ set so
+            // ShmSlot::onRelease resumes presentation as soon as a buffer frees.
+            pendingPresent_ = true;
             if (busyTicks_ < 15) {
                 ++busyTicks_;
                 return true;
@@ -1802,7 +1826,9 @@ private:
 #endif
         presentedKind_ = BackendKind::None;
         presentedName_.clear();
+        pendingPresent_ = false;
         retryCount_ = 0;
+        busyTicks_ = 0;
     }
 
     void ensureTimer() {
@@ -1831,6 +1857,7 @@ private:
 
     void onClick(BackendKind kind, const std::string &name, double x, double y) {
         if (kind != presentedKind_ || name != presentedName_) return;
+        if (presentedGen_ != snapshotGen_) return;
         const int idx = renderer_.hitTest(x, y);
         if (idx < 0) return;
         auto *ic = activeIC_.get();
@@ -1881,6 +1908,9 @@ private:
     std::string presentedName_;
     int retryCount_ = 0;
     int busyTicks_ = 0;
+    uint64_t snapshotGen_ = 0;
+    uint64_t presentedGen_ = 0;
+    bool pendingPresent_ = false;
     Clock::time_point lastPresentAt_{};
     std::unique_ptr<fcitx::EventSourceTime> animTimer_;
     bool constructing_ = true;

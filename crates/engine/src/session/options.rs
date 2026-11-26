@@ -78,6 +78,9 @@ impl Default for Options {
 }
 
 impl Options {
+    /// Maximum supported value for [`Options::live_debounce_ms`].
+    pub const MAX_LIVE_DEBOUNCE_MS: u32 = MAX_LIVE_DEBOUNCE_MS;
+
     /// Parses `key = value` lines (`#` comments). Unknown keys are ignored.
     pub fn parse(text: &str) -> Self {
         let mut o = Self::default();
