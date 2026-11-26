@@ -1,6 +1,8 @@
 //! Theme picker: a small preview of the candidate window per theme, plus a
 //! separate customizable user theme with background opacity.
 
+#[cfg(not(windows))]
+use sweet_engine::theme::{MAX_PANEL_PADDING, MIN_PANEL_PADDING};
 use sweet_engine::theme::{Colors, MIN_BG_ALPHA, Rgb};
 use sweet_engine::{Theme, UserTheme};
 use sweet_ui::eframe::egui::{
@@ -145,6 +147,26 @@ pub fn ui(ui: &mut egui::Ui, current: &mut Theme, user_theme: &mut UserTheme) ->
                         edited = true;
                     }
                 });
+
+                #[cfg(not(windows))]
+                {
+                    let mut pad = user_theme
+                        .panel_padding
+                        .clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING);
+                    ui.horizontal(|ui| {
+                        ui.label("パネルの余白");
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut pad, MIN_PANEL_PADDING..=MAX_PANEL_PADDING)
+                                    .suffix("px"),
+                            )
+                            .changed()
+                        {
+                            user_theme.panel_padding = pad;
+                            edited = true;
+                        }
+                    });
+                }
 
                 ui.add_space(4.0);
                 egui::Grid::new("user_theme_colors")

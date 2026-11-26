@@ -128,13 +128,18 @@ pub fn theme_files(spec: &Spec) -> Vec<(&'static str, String)> {
          [InputPanel/Background]\nImage=panel.svg\n\n",
         hexa(accent(c), 0.25)
     );
-    let (m, content) = (panel_margin, shadow + 5);
+    let pad_v = u32::from(
+        c.panel_padding
+            .clamp(sweet_engine::theme::MIN_PANEL_PADDING, sweet_engine::theme::MAX_PANEL_PADDING),
+    );
+    let pad_h = pad_v + 4;
+    let (m, content) = (panel_margin, shadow + pad_v.saturating_sub(1).max(2));
     conf += &margin("InputPanel/Background/Margin", m, m, m, m);
     conf += &margin("InputPanel/ContentMargin", content, content, content, content);
     if shadow > 0 {
         conf += &margin("InputPanel/ShadowMargin", shadow, shadow, shadow, shadow);
     }
-    conf += &margin("InputPanel/TextMargin", 10, 10, 6, 6);
+    conf += &margin("InputPanel/TextMargin", pad_h, pad_h, pad_v, pad_v);
     conf += "[InputPanel/Highlight]\nImage=highlight.svg\n\n";
     conf += &margin("InputPanel/Highlight/Margin", 8, 8, 8, 8);
     conf += "[InputPanel/PrevPage]\nImage=prev.svg\n\n";
@@ -266,6 +271,82 @@ fn select_font(conf: &str, family: &str) -> String {
     // A trailing comma separates the family from Pango's style keywords.
     let value = format!("\"{family}, {size}\"");
     set_keys(conf, vec![("Font", &value)])
+}
+
+fn select_font_size(conf: &str, size: u32) -> String {
+    let (family, _) = font_parts(conf);
+    let family = if family.is_empty() { "Sans" } else { family };
+    let size = size.clamp(8, 24);
+    let value = format!("\"{family}, {size}\"");
+    set_keys(conf, vec![("Font", &value)])
+}
+
+fn parse_font_size(conf: &str) -> u32 {
+    let (_, size) = font_parts(conf);
+    size.strip_suffix("px")
+        .unwrap_or(size)
+        .parse::<f32>()
+        .ok()
+        .filter(|n| n.is_finite())
+        .map(|n| n.round().clamp(8.0, 24.0) as u32)
+        .unwrap_or(10)
+}
+
+fn parse_vertical(conf: &str) -> bool {
+    conf.lines()
+        .take_while(|line| !is_section(line))
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(k, v)| (k.trim() == "Vertical Candidate List").then_some(v.trim()))
+        .last()
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+fn select_vertical(conf: &str, vertical: bool) -> String {
+    set_keys(
+        conf,
+        vec![("Vertical Candidate List", if vertical { "True" } else { "False" })],
+    )
+}
+
+#[cfg(not(windows))]
+pub fn candidate_font_size() -> u32 {
+    let conf = xdg("XDG_CONFIG_HOME", ".config")
+        .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
+        .unwrap_or_default();
+    parse_font_size(&conf)
+}
+
+#[cfg(not(windows))]
+pub fn apply_candidate_font_size(size: u32) -> Result<(), String> {
+    let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
+    let size = size.clamp(8, 24);
+    write_classicui(
+        &config,
+        |conf| select_font_size(conf, size),
+        &format!("Font size={size}"),
+    )
+}
+
+#[cfg(not(windows))]
+pub fn vertical_candidate_list() -> bool {
+    let conf = xdg("XDG_CONFIG_HOME", ".config")
+        .and_then(|dir| std::fs::read_to_string(dir.join("fcitx5/conf/classicui.conf")).ok())
+        .unwrap_or_default();
+    parse_vertical(&conf)
+}
+
+#[cfg(not(windows))]
+pub fn apply_vertical_candidate_list(vertical: bool) -> Result<(), String> {
+    let config = xdg("XDG_CONFIG_HOME", ".config").ok_or("ホームフォルダが見つかりません")?;
+    write_classicui(
+        &config,
+        |conf| select_vertical(conf, vertical),
+        if vertical {
+            "Vertical Candidate List=True"
+        } else {
+            "Vertical Candidate List=False"
+        },
+    )
 }
 
 #[cfg(not(windows))]
@@ -425,5 +506,11 @@ mod tests {
             select_font("Font=Sans 12\nFont=Sans 14\n", "Serif"),
             "Font=\"Serif, 14\"\n"
         );
+        let sized = select_font_size(&new, 16);
+        assert_eq!(parse_font_size(&sized), 16);
+        assert!(sized.contains("Font=\"Noto Serif CJK JP, 16\""));
+        let vert = select_vertical(&sized, true);
+        assert!(parse_vertical(&vert));
+        assert!(!parse_vertical(&select_vertical(&vert, false)));
     }
 }

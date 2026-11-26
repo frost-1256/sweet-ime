@@ -47,12 +47,18 @@ pub struct Colors {
     pub border: Rgb,
     /// Mode badge border.
     pub badge_border: Rgb,
+    /// Candidate row vertical padding in pixels (used by fcitx5 classicui; default 6).
+    pub panel_padding: u8,
     /// True when the accent color should be lightened (dark backgrounds).
     pub dark: bool,
 }
 
 /// Minimum allowed background opacity so candidate text remains legible.
 pub const MIN_BG_ALPHA: f32 = 0.35;
+/// Default vertical padding for candidate rows (pixels).
+pub const DEFAULT_PANEL_PADDING: u8 = 6;
+pub const MIN_PANEL_PADDING: u8 = 2;
+pub const MAX_PANEL_PADDING: u8 = 18;
 
 const LIGHT: Colors = Colors {
     bg: Rgb(0xf9, 0xf9, 0xf9),
@@ -64,6 +70,7 @@ const LIGHT: Colors = Colors {
     accent: None,
     border: Rgb(0xe5, 0xe5, 0xe5),
     badge_border: Rgb(200, 200, 200),
+    panel_padding: DEFAULT_PANEL_PADDING,
     dark: false,
 };
 
@@ -77,6 +84,7 @@ const DARK: Colors = Colors {
     accent: None,
     border: Rgb(0x40, 0x40, 0x40),
     badge_border: Rgb(90, 90, 90),
+    panel_padding: DEFAULT_PANEL_PADDING,
     dark: true,
 };
 
@@ -170,6 +178,7 @@ impl Theme {
                 accent: Some(Rgb(0xe8, 0x5a, 0x8a)),
                 border: Rgb(0xf5, 0xc6, 0xd6),
                 badge_border: Rgb(0xee, 0xa8, 0xc0),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: false,
             },
             Theme::Matcha => Colors {
@@ -182,6 +191,7 @@ impl Theme {
                 accent: Some(Rgb(0x4f, 0x80, 0x32)),
                 border: Rgb(0xd3, 0xdf, 0xc3),
                 badge_border: Rgb(0xb4, 0xc9, 0x9c),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: false,
             },
             Theme::Midnight => Colors {
@@ -194,6 +204,7 @@ impl Theme {
                 accent: Some(Rgb(0x7a, 0xa2, 0xff)),
                 border: Rgb(0x34, 0x3b, 0x55),
                 badge_border: Rgb(0x4a, 0x53, 0x72),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: true,
             },
             Theme::Dracula => Colors {
@@ -206,6 +217,7 @@ impl Theme {
                 accent: Some(Rgb(0xff, 0x79, 0xc6)),
                 border: Rgb(0x44, 0x47, 0x5a),
                 badge_border: Rgb(0x62, 0x72, 0xa4),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: true,
             },
             // libadwaita's popover colors and blue accent.
@@ -219,6 +231,7 @@ impl Theme {
                 accent: Some(Rgb(0x35, 0x84, 0xe4)),
                 border: Rgb(0xdb, 0xdb, 0xdc),
                 badge_border: Rgb(0xc0, 0xc0, 0xc2),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: false,
             },
             Theme::Adwaita => Colors {
@@ -231,6 +244,7 @@ impl Theme {
                 accent: Some(Rgb(0x78, 0xae, 0xed)),
                 border: Rgb(0x4a, 0x4a, 0x4e),
                 badge_border: Rgb(0x5a, 0x5a, 0x5e),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: true,
             },
             Theme::Lavender => Colors {
@@ -243,6 +257,7 @@ impl Theme {
                 accent: Some(Rgb(0x7f, 0x5c, 0xd6)),
                 border: Rgb(0xdd, 0xd3, 0xf2),
                 badge_border: Rgb(0xc4, 0xb5, 0xe8),
+                panel_padding: DEFAULT_PANEL_PADDING,
                 dark: false,
             },
             Theme::Custom => UserTheme::default().colors(),
@@ -261,6 +276,7 @@ pub struct UserTheme {
     pub accent: [u8; 3],
     pub border: [u8; 3],
     pub bg_alpha: f32,
+    pub panel_padding: u8,
     pub dark: bool,
 }
 
@@ -275,6 +291,7 @@ impl Default for UserTheme {
             accent: [0x60, 0xa5, 0xfa],
             border: [0x3c, 0x42, 0x54],
             bg_alpha: 0.88,
+            panel_padding: DEFAULT_PANEL_PADDING,
             dark: true,
         }
     }
@@ -297,6 +314,7 @@ impl UserTheme {
             accent: [accent.0, accent.1, accent.2],
             border: [c.border.0, c.border.1, c.border.2],
             bg_alpha: c.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
+            panel_padding: c.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
             dark: c.dark,
         }
     }
@@ -312,6 +330,7 @@ impl UserTheme {
             accent: Some(Rgb(self.accent[0], self.accent[1], self.accent[2])),
             border: Rgb(self.border[0], self.border[1], self.border[2]),
             badge_border: Rgb(self.border[0], self.border[1], self.border[2]),
+            panel_padding: self.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
             dark: self.dark,
         }
     }
@@ -339,6 +358,11 @@ impl UserTheme {
                         t.hover_alpha = a.clamp(0.0, 1.0);
                     }
                 }
+                "panel_padding" => {
+                    if let Ok(p) = v.parse::<u8>() {
+                        t.panel_padding = p.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING);
+                    }
+                }
                 "dark" => match v {
                     "true" | "1" => t.dark = true,
                     "false" | "0" => t.dark = false,
@@ -352,7 +376,7 @@ impl UserTheme {
 
     pub fn to_text(&self) -> String {
         format!(
-            "bg = {}\ntext = {}\nsub = {}\nhover = {}\nhover_alpha = {:.2}\naccent = {}\nborder = {}\nbg_alpha = {:.2}\ndark = {}\n",
+            "bg = {}\ntext = {}\nsub = {}\nhover = {}\nhover_alpha = {:.2}\naccent = {}\nborder = {}\nbg_alpha = {:.2}\npanel_padding = {}\ndark = {}\n",
             fmt_hex(self.bg),
             fmt_hex(self.text),
             fmt_hex(self.sub),
@@ -361,6 +385,7 @@ impl UserTheme {
             fmt_hex(self.accent),
             fmt_hex(self.border),
             self.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
+            self.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
             self.dark,
         )
     }

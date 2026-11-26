@@ -1,10 +1,16 @@
 use sweet_ui::card;
+#[cfg(not(windows))]
+use sweet_ui::toggle;
 use sweet_ui::eframe::egui;
 
 pub struct FontPicker {
     family: String,
     families: Vec<String>,
     filter: String,
+    #[cfg(not(windows))]
+    font_size: u32,
+    #[cfg(not(windows))]
+    vertical: bool,
 }
 
 impl FontPicker {
@@ -20,6 +26,10 @@ impl FontPicker {
             family,
             families,
             filter: String::new(),
+            #[cfg(not(windows))]
+            font_size: crate::fcitx_theme::candidate_font_size(),
+            #[cfg(not(windows))]
+            vertical: crate::fcitx_theme::vertical_candidate_list(),
         }
     }
 
@@ -85,6 +95,41 @@ impl FontPicker {
                 });
             }
         });
+
+        #[cfg(not(windows))]
+        {
+            card(
+                ui,
+                "候補の文字サイズ",
+                "fcitx5 の候補ウィンドウの文字サイズを変えます。",
+                |ui| {
+                    let resp = ui.add(egui::Slider::new(&mut self.font_size, 8..=24).suffix("pt"));
+                    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                        *status = Some(
+                            match crate::fcitx_theme::apply_candidate_font_size(self.font_size) {
+                                Ok(()) => ("候補の文字サイズを保存しました。".into(), true),
+                                Err(error) => (error, false),
+                            },
+                        );
+                    }
+                },
+            );
+            card(
+                ui,
+                "候補を縦に並べる",
+                "オフにすると候補を横並びで表示します (fcitx5 の Classic UI)。",
+                |ui| {
+                    if toggle(ui, &mut self.vertical).changed() {
+                        *status = Some(
+                            match crate::fcitx_theme::apply_vertical_candidate_list(self.vertical) {
+                                Ok(()) => ("候補の並べ方を保存しました。".into(), true),
+                                Err(error) => (error, false),
+                            },
+                        );
+                    }
+                },
+            );
+        }
     }
 }
 
