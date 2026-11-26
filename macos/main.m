@@ -231,17 +231,22 @@ static uint16_t VirtualKey(NSEvent *event) {
 
 - (NSMenu *)menu {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Sweet IME"];
-    NSMenuItem *settings = [menu addItemWithTitle:@"設定…" action:@selector(openSettings:) keyEquivalent:@""];
-    settings.target = self;
+    if ([[NSBundle mainBundle] URLForResource:@"Sweet IME Settings" withExtension:@"app"]) {
+        NSMenuItem *settings = [menu addItemWithTitle:@"設定…" action:@selector(openSettings:) keyEquivalent:@""];
+        settings.target = self;
+    }
     return menu;
 }
 
 - (void)openSettings:(id)sender {
     NSURL *url = [[NSBundle mainBundle] URLForResource:@"Sweet IME Settings" withExtension:@"app"];
-    if (url) {
+    if (!url) return;
+    if (@available(macOS 10.15, *)) {
         [[NSWorkspace sharedWorkspace] openApplicationAtURL:url
                                             configuration:[NSWorkspaceOpenConfiguration configuration]
                                         completionHandler:nil];
+    } else {
+        [[NSWorkspace sharedWorkspace] openFile:url.path];
     }
 }
 
@@ -254,7 +259,7 @@ static NSString *InputSourceID(NSBundle *bundle) {
     NSArray<NSString *> *visibleModes = modes[@"tsVisibleInputModeOrderedArrayKey"];
     NSString *sourceID = visibleModes.firstObject;
     NSDictionary *mode = modes[@"tsInputModeListKey"][sourceID ?: @""];
-    if ([bundleID containsString:@".inputmethod."] &&
+    if (bundleID && [bundleID rangeOfString:@".inputmethod."].location != NSNotFound &&
         [connection isEqualToString:[bundleID stringByAppendingString:@"_Connection"]] &&
         [sourceID hasPrefix:[bundleID stringByAppendingString:@"."]] &&
         [mode[@"TISInputSourceID"] isEqualToString:sourceID] &&

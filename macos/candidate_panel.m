@@ -53,9 +53,14 @@ static NSColor *SelectionTextColor(NSColor *background) {
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    NSColor *textColor = NSColor.labelColor;
+    NSColor *textColor = NSColor.controlTextColor;
+    NSColor *selection = NSColor.selectedControlColor;
+    if (@available(macOS 10.14, *)) {
+        textColor = NSColor.labelColor;
+        selection = NSColor.selectedContentBackgroundColor;
+    }
     if (self.highlightedCandidate) {
-        NSColor *background = NSColor.selectedContentBackgroundColor;
+        NSColor *background = selection;
         [background setFill];
         [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0, 1)
                                         xRadius:5 yRadius:5] fill];
@@ -103,16 +108,26 @@ static NSColor *SelectionTextColor(NSColor *background) {
         self.opaque = NO;
         self.backgroundColor = NSColor.clearColor;
         self.hasShadow = YES;
-        NSVisualEffectView *background = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-        background.material = NSVisualEffectMaterialMenu;
-        background.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-        background.state = NSVisualEffectStateActive;
-        background.wantsLayer = YES;
+        NSView *background;
+        if (@available(macOS 10.14, *)) {
+            NSVisualEffectView *effect = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+            effect.material = NSVisualEffectMaterialMenu;
+            effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+            effect.state = NSVisualEffectStateActive;
+            effect.wantsLayer = YES;
+            background = effect;
+        } else {
+            background = [[NSView alloc] initWithFrame:NSZeroRect];
+            background.wantsLayer = YES;
+            background.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+        }
         background.layer.cornerRadius = 8;
         background.layer.masksToBounds = YES;
-        [background setAccessibilityElement:YES];
-        [background setAccessibilityRole:NSAccessibilityListRole];
-        [background setAccessibilityLabel:@"変換候補"];
+        if (@available(macOS 10.10, *)) {
+            [background setAccessibilityElement:YES];
+            [background setAccessibilityRole:NSAccessibilityListRole];
+            [background setAccessibilityLabel:@"変換候補"];
+        }
         self.contentView = background;
     }
     return self;
@@ -147,13 +162,13 @@ static NSColor *SelectionTextColor(NSColor *background) {
             row.tag = (NSInteger)i;
             row.target = self;
             row.action = @selector(choose:);
-            [row setAccessibilityLabel:candidates[i]];
+            if (@available(macOS 10.10, *)) [row setAccessibilityLabel:candidates[i]];
             _preferredWidth = MAX(_preferredWidth, ceil(row.attributedTitle.size.width) + 20);
             [self.contentView addSubview:row];
             [rows addObject:row];
         }
         _rows = rows;
-        [self.contentView setAccessibilityChildren:_rows];
+        if (@available(macOS 10.10, *)) [self.contentView setAccessibilityChildren:_rows];
     }
     NSRect frame = SweetCandidatePanelFrame(candidates.count, _preferredWidth, anchor, screen.visibleFrame);
     [self setFrame:frame display:NO];
@@ -170,8 +185,10 @@ static NSColor *SelectionTextColor(NSColor *background) {
     if (!self.visible) [self orderFrontRegardless];
     if (changed || _selectedRow != selected) {
         _selectedRow = selected;
-        [self.contentView setAccessibilitySelectedChildren:selected < _rows.count ? @[_rows[selected]] : @[]];
-        NSAccessibilityPostNotification(self.contentView, NSAccessibilitySelectedChildrenChangedNotification);
+        if (@available(macOS 10.10, *)) {
+            [self.contentView setAccessibilitySelectedChildren:selected < _rows.count ? @[_rows[selected]] : @[]];
+            NSAccessibilityPostNotification(self.contentView, NSAccessibilitySelectedChildrenChangedNotification);
+        }
     }
 }
 
