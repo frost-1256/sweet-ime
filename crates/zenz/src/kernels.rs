@@ -164,7 +164,7 @@ unsafe fn matmul_avx2(
         let pack_threshold = 6;
         #[cfg(target_arch = "x86")]
         let pack_threshold = 2;
-        if m > pack_threshold {
+        if m > pack_threshold && k > 0 {
             let mut wpack = [0f32; KB * 16];
             while j < jend {
                 let mut k0 = 0;
