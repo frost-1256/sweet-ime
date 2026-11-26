@@ -547,6 +547,29 @@ pub fn covers_letters(reading: &str, listed: bool) -> bool {
             }
         }
     }
+    for (merged, suffix_ch) in [("しゃ", 's'), ("ちゃ", 'c')] {
+        if !reading.contains(merged) {
+            continue;
+        }
+        let max_stem = index.max_len.max(32);
+        let mut probe = String::new();
+        for (pos, _) in reading.match_indices(merged) {
+            let prefix = &reading[..pos];
+            for (start, _) in prefix.char_indices().rev() {
+                if pos - start > max_stem {
+                    break;
+                }
+                probe.clear();
+                probe.push_str(&prefix[start..]);
+                probe.push(suffix_ch);
+                let matched = romaji_readings().iter().any(|(r, _)| r == &probe)
+                    || (listed && index.get(&probe).is_some());
+                if matched {
+                    mark(start, pos - start);
+                }
+            }
+        }
+    }
     reading
         .bytes()
         .zip(&covered)

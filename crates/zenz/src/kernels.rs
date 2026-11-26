@@ -48,7 +48,7 @@ pub fn matmul_bias(
     let threads = if work < 1 << 17 {
         1
     } else {
-        pool().current_num_threads()
+        pool().current_num_threads().min((n / 32).max(1))
     };
     let chunk = (n.div_ceil(threads) + 15) / 16 * 16;
     let yp = SendPtr(y.as_mut_ptr());
@@ -168,21 +168,26 @@ unsafe fn matmul_avx2(
         let pack_threshold = 2;
         if m > pack_threshold && k > 0 {
             let mut wpack = AlignedPack([0f32; KB * 16]);
-            while j < jend {
-                let mut k0 = 0;
-                while k0 < k {
-                    let kb = (k - k0).min(KB);
+            let mut k0 = 0;
+            while k0 < k {
+                let kb = (k - k0).min(KB);
+                let first_k = k0 == 0;
+                let load_y = accumulate || !first_k;
+                let bp_k = if first_k { bp } else { std::ptr::null() };
+                j = j0;
+                while j < jend {
                     let mut wp = w.as_ptr().add(k0 * n + j);
                     let mut pp = wpack.0.as_mut_ptr();
-                    for _ in 0..kb {
+                    let pf_stride = n * 4;
+                    for kk in 0..kb {
+                        if kk + 4 < kb {
+                            _mm_prefetch(wp.add(pf_stride) as *const i8, _MM_HINT_T0);
+                        }
                         _mm256_store_ps(pp, _mm256_loadu_ps(wp));
                         _mm256_store_ps(pp.add(8), _mm256_loadu_ps(wp.add(8)));
                         wp = wp.add(n);
                         pp = pp.add(16);
                     }
-                    let first_k = k0 == 0;
-                    let load_y = accumulate || !first_k;
-                    let bp_k = if first_k { bp } else { std::ptr::null() };
                     let mut i = 0;
                     #[cfg(target_arch = "x86_64")]
                     while i < m {
@@ -212,9 +217,9 @@ unsafe fn matmul_avx2(
                         }
                         i += 2;
                     }
-                    k0 += kb;
+                    j += 16;
                 }
-                j += 16;
+                k0 += kb;
             }
         } else {
             while j < jend {
@@ -283,15 +288,33 @@ unsafe fn micro_packed<const R: usize, const ACCUM: bool>(
         let mut acc1 = [b1; R];
         let xp = x.as_ptr().add(i * k + k0);
         let mut wp = wpack;
-        for kk in 0..kb {
-            let w0 = _mm256_loadu_ps(wp);
-            let w1 = _mm256_loadu_ps(wp.add(8));
+        let mut kk = 0;
+        while kk + 2 <= kb {
+            let w0a = _mm256_load_ps(wp);
+            let w1a = _mm256_load_ps(wp.add(8));
+            let w0b = _mm256_load_ps(wp.add(16));
+            let w1b = _mm256_load_ps(wp.add(24));
+            for r in 0..R {
+                let aa = _mm256_broadcast_ss(&*xp.add(r * k + kk));
+                acc0[r] = _mm256_fmadd_ps(aa, w0a, acc0[r]);
+                acc1[r] = _mm256_fmadd_ps(aa, w1a, acc1[r]);
+                let ab = _mm256_broadcast_ss(&*xp.add(r * k + kk + 1));
+                acc0[r] = _mm256_fmadd_ps(ab, w0b, acc0[r]);
+                acc1[r] = _mm256_fmadd_ps(ab, w1b, acc1[r]);
+            }
+            wp = wp.add(32);
+            kk += 2;
+        }
+        while kk < kb {
+            let w0 = _mm256_load_ps(wp);
+            let w1 = _mm256_load_ps(wp.add(8));
             for r in 0..R {
                 let a = _mm256_broadcast_ss(&*xp.add(r * k + kk));
                 acc0[r] = _mm256_fmadd_ps(a, w0, acc0[r]);
                 acc1[r] = _mm256_fmadd_ps(a, w1, acc1[r]);
             }
             wp = wp.add(16);
+            kk += 1;
         }
         for r in 0..R {
             let yp = y.add((i + r) * n + j);

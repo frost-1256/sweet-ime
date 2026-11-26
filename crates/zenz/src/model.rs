@@ -190,7 +190,7 @@ impl Model {
             tokens,
             &parents,
             cache,
-            true,
+            tokens.len(),
             if want_all { 0 } else { tokens.len().saturating_sub(1) },
             |logits| logits.to_vec(),
         )
@@ -215,8 +215,25 @@ impl Model {
         logits_from: usize,
         f: impl FnOnce(&[f32]) -> T + Send,
     ) -> T {
+        self.forward_tree_caching_with(tokens, parents, cache, 0, logits_from, f)
+    }
+
+    /// Like [`Self::forward_tree_with`], and also appends the linear prefix
+    /// `tokens[..save_kv_prefix]` to `cache` in the same pass so subsequent
+    /// incremental prompts can reuse its K/V states without recomputing them.
+    pub(crate) fn forward_tree_caching_with<T: Send>(
+        &self,
+        tokens: &[u32],
+        parents: &[Option<usize>],
+        cache: &mut KvCache,
+        save_kv_prefix: usize,
+        logits_from: usize,
+        f: impl FnOnce(&[f32]) -> T + Send,
+    ) -> T {
         // Keep the layer work on the same workers as the matrix products.
-        crate::kernels::pool().install(|| self.forward_impl(tokens, parents, cache, false, logits_from, f))
+        crate::kernels::pool().install(|| {
+            self.forward_impl(tokens, parents, cache, save_kv_prefix, logits_from, f)
+        })
     }
 
     fn forward_impl<T>(
@@ -224,7 +241,7 @@ impl Model {
         tokens: &[u32],
         parents: &[Option<usize>],
         cache: &mut KvCache,
-        append: bool,
+        save_kv_prefix: usize,
         logits_from: usize,
         consume: impl FnOnce(&[f32]) -> T,
     ) -> T {
@@ -331,8 +348,9 @@ impl Model {
                         }
                     }
                 }
-                if append {
-                    for i in 0..t {
+                let save_n = save_kv_prefix.min(t);
+                if save_n > 0 {
+                    for i in 0..save_n {
                         cache.k[li].extend_from_slice(&qkv[i * 3 * e + e..i * 3 * e + 2 * e]);
                         cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
                     }
@@ -353,8 +371,9 @@ impl Model {
         FORWARD_SCRATCH.with(|cell| {
             *cell.borrow_mut() = scratch;
         });
-        if append {
-            cache.len = past + t;
+        let save_n = save_kv_prefix.min(t);
+        if save_n > 0 {
+            cache.len = past + save_n;
         }
         out_val
     }

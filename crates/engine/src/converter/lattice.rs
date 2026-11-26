@@ -46,9 +46,12 @@ struct Lattice<'a> {
 
 impl Lattice<'_> {
     fn path_surface(&self, path: &[u32]) -> String {
-        path.iter()
-            .map(|&i| self.nodes[i as usize].surface)
-            .collect()
+        let cap: usize = path.iter().map(|&i| self.nodes[i as usize].surface.len()).sum();
+        let mut out = String::with_capacity(cap);
+        for &i in path {
+            out.push_str(self.nodes[i as usize].surface);
+        }
+        out
     }
 
     #[inline]
@@ -172,8 +175,9 @@ fn standalone_penalty(input: &str, surface: &str) -> i32 {
     if input == "し" && surface == "死" { 4_000 } else { 0 }
 }
 
-/// Prefer common homophones where the reading already supplies context.
-fn context_bonus(before: &str, reading: &str, surface: &str) -> i32 {
+/// Prefer common homophones where the surrounding reading already supplies
+/// unambiguous collocation context.
+fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32 {
     if surface == "円"
         && reading == "えん"
         && before.ends_with(|ch: char| ch.is_ascii_digit() || ('０'..='９').contains(&ch))
@@ -183,7 +187,125 @@ fn context_bonus(before: &str, reading: &str, surface: &str) -> i32 {
         && reading.starts_with('ふ')
         && (before.ends_with("あめが") || before.ends_with("ゆきが"))
     {
-        200
+        1200
+    } else if (surface.starts_with('止') || surface.starts_with("やん") || surface.starts_with("やむ"))
+        && reading.starts_with('や')
+        && (before.ends_with("あめが") || before.ends_with("ゆきが") || before.ends_with("かぜが"))
+    {
+        1200
+    } else if surface.starts_with('撮')
+        && reading.starts_with('と')
+        && (before.ends_with("しゃしんを")
+            || before.ends_with("どうがを")
+            || before.ends_with("えいがを"))
+    {
+        1200
+    } else if surface == "髪"
+        && reading == "かみ"
+        && (after.starts_with("をき")
+            || after.starts_with("がのび")
+            || after.starts_with("をあら")
+            || after.starts_with("をそめ")
+            || after.starts_with("をかわか"))
+    {
+        1200
+    } else if surface == "風邪"
+        && reading == "かぜ"
+        && (after.starts_with("をひ")
+            || after.starts_with("がなお")
+            || after.starts_with("ぐすり"))
+    {
+        1200
+    } else if surface == "箸"
+        && reading == "はし"
+        && (after.starts_with("でたべ")
+            || after.starts_with("をつか")
+            || after.starts_with("をもつ")
+            || after.starts_with("をおく"))
+    {
+        1200
+    } else if surface.starts_with('渡')
+        && reading.starts_with("わた")
+        && before.ends_with("はしを")
+    {
+        1200
+    } else if surface.starts_with('着')
+        && (reading.starts_with("つく") || reading.starts_with("つい"))
+        && (before.ends_with("えきに")
+            || before.ends_with("なんじに")
+            || before.ends_with("くうこうに")
+            || before.ends_with("いえに")
+            || before.ends_with("ほてるに"))
+    {
+        1200
+    } else if (surface.starts_with('入') || surface.starts_with('淹'))
+        && reading.starts_with("いれ")
+        && (before.ends_with("こーひーを")
+            || before.ends_with("おちゃを")
+            || before.ends_with("こうちゃを"))
+    {
+        1200
+    } else if surface == "機械"
+        && reading == "きかい"
+        && (after.starts_with("がこしょう")
+            || after.starts_with("をしゅうり")
+            || after.starts_with("をそうさ"))
+    {
+        1200
+    } else if surface == "満車"
+        && reading == "まんしゃ"
+        && before.ends_with("ちゅうしゃじょうが")
+    {
+        1500
+    } else if surface == "口座"
+        && reading == "こうざ"
+        && (after.starts_with("をかいせつ")
+            || after.starts_with("にふりこ")
+            || after.starts_with("からひきお"))
+    {
+        1200
+    } else if surface == "開設"
+        && reading == "かいせつ"
+        && before.ends_with("こうざを")
+    {
+        1200
+    } else if surface == "漢字"
+        && reading == "かんじ"
+        && (after.starts_with("のよみ")
+            || after.starts_with("をけんさく")
+            || after.starts_with("をかく")
+            || after.starts_with("をおぼ"))
+    {
+        1200
+    } else if surface == "ジム"
+        && reading == "じむ"
+        && (after.starts_with("にかよ") || after.starts_with("にいく"))
+    {
+        1200
+    } else if surface == "仕様"
+        && reading == "しよう"
+        && (after.starts_with("をきめ")
+            || after.starts_with("をかえ")
+            || after.starts_with("をへんこう")
+            || after.starts_with("しょ"))
+    {
+        1200
+    } else if surface == "地震"
+        && reading == "じしん"
+        && (after.starts_with("があっ")
+            || after.starts_with("がおき")
+            || after.starts_with("がくる")
+            || after.starts_with("そくほう"))
+    {
+        1200
+    } else if surface == "異常"
+        && reading == "いじょう"
+        && (after.starts_with("がみつ")
+            || after.starts_with("がはっせい")
+            || after.starts_with("がない")
+            || after.starts_with("がある"))
+    {
+        1500
     } else {
         0
     }
@@ -314,7 +436,7 @@ impl Converter {
                         lid: e.lid,
                         rid: e.rid,
                         wcost: i32::from(e.cost)
-                            - context_bonus(&text[..pos], &rest[..l], e.surface)
+                            - context_bonus(&text[..pos], &rest[..l], &rest[l..], e.surface)
                             + standalone_penalty(text, e.surface),
                         surface: e.surface,
                         best: i32::MAX,
@@ -651,8 +773,10 @@ impl Converter {
         n: usize,
     ) -> impl Iterator<Item = (i32, Vec<u32>)> + 'a {
         // arena entries: (node, parent arena index, g = cost after node)
-        let mut arena: Vec<(u32, u32, i32)> = vec![(EOS, u32::MAX, 0)];
-        let mut heap = BinaryHeap::new();
+        let cap = n.saturating_mul(4).clamp(64, 4096);
+        let mut arena: Vec<(u32, u32, i32)> = Vec::with_capacity(cap);
+        arena.push((EOS, u32::MAX, 0));
+        let mut heap = BinaryHeap::with_capacity(cap);
         heap.push((Reverse(lat.nodes[EOS as usize].best), Reverse(0u32)));
         let mut pops = 0;
         std::iter::from_fn(move || {
@@ -752,6 +876,38 @@ impl Converter {
         segs
     }
 
+    /// Returns kana byte ranges `(start, end)` on the Viterbi best path where
+    /// `connection(prev, node) + node.wcost >= min_step_cost`, indicating a
+    /// likely typo-damaged region.
+    pub(crate) fn suspicious_kana_spans(&self, text: &str, min_step_cost: i32) -> Vec<(usize, usize)> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let extras = self.extras(text);
+        let mut lat = self.build_lattice(text, &[], &extras);
+        self.viterbi(&mut lat);
+        let Some(path) = self.best_path(&lat) else {
+            return Vec::new();
+        };
+        let mut spans = Vec::new();
+        let mut prev_rid = lat.nodes[BOS as usize].rid;
+        let mut prev_start = 0usize;
+        for &id in &path {
+            let node = &lat.nodes[id as usize];
+            let step = self.dict.connection(prev_rid, node.lid) + node.wcost;
+            if step >= min_step_cost {
+                spans.push((prev_start, node.end));
+            }
+            prev_rid = node.rid;
+            prev_start = node.start;
+        }
+        let eos_step = self.dict.connection(prev_rid, lat.nodes[EOS as usize].lid);
+        if eos_step >= min_step_cost {
+            spans.push((prev_start, text.len()));
+        }
+        spans
+    }
+
     /// Scores typo variants against the same history, checking its file once.
     pub(crate) fn score_typos<T>(
         &self,
@@ -803,8 +959,9 @@ impl Converter {
                 cost: lat.nodes[EOS as usize].best,
             }];
         }
-        let mut seen = HashSet::new();
-        let mut res = Vec::new();
+        let initial_cap = n.min(MAX_HOMOPHONE_CANDIDATES);
+        let mut seen = HashSet::with_capacity(initial_cap);
+        let mut res = Vec::with_capacity(initial_cap);
         let mut limit = n;
         let maximum = if expand_homophones {
             n.max(MAX_HOMOPHONE_CANDIDATES)

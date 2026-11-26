@@ -1840,3 +1840,21 @@ fn casual_reactions_keep_their_hiragana_spelling() {
         "もうソロで歌う"
     );
 }
+
+#[test]
+fn merged_particle_english_spellings_and_punctuation_typos_convert_cleanly() {
+    let Some(c) = converter() else { return };
+    for (keys, expected) in [
+        ("konopchaugokigaosoi.", "このPCは動きが遅い。"),
+        ("linuxnokernelwokoushinshita.", "Linuxのkernelを更新した。"),
+        ("sslnoshoumeishogakiresouda.", "SSLの証明書が切れそうだ。"),
+        ("sononewshahontoudesuka?", "そのnewsは本当ですか？"),
+        ("ashitnoasahaamerashiiyo.", "明日の朝は雨らしいよ。"),
+    ] {
+        let mut s = plain();
+        type_str(&mut s, &c, keys);
+        assert!(s.handle(&c, Key::Space));
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected, "{keys}");
+    }
+}
