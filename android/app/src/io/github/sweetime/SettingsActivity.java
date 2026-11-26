@@ -5,13 +5,19 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.ShapeDrawable;
+import android.graphics.drawable.StateListDrawable;
+import android.graphics.drawable.shapes.RectShape;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -1308,8 +1314,9 @@ public final class SettingsActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(16), dp(10), dp(12), dp(10));
         row.setBackground(ripple());
-        View ic = icon(iconId, theme.accent, 22);
-        ic.setBackground(roundRect(theme.specialKey, 14));
+        int iconBackground = theme.accent;
+        View ic = icon(iconId, contrastingInk(iconBackground), 24);
+        ic.setBackground(roundRect(iconBackground, 14));
         row.addView(ic, new LinearLayout.LayoutParams(dp(44), dp(44)));
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
@@ -1386,18 +1393,26 @@ public final class SettingsActivity extends Activity {
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Switch sw = new Switch(this);
         sw.setChecked(on);
+        sw.setContentDescription(title);
+        sw.setSwitchMinWidth(dp(52));
+        sw.setSplitTrack(false);
         int[][] states = {{android.R.attr.state_checked}, {}};
-        // Material 3 style: a solid pill track and a round thumb.
         GradientDrawable track = new GradientDrawable();
         track.setCornerRadius(dp(16));
         track.setSize(dp(52), dp(32));
+        track.setPadding(dp(4), 0, dp(4), 0);
         track.setColor(new ColorStateList(states, new int[] {theme.accent, theme.specialKey}));
-        GradientDrawable knob = new GradientDrawable();
-        knob.setShape(GradientDrawable.OVAL);
-        knob.setSize(dp(22), dp(22));
-        knob.setColor(new ColorStateList(states, new int[] {theme.onAccent, theme.subText}));
+        track.setStroke(dp(2), new ColorStateList(states, new int[] {theme.accent, theme.subText}));
+        StateListDrawable knob = new StateListDrawable();
+        knob.addState(states[0], switchThumb(true, readableInk(theme.accent, theme.onAccent), theme.accent));
+        knob.addState(states[1], switchThumb(false, theme.subText, readableInk(theme.subText, theme.specialKey)));
         sw.setTrackDrawable(track);
-        sw.setThumbDrawable(new android.graphics.drawable.InsetDrawable(knob, dp(5)));
+        sw.setThumbDrawable(new InsetDrawable(knob, dp(4)) {
+            @Override public Insets getOpticalInsets() {
+                // Keep the track at full size around the inset thumb.
+                return Insets.NONE;
+            }
+        });
         sw.setShowText(false);
         sw.setOnCheckedChangeListener((b, checked) -> {
             onToggle.changed(checked);
@@ -1406,6 +1421,46 @@ public final class SettingsActivity extends Activity {
         row.addView(sw);
         row.setOnClickListener(v -> sw.toggle());
         return row;
+    }
+
+    private Drawable switchThumb(boolean checked, int fill, int ink) {
+        ShapeDrawable thumb = new ShapeDrawable(new RectShape() {
+            @Override public void draw(Canvas canvas, Paint paint) {
+                RectF bounds = rect();
+                float x = bounds.centerX();
+                float y = bounds.centerY();
+                float unit = bounds.height() / 24f;
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(fill);
+                canvas.drawCircle(x, y, bounds.height() / 2f, paint);
+                paint.setColor(ink);
+                paint.setStrokeWidth(1.8f * unit);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                if (checked) {
+                    canvas.drawLine(x - 4.5f * unit, y, x - 1.5f * unit, y + 3 * unit, paint);
+                    canvas.drawLine(x - 1.5f * unit, y + 3 * unit, x + 5 * unit, y - 4 * unit, paint);
+                } else {
+                    canvas.drawLine(x - 4 * unit, y - 4 * unit, x + 4 * unit, y + 4 * unit, paint);
+                    canvas.drawLine(x + 4 * unit, y - 4 * unit, x - 4 * unit, y + 4 * unit, paint);
+                }
+            }
+        });
+        thumb.setIntrinsicWidth(dp(24));
+        thumb.setIntrinsicHeight(dp(24));
+        thumb.getPaint().setAntiAlias(true);
+        return thumb;
+    }
+
+    private static int contrastingInk(int background) {
+        // At this luminance the contrast ratios of black and white are equal.
+        return Color.luminance(background) >= 0.179f ? Color.BLACK : Color.WHITE;
+    }
+
+    private static int readableInk(int background, int ink) {
+        float a = Color.luminance(background);
+        float b = Color.luminance(ink);
+        float contrast = (Math.max(a, b) + 0.05f) / (Math.min(a, b) + 0.05f);
+        return contrast >= 3f ? ink : contrastingInk(background);
     }
 
     private View prefToggle(String title, String desc, String key, boolean def) {
