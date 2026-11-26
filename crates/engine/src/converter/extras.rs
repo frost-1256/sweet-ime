@@ -233,7 +233,7 @@ impl Converter {
                 _ => None,
             }
         };
-        let mut seen: std::collections::HashSet<(usize, usize, String)> = Default::default();
+        let mut seen: Vec<(usize, usize, String)> = Vec::new();
         for (pos, _) in text.char_indices() {
             self.dict.common_prefix(&text[pos..], |l, e| {
                 let mut chars = e.surface.chars();
@@ -247,7 +247,8 @@ impl Converter {
                 }
                 let surface = format!("{digit}{rest}");
                 let end = pos + l;
-                if seen.insert((pos, end, surface.clone())) {
+                if !seen.iter().any(|(s, e, surf)| *s == pos && *e == end && surf == &surface) {
+                    seen.push((pos, end, surface.clone()));
                     out.push(Extra {
                         start: pos,
                         end,
@@ -344,9 +345,7 @@ impl Converter {
         let Some((start, end)) = release_phrase::span(text) else {
             return;
         };
-        let lid = self.dict.pos_id("動詞,自立,*,*,一段,連用形,出る");
-        let rid = self.dict.pos_id("助詞,終助詞,*,*,*,*,ね");
-        if let (Some(lid), Some(rid)) = (lid, rid) {
+        if let Some((lid, rid)) = self.release_phrase_pos {
             out.push(Extra {
                 start,
                 end,
@@ -410,10 +409,7 @@ impl Converter {
     /// English words typed by their spelling in `text` (ぎてゅb), as
     /// lattice extras with that spelling (GitHub).
     pub(super) fn spelling_extras(&self, text: &str, out: &mut Vec<Extra>) {
-        let id = self
-            .dict
-            .pos_id("名詞,一般,*,*,*,*,*")
-            .unwrap_or(self.dict.unknown_id());
+        let id = self.noun_pos;
         for (start, end, spelling) in crate::english::marked_spelling_matches(text) {
             out.push(Extra {
                 start,
@@ -428,31 +424,31 @@ impl Converter {
         // Spellings typed as romaji (ime reads いめ), at the start only, or
         // anywhere when no Japanese word starts like them (nvidia reads
         // んゔぃぢあ).
+        let mut push_spelling = |start: usize, reading: &str, spelling: &str| {
+            let end = start + reading.len();
+            out.push(Extra {
+                start,
+                end,
+                lid: id,
+                rid: id,
+                cost: SPELLING_COST,
+                surface: spelling.to_string(),
+                origin: Origin::Spelling,
+            });
+            self.n_row_after(spelling, reading, &text[end..], end, out);
+        };
         for (reading, spelling) in crate::english::kana_spelled_readings() {
             // The romaji spelling of issue reads いっすえ, even inside
             // Japanese sentences. This reading is distinct from 一末.
             let anywhere = *spelling == "issue"
                 || reading
                     .starts_with(['ん', 'ぁ', 'ぃ', 'ぅ', 'ぇ', 'ぉ', 'っ', 'ゃ', 'ゅ', 'ょ']);
-            let starts: Vec<usize> = if anywhere {
-                text.match_indices(reading.as_str()).map(|(i, _)| i).collect()
+            if anywhere {
+                for (start, _) in text.match_indices(reading.as_str()) {
+                    push_spelling(start, reading, spelling);
+                }
             } else if text.starts_with(reading.as_str()) {
-                vec![0]
-            } else {
-                Vec::new()
-            };
-            for start in starts {
-                let end = start + reading.len();
-                out.push(Extra {
-                    start,
-                    end,
-                    lid: id,
-                    rid: id,
-                    cost: SPELLING_COST,
-                    surface: (*spelling).to_string(),
-                    origin: Origin::Spelling,
-                });
-                self.n_row_after(spelling, reading, &text[end..], end, out);
+                push_spelling(0, reading, spelling);
             }
         }
         if !text.bytes().any(|b| b.is_ascii_alphabetic()) {
