@@ -227,10 +227,10 @@ pub fn romaji_table_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("romaji.tsv"))
 }
 
-/// Reads the user's romaji table; `None` when there is none (the built-in
-/// table applies).
+/// Reads the user's romaji table (UTF-8 or UTF-16); `None` when there is
+/// none (the built-in table applies).
 pub fn load_romaji_rules() -> Option<Vec<crate::romaji::Rule>> {
-    let text = std::fs::read_to_string(romaji_table_file()?).ok()?;
+    let text = crate::text_file::decode_text(&std::fs::read(romaji_table_file()?).ok()?);
     Some(crate::romaji::parse_rules(&text)).filter(|rules| !rules.is_empty())
 }
 

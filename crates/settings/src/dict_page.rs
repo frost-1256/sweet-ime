@@ -1,6 +1,7 @@
 //! The user dictionary page: add, edit, delete, import and export words.
 
 use eframe::egui::{self, RichText};
+use sweet_engine::text_file::decode_text;
 use sweet_engine::user_dict::{DEFAULT_POS, POS};
 use sweet_engine::{UserDictionary, paths};
 use sweet_ui::{card_frame, eframe};
@@ -232,28 +233,5 @@ impl DictPage {
                 }
             });
         });
-    }
-}
-
-/// Text from a file: UTF-16 with a byte order mark (Microsoft IME exports)
-/// or UTF-8.
-pub(crate) fn decode_text(bytes: &[u8]) -> String {
-    let utf16 = |b: &[u8], le: bool| {
-        let units: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|c| {
-                if le {
-                    u16::from_le_bytes([c[0], c[1]])
-                } else {
-                    u16::from_be_bytes([c[0], c[1]])
-                }
-            })
-            .collect();
-        String::from_utf16_lossy(&units)
-    };
-    match bytes {
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
     }
 }

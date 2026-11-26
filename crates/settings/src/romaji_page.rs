@@ -190,7 +190,7 @@ impl RomajiPage {
             ui.horizontal(|ui| {
                 let path = self.file.trim().trim_matches('"').to_string();
                 if ui.add_enabled(!path.is_empty(), egui::Button::new("インポート")).clicked() {
-                    *status = Some(match std::fs::read(&path).map(|b| crate::dict_page::decode_text(&b)) {
+                    *status = Some(match std::fs::read(&path).map(|b| sweet_engine::text_file::decode_text(&b)) {
                         Ok(text) => {
                             let rules = romaji::parse_rules(&text);
                             if rules.is_empty() {

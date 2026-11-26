@@ -15,6 +15,7 @@ mod word_keys;
 pub mod session;
 pub mod simeji;
 pub mod special;
+pub mod text_file;
 pub mod theme;
 pub mod typo;
 pub mod user_dict;

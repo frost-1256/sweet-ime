@@ -1122,6 +1122,22 @@ fn main() -> Result<()> {
             check("romaji table row", reading("camera"), "かめら", &mut fails);
             check("romaji table next input", reading("cqa"), "ちや", &mut fails);
             check("romaji table keeps built-in rows", reading("kyouha"), "きょうは", &mut fails);
+            // A UTF-16 table (Google Japanese Input exports) copied into place.
+            let path = sweet_engine::paths::romaji_table_file().expect("romaji.tsv path");
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let mut utf16 = vec![0xFF, 0xFE];
+            let tsv = sweet_engine::romaji::format_rules(&[Rule::new("ca", "こ", "")]);
+            utf16.extend(tsv.encode_utf16().flat_map(u16::to_le_bytes));
+            std::fs::write(&path, utf16).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("set romaji.tsv timestamp");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table in UTF-16", reading("ca"), "こ", &mut fails);
             sweet_engine::paths::reset_romaji_rules().expect("remove romaji.tsv");
             focus.OnKillThreadFocus()?;
             focus.OnSetThreadFocus()?;
