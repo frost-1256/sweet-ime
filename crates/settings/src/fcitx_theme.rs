@@ -496,6 +496,10 @@ fn reload() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
     match active.as_deref() {
+        Some("kimpanel") => {
+            let _ = reload_addon("kimpanel");
+            let _ = reload_addon("classicui");
+        }
         Some(ui) => {
             let _ = reload_addon(ui);
         }

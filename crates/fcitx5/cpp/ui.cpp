@@ -794,7 +794,10 @@ public:
         hide();
         if (pointer_) wl_pointer_destroy(pointer_);
         if (seat_) wl_seat_destroy(seat_);
-        if (output_) wl_output_destroy(output_);
+        for (auto &out : outputs_) {
+            if (out->output) wl_output_destroy(out->output);
+        }
+        outputs_.clear();
         if (bgEffectManager_) ext_background_effect_manager_v1_destroy(bgEffectManager_);
         if (layerShell_) {
             if (layerShellVersion_ >= 3) {
@@ -828,6 +831,7 @@ public:
         for (auto &slot : slots_) {
             slot.destroy();
         }
+        hostingOutput_ = nullptr;
         configured_ = false;
         pointerInside_ = false;
         if (display_) wl_display_flush(display_);
@@ -845,6 +849,7 @@ public:
         if (!surface_) {
             surface_ = wl_compositor_create_surface(compositor_);
             if (!surface_) return false;
+            wl_surface_add_listener(surface_, &kSurfaceListener, this);
             layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
                 layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "sweet-ime");
             if (!layerSurface_) {
@@ -858,32 +863,10 @@ public:
             configured_ = false;
         }
 
-        const bool hasCursor = (cursor.left() != 0 || cursor.top() != 0 || cursor.width() > 0 ||
-                                cursor.height() > 0);
-        if (hasCursor) {
-            zwlr_layer_surface_v1_set_anchor(
-                layerSurface_,
-                ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
-            int mx = cursor.left() - static_cast<int>(SHADOW_PAD);
-            int my = cursor.bottom() + 4 - static_cast<int>(SHADOW_PAD);
-            if (outputH_ > 0 && my + h > outputH_) {
-                my = cursor.top() - h - 4 + static_cast<int>(SHADOW_PAD);
-            }
-            if (outputW_ > 0) {
-                mx = std::clamp(mx, 0, std::max(0, outputW_ - w));
-            } else {
-                mx = std::max(0, mx);
-            }
-            if (outputH_ > 0) {
-                my = std::clamp(my, 0, std::max(0, outputH_ - h));
-            } else {
-                my = std::max(0, my);
-            }
-            zwlr_layer_surface_v1_set_margin(layerSurface_, my, 0, 0, mx);
-        } else {
-            zwlr_layer_surface_v1_set_anchor(layerSurface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
-            zwlr_layer_surface_v1_set_margin(layerSurface_, 0, 0, 36, 0);
-        }
+        lastCursor_ = cursor;
+        lastW_ = w;
+        lastH_ = h;
+        applyPlacement();
         zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(w),
                                        static_cast<uint32_t>(h));
 
@@ -1014,6 +997,106 @@ private:
         return nullptr;
     }
 
+    struct OutputInfo {
+        uint32_t name = 0;
+        wl_output *output = nullptr;
+        int32_t modeW = 0;
+        int32_t modeH = 0;
+        int32_t scale = 1;
+        int32_t transform = WL_OUTPUT_TRANSFORM_NORMAL;
+
+        int logicalW() const {
+            if (modeW <= 0 || modeH <= 0) return 0;
+            const bool rotated = (transform == WL_OUTPUT_TRANSFORM_90 ||
+                                  transform == WL_OUTPUT_TRANSFORM_270 ||
+                                  transform == WL_OUTPUT_TRANSFORM_FLIPPED_90 ||
+                                  transform == WL_OUTPUT_TRANSFORM_FLIPPED_270);
+            const int rawW = rotated ? modeH : modeW;
+            return std::max(1, rawW / std::max(1, scale));
+        }
+
+        int logicalH() const {
+            if (modeW <= 0 || modeH <= 0) return 0;
+            const bool rotated = (transform == WL_OUTPUT_TRANSFORM_90 ||
+                                  transform == WL_OUTPUT_TRANSFORM_270 ||
+                                  transform == WL_OUTPUT_TRANSFORM_FLIPPED_90 ||
+                                  transform == WL_OUTPUT_TRANSFORM_FLIPPED_270);
+            const int rawH = rotated ? modeW : modeH;
+            return std::max(1, rawH / std::max(1, scale));
+        }
+    };
+
+    std::pair<int, int> currentOutputBounds() const {
+        if (hostingOutput_) {
+            for (const auto &out : outputs_) {
+                if (out->output == hostingOutput_) {
+                    return {out->logicalW(), out->logicalH()};
+                }
+            }
+        }
+        // Before wl_surface.enter reports the hosting output, use the sole output on single-output
+        // setups; on multi-output setups avoid clamping against a potentially unrelated monitor.
+        if (outputs_.size() == 1) {
+            return {outputs_[0]->logicalW(), outputs_[0]->logicalH()};
+        }
+        return {0, 0};
+    }
+
+    void applyPlacement() {
+        if (!layerSurface_ || lastW_ <= 0 || lastH_ <= 0) return;
+        const bool hasCursor = (lastCursor_.left() != 0 || lastCursor_.top() != 0 ||
+                                lastCursor_.width() > 0 || lastCursor_.height() > 0);
+        if (hasCursor) {
+            const auto [outW, outH] = currentOutputBounds();
+            zwlr_layer_surface_v1_set_anchor(
+                layerSurface_,
+                ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+            int mx = lastCursor_.left() - static_cast<int>(SHADOW_PAD);
+            int my = lastCursor_.bottom() + 4 - static_cast<int>(SHADOW_PAD);
+            if (outH > 0 && my + lastH_ > outH) {
+                my = lastCursor_.top() - lastH_ - 4 + static_cast<int>(SHADOW_PAD);
+            }
+            if (outW > 0) {
+                mx = std::clamp(mx, 0, std::max(0, outW - lastW_));
+            } else {
+                mx = std::max(0, mx);
+            }
+            if (outH > 0) {
+                my = std::clamp(my, 0, std::max(0, outH - lastH_));
+            } else {
+                my = std::max(0, my);
+            }
+            zwlr_layer_surface_v1_set_margin(layerSurface_, my, 0, 0, mx);
+        } else {
+            zwlr_layer_surface_v1_set_anchor(layerSurface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
+            zwlr_layer_surface_v1_set_margin(layerSurface_, 0, 0, 36, 0);
+        }
+    }
+
+    static void onSurfaceEnter(void *data, wl_surface *, wl_output *output) {
+        auto *self = static_cast<WaylandPopup *>(data);
+        if (self->hostingOutput_ != output) {
+            self->hostingOutput_ = output;
+            if (self->surface_ && self->layerSurface_ && self->configured_) {
+                self->applyPlacement();
+                wl_surface_commit(self->surface_);
+                wl_display_flush(self->display_);
+            }
+        }
+    }
+
+    static void onSurfaceLeave(void *data, wl_surface *, wl_output *output) {
+        auto *self = static_cast<WaylandPopup *>(data);
+        if (self->hostingOutput_ == output) {
+            self->hostingOutput_ = nullptr;
+        }
+    }
+
+    static constexpr wl_surface_listener kSurfaceListener = {
+        .enter = onSurfaceEnter,
+        .leave = onSurfaceLeave,
+    };
+
     static void onGlobal(void *data, wl_registry *reg, uint32_t name, const char *iface,
                          uint32_t version) {
         auto *self = static_cast<WaylandPopup *>(data);
@@ -1032,10 +1115,15 @@ private:
                 wl_registry_bind(reg, name, &ext_background_effect_manager_v1_interface, 1));
             ext_background_effect_manager_v1_add_listener(self->bgEffectManager_,
                                                           &kBgEffectListener, self);
-        } else if (std::strcmp(iface, wl_output_interface.name) == 0 && !self->output_) {
-            self->output_ = static_cast<wl_output *>(
+        } else if (std::strcmp(iface, wl_output_interface.name) == 0) {
+            auto info = std::make_unique<OutputInfo>();
+            info->name = name;
+            info->output = static_cast<wl_output *>(
                 wl_registry_bind(reg, name, &wl_output_interface, std::min(version, 2u)));
-            wl_output_add_listener(self->output_, &kOutputListener, self);
+            if (info->output) {
+                wl_output_add_listener(info->output, &kOutputListener, info.get());
+                self->outputs_.push_back(std::move(info));
+            }
         } else if (std::strcmp(iface, wl_seat_interface.name) == 0 && !self->seat_) {
             self->seat_ = static_cast<wl_seat *>(
                 wl_registry_bind(reg, name, &wl_seat_interface, std::min(version, 5u)));
@@ -1043,25 +1131,45 @@ private:
         }
     }
 
-    static void onGlobalRemove(void *, wl_registry *, uint32_t) {}
+    static void onGlobalRemove(void *data, wl_registry *, uint32_t name) {
+        auto *self = static_cast<WaylandPopup *>(data);
+        for (auto it = self->outputs_.begin(); it != self->outputs_.end(); ++it) {
+            if ((*it)->name == name) {
+                if (self->hostingOutput_ == (*it)->output) {
+                    self->hostingOutput_ = nullptr;
+                }
+                if ((*it)->output) {
+                    wl_output_destroy((*it)->output);
+                }
+                self->outputs_.erase(it);
+                break;
+            }
+        }
+    }
 
     static constexpr wl_registry_listener kRegistryListener = {
         .global = onGlobal,
         .global_remove = onGlobalRemove,
     };
 
-    static void onOutputGeometry(void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t,
-                                 const char *, const char *, int32_t) {}
+    static void onOutputGeometry(void *data, wl_output *, int32_t, int32_t, int32_t, int32_t,
+                                 int32_t, const char *, const char *, int32_t transform) {
+        static_cast<OutputInfo *>(data)->transform = transform;
+    }
     static void onOutputMode(void *data, wl_output *, uint32_t flags, int32_t w, int32_t h,
                              int32_t) {
         if ((flags & WL_OUTPUT_MODE_CURRENT) != 0 && w > 0 && h > 0) {
-            auto *self = static_cast<WaylandPopup *>(data);
-            self->outputW_ = w;
-            self->outputH_ = h;
+            auto *info = static_cast<OutputInfo *>(data);
+            info->modeW = w;
+            info->modeH = h;
         }
     }
     static void onOutputDone(void *, wl_output *) {}
-    static void onOutputScale(void *, wl_output *, int32_t) {}
+    static void onOutputScale(void *data, wl_output *, int32_t factor) {
+        if (factor > 0) {
+            static_cast<OutputInfo *>(data)->scale = factor;
+        }
+    }
 
     static constexpr wl_output_listener kOutputListener = {
         .geometry = onOutputGeometry,
@@ -1174,7 +1282,8 @@ private:
     wl_registry *registry_ = nullptr;
     wl_compositor *compositor_ = nullptr;
     wl_shm *shm_ = nullptr;
-    wl_output *output_ = nullptr;
+    std::vector<std::unique_ptr<OutputInfo>> outputs_;
+    wl_output *hostingOutput_ = nullptr;
     wl_seat *seat_ = nullptr;
     wl_pointer *pointer_ = nullptr;
     zwlr_layer_shell_v1 *layerShell_ = nullptr;
@@ -1185,8 +1294,9 @@ private:
     wl_surface *surface_ = nullptr;
     zwlr_layer_surface_v1 *layerSurface_ = nullptr;
     std::array<ShmSlot, 2> slots_{};
-    int outputW_ = 0;
-    int outputH_ = 0;
+    fcitx::Rect lastCursor_{};
+    int lastW_ = 0;
+    int lastH_ = 0;
     bool configured_ = false;
     bool pointerInside_ = false;
     double ptrX_ = 0.0;
@@ -1228,6 +1338,7 @@ public:
 #endif
 #ifdef SWEET_HAVE_XCB
         if (auto *xcb = instance_->addonManager().addon("xcb", true)) {
+            xcb_ = xcb;
             xcbCreated_ = xcb->call<fcitx::IXCBModule::addConnectionCreatedCallback>(
                 [this, xcb](const std::string &name, xcb_connection_t *conn, int screen,
                             fcitx::FocusGroup *) {
@@ -1329,15 +1440,23 @@ private:
     }
 
     std::pair<BackendKind, std::string> resolveTarget() const {
-#ifdef SWEET_HAVE_WAYLAND
         if (activeDisplay_.rfind("wayland:", 0) == 0) {
             const std::string name = activeDisplay_.substr(8);
+#ifdef SWEET_HAVE_WAYLAND
             if (wlPopups_.find(name) != wlPopups_.end()) {
                 return {BackendKind::Wayland, name};
             }
+#endif
+#ifdef SWEET_HAVE_XCB
+            if (name.empty() && xcb_) {
+                const std::string mainDisp = xcb_->call<fcitx::IXCBModule::mainDisplay>();
+                if (!mainDisp.empty() && xcbPopups_.find(mainDisp) != xcbPopups_.end()) {
+                    return {BackendKind::Xcb, mainDisp};
+                }
+            }
+#endif
             return {BackendKind::None, {}};
         }
-#endif
 #ifdef SWEET_HAVE_XCB
         if (activeDisplay_.rfind("x11:", 0) == 0) {
             const std::string name = activeDisplay_.substr(4);
@@ -1355,6 +1474,12 @@ private:
             }
 #endif
 #ifdef SWEET_HAVE_XCB
+            if (xcb_) {
+                const std::string mainDisp = xcb_->call<fcitx::IXCBModule::mainDisplay>();
+                if (!mainDisp.empty() && xcbPopups_.find(mainDisp) != xcbPopups_.end()) {
+                    return {BackendKind::Xcb, mainDisp};
+                }
+            }
             if (!xcbPopups_.empty()) {
                 return {BackendKind::Xcb, xcbPopups_.begin()->first};
             }
@@ -1382,11 +1507,12 @@ private:
         presentedName_.clear();
     }
 
-    void renderNow() {
+    // Renders the current panel state without modifying animTimer_.
+    // Returns true if another animation or retry tick should be scheduled.
+    bool renderFrame() {
         if (!renderer_.visible()) {
             hideAll();
-            stopTimer();
-            return;
+            return false;
         }
         auto [kind, name] = resolveTarget();
         if (kind != presentedKind_ || name != presentedName_) {
@@ -1411,19 +1537,21 @@ private:
             presentedKind_ = kind;
             presentedName_ = name;
             retryCount_ = 0;
-            if (renderer_.needsAnimation()) {
-                ensureTimer();
-            } else {
-                stopTimer();
-            }
+            return renderer_.needsAnimation();
+        }
+        hidePresented();
+        if (kind != BackendKind::None && retryCount_ < 3) {
+            ++retryCount_;
+            return true;
+        }
+        return false;
+    }
+
+    void renderNow() {
+        if (renderFrame()) {
+            ensureTimer();
         } else {
-            hidePresented();
-            if (kind != BackendKind::None && retryCount_ < 3) {
-                ++retryCount_;
-                ensureTimer();
-            } else {
-                stopTimer();
-            }
+            stopTimer();
         }
     }
 
@@ -1444,9 +1572,7 @@ private:
         animTimer_ = instance_->eventLoop().addTimeEvent(
             CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 16000, 1000,
             [this](fcitx::EventSourceTime *src, uint64_t) {
-                renderNow();
-                if (renderer_.needsAnimation() ||
-                    (presentedKind_ == BackendKind::None && retryCount_ > 0 && retryCount_ < 3)) {
+                if (renderFrame()) {
                     src->setNextInterval(16000);
                     src->setOneShot();
                 } else {
@@ -1526,6 +1652,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<WaylandPopup>> wlPopups_;
 #endif
 #ifdef SWEET_HAVE_XCB
+    fcitx::AddonInstance *xcb_ = nullptr;
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::XCBConnectionCreated>> xcbCreated_;
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::XCBConnectionClosed>> xcbClosed_;
     std::unordered_map<std::string, std::unique_ptr<XcbPopup>> xcbPopups_;
