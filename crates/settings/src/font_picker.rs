@@ -35,7 +35,7 @@ impl FontPicker {
                 &self.family
             };
             let mut selected = None;
-            let combo_max_width = ui.available_width().min(200.0);
+            let combo_max_width = (ui.available_width() - 140.0).max(0.0).min(200.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(combo_max_width, ui.spacing().interact_size.y),
                 egui::Layout::right_to_left(egui::Align::Center),

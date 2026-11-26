@@ -150,7 +150,7 @@ fn card_inner(
             |ui| {
                 control(ui);
                 ui.add_space(6.0);
-                let text_width = ui.available_width().max(120.0);
+                let text_width = ui.available_width().max(0.0);
                 let text = ui.allocate_ui_with_layout(
                     Vec2::new(text_width, 0.0),
                     egui::Layout::top_down(egui::Align::LEFT),
@@ -225,7 +225,11 @@ mod tests {
         });
         output.textures_delta.clear();
         assert!(control_rect.width() >= 220.0);
-        // The title/description block stays strictly to the left of the control.
+        // The title/description block stays within the card and to the left of the control.
+        assert!(
+            text_rect.left() >= card_rect.left(),
+            "text_rect={text_rect:?} overflowed left of card_rect={card_rect:?}"
+        );
         assert!(
             text_rect.right() <= control_rect.left(),
             "text_rect={text_rect:?} overlapped control_rect={control_rect:?}"
@@ -234,6 +238,46 @@ mod tests {
         assert!(
             card_rect.height() < 140.0,
             "card_rect stretched unexpectedly: {card_rect:?}"
+        );
+    }
+
+    #[test]
+    fn card_text_stays_inside_narrow_card() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(320.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let mut control_rect = egui::Rect::NOTHING;
+        let mut text_rect = egui::Rect::NOTHING;
+        let mut card_rect = egui::Rect::NOTHING;
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let (t_rect, c_rect) = card_inner(
+                    ui,
+                    "候補のフォント",
+                    "説明テキスト",
+                    |ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(220.0, 28.0), egui::Sense::hover());
+                        control_rect = rect;
+                    },
+                );
+                text_rect = t_rect;
+                card_rect = c_rect;
+            });
+        });
+        output.textures_delta.clear();
+        assert!(
+            text_rect.left() >= card_rect.left(),
+            "text_rect={text_rect:?} overflowed left of card_rect={card_rect:?}"
+        );
+        assert!(
+            text_rect.right() <= control_rect.left(),
+            "text_rect={text_rect:?} overlapped control_rect={control_rect:?}"
         );
     }
 }
