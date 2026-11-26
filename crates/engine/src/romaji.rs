@@ -1,13 +1,13 @@
 //! Incremental romaji -> hiragana composer.
 //!
-//! The table follows the common Japanese IME conventions (Hepburn + Kunrei
-//! variants, `x`/`l` small kana, `nn`/`n'` for ん, doubled consonants for っ).
+//! The built-in table follows the common Japanese IME conventions (Hepburn +
+//! Kunrei variants, `x`/`l` small kana, `nn`/`n'` for ん, doubled consonants
+//! for っ). Users can replace it with their own table (see [`set_rules`]).
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock, RwLock};
 
-/// (input, output, pending) — after `input` is matched, `output` is emitted
-/// and `pending` is pushed back into the buffer.
+/// (input, output) rows of the built-in table.
 const BASE: &[(&str, &str)] = &[
     ("a", "あ"), ("i", "い"), ("u", "う"), ("e", "え"), ("o", "お"),
     ("ka", "か"), ("ki", "き"), ("ku", "く"), ("ke", "け"), ("ko", "こ"),
@@ -65,35 +65,149 @@ const BASE: &[(&str, &str)] = &[
     ("!", "！"), ("?", "？"),
 ];
 
-struct Table {
-    exact: HashMap<String, (String, String)>,
-    /// All proper prefixes of every input key.
-    prefixes: std::collections::HashSet<String>,
+/// One table row, as in Mozc's romaji table: typing `input` emits `output`
+/// and pushes `next` back as the start of the following input
+/// (`tt` -> `っ` + `t`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rule {
+    pub input: String,
+    pub output: String,
+    pub next: String,
 }
 
-fn table() -> &'static Table {
-    static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut exact: HashMap<String, (String, String)> = HashMap::new();
-        for (k, v) in BASE {
-            exact.insert((*k).into(), ((*v).into(), String::new()));
+impl Rule {
+    pub fn new(input: &str, output: &str, next: &str) -> Self {
+        Self { input: input.into(), output: output.into(), next: next.into() }
+    }
+}
+
+/// The built-in table as editable rows, including the generated doubled
+/// consonant and `n` + consonant rows.
+pub fn default_rules() -> Vec<Rule> {
+    let mut rules: Vec<Rule> = BASE.iter().map(|(k, v)| Rule::new(k, v, "")).collect();
+    // A lone n is ん when nothing can follow it (end of input, digits).
+    rules.push(Rule::new("n", "ん", ""));
+    // Doubled consonants -> っ + consonant.
+    for c in "bcdfghjklmpqrstvwxyz".chars() {
+        rules.push(Rule::new(&format!("{c}{c}"), "っ", &c.to_string()));
+    }
+    // n + consonant -> ん + consonant.
+    for c in "bcdfghjklmpqrstvwxz".chars() {
+        rules.push(Rule::new(&format!("n{c}"), "ん", &c.to_string()));
+    }
+    rules
+}
+
+/// Longest `input` or `next` a table row may have, in characters. The table
+/// stores every prefix of every input, so long keys would cost memory.
+pub const MAX_KEY_CHARS: usize = 32;
+
+/// Largest romaji table file that is read, in bytes.
+pub const MAX_TABLE_BYTES: u64 = 1 << 20;
+
+/// Reads tab-separated rows (`input`, `output`, optional `next`), the format
+/// Mozc and Google Japanese Input export. Lines without a tab are ignored.
+/// Rows with an empty `input`, an `input` or `next` longer than
+/// [`MAX_KEY_CHARS`], or a NUL character (a misread file) are skipped.
+pub fn parse_rules(text: &str) -> Vec<Rule> {
+    parse_rules_counted(text).0
+}
+
+/// [`parse_rules`], also returning how many rows it skipped.
+pub fn parse_rules_counted(text: &str) -> (Vec<Rule>, usize) {
+    let mut skipped = 0;
+    let rules = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let input = cols.next()?;
+            let output = cols.next()?;
+            let next = cols.next().unwrap_or("");
+            let fits = |s: &str| s.chars().count() <= MAX_KEY_CHARS;
+            let ok = !input.is_empty() && fits(input) && fits(next) && !line.contains('\0');
+            skipped += usize::from(!ok);
+            ok.then(|| Rule::new(input, output, next))
+        })
+        .collect();
+    (rules, skipped)
+}
+
+/// Writes rows in the format [`parse_rules`] reads.
+pub fn format_rules(rules: &[Rule]) -> String {
+    let mut out = String::new();
+    for r in rules.iter().filter(|r| !r.input.is_empty()) {
+        out.push_str(&r.input);
+        out.push('\t');
+        out.push_str(&r.output);
+        if !r.next.is_empty() {
+            out.push('\t');
+            out.push_str(&r.next);
         }
-        // Doubled consonants -> っ + consonant.
-        for c in "bcdfghjklmpqrstvwxyz".chars() {
-            exact.insert(format!("{c}{c}"), ("っ".into(), c.to_string()));
+        out.push('\n');
+    }
+    out
+}
+
+/// A compiled romaji table.
+#[derive(Debug)]
+pub struct Table {
+    exact: HashMap<String, (String, String)>,
+    /// All proper prefixes of every input key.
+    prefixes: HashSet<String>,
+}
+
+impl Table {
+    /// Later rows win over earlier rows with the same input. Inputs are
+    /// lowercased because the composer lowercases keystrokes.
+    pub fn new(rules: &[Rule]) -> Self {
+        let mut exact = HashMap::new();
+        for r in rules.iter().filter(|r| !r.input.is_empty()) {
+            exact.insert(r.input.to_ascii_lowercase(), (r.output.clone(), r.next.to_ascii_lowercase()));
         }
-        // n + consonant -> ん + consonant.
-        for c in "bcdfghjklmpqrstvwxz".chars() {
-            exact.insert(format!("n{c}"), ("ん".into(), c.to_string()));
-        }
-        let mut prefixes = std::collections::HashSet::new();
+        let mut prefixes = HashSet::new();
         for k in exact.keys() {
             for (i, _) in k.char_indices().skip(1) {
                 prefixes.insert(k[..i].to_string());
             }
         }
-        Table { exact, prefixes }
-    })
+        Self { exact, prefixes }
+    }
+
+    /// Converts a whole romaji string with this table.
+    pub fn to_hiragana(&self, romaji: &str) -> String {
+        let mut c = Composer::new();
+        for ch in romaji.chars() {
+            c.push_with(self, ch);
+        }
+        c.resolve(self, true);
+        c.kana
+    }
+}
+
+fn builtin() -> &'static Arc<Table> {
+    static TABLE: OnceLock<Arc<Table>> = OnceLock::new();
+    TABLE.get_or_init(|| Arc::new(Table::new(&default_rules())))
+}
+
+static CUSTOM: RwLock<Option<Arc<Table>>> = RwLock::new(None);
+
+/// The table in use: the user's, or the built-in one.
+fn active() -> Arc<Table> {
+    CUSTOM
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| builtin().clone())
+}
+
+/// Replaces the table every composer in this process uses. `None` or a
+/// list without rows restores the built-in table.
+pub fn set_rules(rules: Option<&[Rule]>) {
+    let table = rules
+        .filter(|r| r.iter().any(|r| !r.input.is_empty()))
+        .map(|r| Arc::new(Table::new(r)));
+    *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = table;
 }
 
 /// Incremental composer. Feed ASCII keystrokes, read the hiragana text plus
@@ -110,9 +224,13 @@ impl Composer {
     }
 
     pub fn push(&mut self, ch: char) {
+        self.push_with(&active(), ch);
+    }
+
+    fn push_with(&mut self, t: &Table, ch: char) {
         let ch = ch.to_ascii_lowercase();
         self.pending.push(ch);
-        self.resolve(false);
+        self.resolve(t, false);
         if is_digit(ch) {
             self.number_separator();
         }
@@ -136,17 +254,22 @@ impl Composer {
     }
 
     pub fn push_str(&mut self, s: &str) {
+        let t = active();
         for ch in s.chars() {
-            self.push(ch);
+            self.push_with(&t, ch);
         }
     }
 
-    fn resolve(&mut self, flush: bool) {
-        let t = table();
-        loop {
-            if self.pending.is_empty() {
+    fn resolve(&mut self, t: &Table, flush: bool) {
+        // A user table can push back its own input forever ("a" -> "" + "a").
+        let mut budget = 64 + 4 * self.pending.len();
+        while !self.pending.is_empty() {
+            if budget == 0 {
+                let p = std::mem::take(&mut self.pending);
+                self.kana.push_str(&p);
                 return;
             }
+            budget -= 1;
             let is_prefix = t.prefixes.contains(&self.pending);
             if !flush && is_prefix {
                 return; // wait for more input
@@ -154,15 +277,7 @@ impl Composer {
             if let Some((out, rest)) = t.exact.get(&self.pending) {
                 self.kana.push_str(out);
                 self.pending = rest.clone();
-                if self.pending.is_empty() {
-                    return;
-                }
                 continue;
-            }
-            if flush && self.pending == "n" {
-                self.kana.push('ん');
-                self.pending.clear();
-                return;
             }
             if flush && is_prefix {
                 // e.g. "ky" at end: emit literally
@@ -170,11 +285,20 @@ impl Composer {
                 self.kana.push_str(&p);
                 return;
             }
-            // No entry can match: emit the first char literally and retry.
-            let first = self.pending.remove(0);
-            if first == 'n' {
-                self.kana.push('ん');
+            // No row matches the whole input: take the longest row that
+            // matches its start ("n" in "n1"), or else emit one character.
+            let longest = self
+                .pending
+                .char_indices()
+                .rev()
+                .map(|(i, _)| i)
+                .filter(|&i| i > 0)
+                .find_map(|i| t.exact.get(&self.pending[..i]).map(|e| (i, e)));
+            if let Some((len, (out, rest))) = longest {
+                self.kana.push_str(out);
+                self.pending = format!("{rest}{}", &self.pending[len..]);
             } else {
+                let first = self.pending.remove(0);
                 self.kana.push(first);
             }
         }
@@ -182,7 +306,7 @@ impl Composer {
 
     /// Resolve trailing input (e.g. a lone `n` becomes `ん`).
     pub fn flush(&mut self) {
-        self.resolve(true);
+        self.resolve(&active(), true);
     }
 
     pub fn backspace(&mut self) -> bool {
@@ -221,10 +345,7 @@ fn is_digit(c: char) -> bool {
 
 /// Convert a whole romaji string to hiragana.
 pub fn to_hiragana(romaji: &str) -> String {
-    let mut c = Composer::new();
-    c.push_str(romaji);
-    c.flush();
-    c.kana
+    active().to_hiragana(romaji)
 }
 
 /// Reconstructs a readable spelling when the original keystrokes are unavailable.
@@ -365,6 +486,49 @@ mod tests {
             "kon'nichiha,gakkou!ko-hi- Qwen3.6"
         );
         assert_eq!(display_romaji("しゃちょっ"), "shachoxtsu");
+    }
+
+    #[test]
+    fn default_rules_keep_the_builtin_behavior() {
+        let t = Table::new(&default_rules());
+        assert_eq!(t.to_hiragana("konnnichiha"), "こんにちは");
+        assert_eq!(t.to_hiragana("kon'ya"), "こんや");
+        assert_eq!(t.to_hiragana("shinbun"), "しんぶん");
+        assert_eq!(t.to_hiragana("n1"), "ん1");
+        assert_eq!(t.to_hiragana("ky"), "ky");
+        assert_eq!(t.to_hiragana("xk"), "xk");
+    }
+
+    #[test]
+    fn rules_round_trip_through_tsv() {
+        let rules = default_rules();
+        assert_eq!(parse_rules(&format_rules(&rules)), rules);
+        let mozc = "\u{feff}a\tあ\r\nkk\tっ\tk\r\n\r\nno tab\n";
+        assert_eq!(parse_rules(mozc), vec![Rule::new("a", "あ", ""), Rule::new("kk", "っ", "k")]);
+        let long = "k".repeat(MAX_KEY_CHARS + 1);
+        let text = format!("{long}\tか\nka\tか\t{long}\na\0\tあ\n\tえ\nko\tこ\n");
+        assert_eq!(parse_rules_counted(&text), (vec![Rule::new("ko", "こ", "")], 4));
+    }
+
+    #[test]
+    fn custom_rules_compose_with_next_input() {
+        let mut rules = default_rules();
+        rules.push(Rule::new("t'i", "てぃ", ""));
+        rules.push(Rule::new("ka", "カ", ""));
+        rules.push(Rule::new("q", "ん", ""));
+        rules.push(Rule::new(";", "っ", ""));
+        rules.push(Rule::new("zz", "ざ", "z"));
+        let t = Table::new(&rules);
+        assert_eq!(t.to_hiragana("t'i"), "てぃ");
+        assert_eq!(t.to_hiragana("kaq"), "カん");
+        assert_eq!(t.to_hiragana("ki;te"), "きって");
+        assert_eq!(t.to_hiragana("zza"), "ざざ");
+    }
+
+    #[test]
+    fn rows_that_push_back_their_own_input_do_not_hang() {
+        let t = Table::new(&[Rule::new("a", "", "a")]);
+        assert_eq!(t.to_hiragana("ab"), "ab");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Sweet IME settings.
 //!
-//! Edits `config.txt` and `keymap.txt` (saved on every
+//! Edits `config.txt`, `keymap.txt` and `romaji.tsv` (saved on every
 //! change), manages the learning history and the user dictionary, and
 //! downloads the optional neural model and updates.
 
@@ -17,6 +17,7 @@ mod keys_page;
 mod learning_page;
 mod neural_page;
 mod reports_page;
+mod romaji_page;
 #[cfg(windows)]
 mod single_instance;
 #[cfg(not(target_os = "macos"))]
@@ -74,6 +75,7 @@ fn main() -> eframe::Result<()> {
 enum Page {
     Input,
     Keys,
+    Romaji,
     Apps,
     #[cfg(not(target_os = "macos"))]
     Theme,
@@ -85,18 +87,19 @@ enum Page {
 
 impl Page {
     #[cfg(windows)]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Apps, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Romaji, Page::Apps, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
     /// Elsewhere the input method framework picks the program's mode, and
     /// the theme is written as an fcitx5 theme.
     #[cfg(not(any(windows, target_os = "macos")))]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Romaji, Page::Theme, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
     #[cfg(target_os = "macos")]
-    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
+    const ALL: &[Page] = &[Page::Input, Page::Keys, Page::Romaji, Page::Neural, Page::Learning, Page::Dictionary, Page::About];
 
     fn from_arg(page: Option<&str>) -> Self {
         match page {
             Some("neural") => Self::Neural,
             Some("keys") => Self::Keys,
+            Some("romaji") => Self::Romaji,
             Some("apps") => Self::Apps,
             #[cfg(not(target_os = "macos"))]
             Some("theme") => Self::Theme,
@@ -111,6 +114,7 @@ impl Page {
         match self {
             Page::Input => "入力",
             Page::Keys => "キー",
+            Page::Romaji => "ローマ字",
             Page::Apps => "アプリ",
             #[cfg(not(target_os = "macos"))]
             Page::Theme => "テーマ",
@@ -144,6 +148,7 @@ struct App {
     model: &'static str,
     download: Option<Download>,
     keys: keys_page::KeysPage,
+    romaji: romaji_page::RomajiPage,
     apps: apps_page::AppsPage,
     dict: dict_page::DictPage,
     reports: reports_page::ReportsSection,
@@ -193,6 +198,7 @@ impl App {
             model: MODELS[0].0,
             download: None,
             keys: keys_page::KeysPage::new(),
+            romaji: romaji_page::RomajiPage::new(),
             apps: apps_page::AppsPage::new(),
             dict: dict_page::DictPage::new(),
             reports: reports_page::ReportsSection::new(),
@@ -289,6 +295,7 @@ impl eframe::App for App {
                 match self.page {
                     Page::Input => self.input_page(ui),
                     Page::Keys => self.keys.ui(ui, &mut self.status),
+                    Page::Romaji => self.romaji.ui(ui, &mut self.status),
                     Page::Apps => self.apps.ui(ui, &mut self.status),
                     #[cfg(not(target_os = "macos"))]
                     Page::Theme => {

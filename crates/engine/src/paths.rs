@@ -222,6 +222,92 @@ pub fn save_keymap(k: &crate::Keymap) -> std::io::Result<()> {
     std::fs::write(p, k.to_text())
 }
 
+/// The user's romaji table (see [`crate::romaji::parse_rules`]).
+pub fn romaji_table_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("romaji.tsv"))
+}
+
+/// Reads a romaji table file (UTF-8 or UTF-16): its rows and how many rows
+/// were skipped (see [`crate::romaji::parse_rules_counted`]). `Ok(None)` when
+/// it is missing; an error when it cannot be read or decoded (see
+/// [`crate::text_file::decode_text`]) or is larger than
+/// [`crate::romaji::MAX_TABLE_BYTES`].
+pub fn read_romaji_table(
+    path: &std::path::Path,
+) -> std::io::Result<Option<(Vec<crate::romaji::Rule>, usize)>> {
+    use std::io::Read;
+
+    let file = match std::fs::File::open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        file => file?,
+    };
+    // Read one byte past the limit to tell a full-size table from a larger one,
+    // even if the file grows while it is read.
+    let mut bytes = Vec::new();
+    file.take(crate::romaji::MAX_TABLE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > crate::romaji::MAX_TABLE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the table is larger than 1 MiB",
+        ));
+    }
+    let text = crate::text_file::decode_text(&bytes)?;
+    Ok(Some(crate::romaji::parse_rules_counted(&text)))
+}
+
+/// Reads the user's romaji table; `Ok(None)` when there is none or it has no
+/// rows (the built-in table applies).
+pub fn load_romaji_rules() -> std::io::Result<Option<Vec<crate::romaji::Rule>>> {
+    let Some(path) = romaji_table_file() else {
+        return Ok(None);
+    };
+    Ok(read_romaji_table(&path)?
+        .map(|(rules, _)| rules)
+        .filter(|rules| !rules.is_empty()))
+}
+
+/// Reads the user's romaji table and makes it the one composers use. A table
+/// that cannot be read leaves the current one in place.
+pub fn apply_romaji_table() {
+    if let Ok(rules) = load_romaji_rules() {
+        crate::romaji::set_rules(rules.as_deref());
+    }
+}
+
+/// Writes the user's romaji table. The new file replaces the old one in a
+/// single rename, so readers never see a partly written table.
+pub fn save_romaji_rules(rules: &[crate::romaji::Rule]) -> std::io::Result<()> {
+    let p = romaji_table_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    let dir = p
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    std::fs::create_dir_all(dir)?;
+    // A table read from UTF-16 can grow in UTF-8. Keep the old file rather
+    // than save one that would not load.
+    let text = crate::romaji::format_rules(rules);
+    if text.len() as u64 > crate::romaji::MAX_TABLE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the table is larger than 1 MiB",
+        ));
+    }
+    let tmp = dir.join(format!("romaji.{}.tmp", std::process::id()));
+    let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &p));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Removes the user's romaji table (back to the built-in table).
+pub fn reset_romaji_rules() -> std::io::Result<()> {
+    match romaji_table_file().map(std::fs::remove_file) {
+        Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Removes the key bindings file (back to the built-in layout).
 pub fn reset_keymap() -> std::io::Result<()> {
     match keymap_file().map(std::fs::remove_file) {

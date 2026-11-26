@@ -1098,6 +1098,85 @@ fn main() -> Result<()> {
             }
         }
 
+        // 7. user romaji table (romaji.tsv) applies on focus and goes away with the file
+        {
+            use sweet_engine::romaji::{Rule, default_rules};
+            use windows::Win32::UI::TextServices::ITfThreadFocusSink;
+
+            let focus: ITfThreadFocusSink = tip.cast()?;
+            let reading = |keys: &str| -> String {
+                h.clear();
+                h.type_str(keys);
+                h.key(0x1B); // Esc shows the reading under live conversion
+                let text = h.text();
+                h.key(0x1B);
+                h.key(0x1B);
+                text
+            };
+            let mut rules = default_rules();
+            rules.push(Rule::new("ca", "か", ""));
+            rules.push(Rule::new("cq", "ち", "y"));
+            sweet_engine::paths::save_romaji_rules(&rules).expect("write romaji.tsv");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table row", reading("camera"), "かめら", &mut fails);
+            check("romaji table next input", reading("cqa"), "ちや", &mut fails);
+            check("romaji table keeps built-in rows", reading("kyouha"), "きょうは", &mut fails);
+            // A UTF-16 table (Google Japanese Input exports) copied into place.
+            let path = sweet_engine::paths::romaji_table_file().expect("romaji.tsv path");
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let mut utf16 = vec![0xFF, 0xFE];
+            let tsv = sweet_engine::romaji::format_rules(&[Rule::new("ca", "こ", "")]);
+            utf16.extend(tsv.encode_utf16().flat_map(u16::to_le_bytes));
+            std::fs::write(&path, utf16).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("set romaji.tsv timestamp");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table in UTF-16", reading("ca"), "こ", &mut fails);
+            // A table over the size limit is not read; the current one stays.
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            std::fs::write(&path, "ca\tか\n".repeat(sweet_engine::romaji::MAX_TABLE_BYTES as usize / 4)).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("set romaji.tsv timestamp");
+            let meta = std::fs::metadata(&path).unwrap();
+            check(
+                "oversized romaji table is in place",
+                (meta.len() > sweet_engine::romaji::MAX_TABLE_BYTES && meta.modified().unwrap() != modified).to_string(),
+                "true",
+                &mut fails,
+            );
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("oversized romaji table keeps the current one", reading("ca"), "こ", &mut fails);
+            // The same rows under the limit do load, so the reload above ran
+            // and only the size kept them out.
+            let modified = meta.modified().unwrap();
+            std::fs::write(&path, "ca\tか\n").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("set romaji.tsv timestamp");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table under the limit loads", reading("ca"), "か", &mut fails);
+            sweet_engine::paths::reset_romaji_rules().expect("remove romaji.tsv");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table reset", reading("camera"), "cあめら", &mut fails);
+            h.clear();
+        }
+
         tip.Deactivate()?;
 
         // Per-application modes: this process is harness.exe.

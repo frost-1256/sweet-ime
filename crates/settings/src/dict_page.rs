@@ -1,6 +1,7 @@
 //! The user dictionary page: add, edit, delete, import and export words.
 
 use eframe::egui::{self, RichText};
+use sweet_engine::text_file::decode_text;
 use sweet_engine::user_dict::{DEFAULT_POS, POS};
 use sweet_engine::{UserDictionary, paths};
 use sweet_ui::{card_frame, eframe};
@@ -216,7 +217,7 @@ impl DictPage {
             ui.horizontal(|ui| {
                 let path = self.file.trim().trim_matches('"').to_string();
                 if ui.add_enabled(!path.is_empty(), egui::Button::new("インポート")).clicked() {
-                    *status = Some(match std::fs::read(&path).map(|b| decode_text(&b)) {
+                    *status = Some(match std::fs::read(&path).and_then(|b| decode_text(&b)) {
                         Ok(text) => match dict.import(&text) {
                             Ok(n) => (format!("{n} 件の単語を追加しました。"), true),
                             Err(e) => (format!("保存できませんでした: {e}"), false),
@@ -232,28 +233,5 @@ impl DictPage {
                 }
             });
         });
-    }
-}
-
-/// Text from a file: UTF-16 with a byte order mark (Microsoft IME exports)
-/// or UTF-8.
-fn decode_text(bytes: &[u8]) -> String {
-    let utf16 = |b: &[u8], le: bool| {
-        let units: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|c| {
-                if le {
-                    u16::from_le_bytes([c[0], c[1]])
-                } else {
-                    u16::from_be_bytes([c[0], c[1]])
-                }
-            })
-            .collect();
-        String::from_utf16_lossy(&units)
-    };
-    match bytes {
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
     }
 }

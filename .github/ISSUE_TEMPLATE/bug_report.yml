@@ -12,6 +12,8 @@ body:
     id: platform
     attributes:
       label: プラットフォーム
+      description: 当てはまるものをすべて選んでください。
+      multiple: true
       options:
         - Windows
         - Linux (fcitx5)
