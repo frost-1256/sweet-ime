@@ -189,8 +189,10 @@ impl Zenz {
 /// N-best sentences and mixes in the lattice cost.
 pub struct ZenzReranker {
     pub zenz: Zenz,
-    /// Number of lattice candidates to score.
+    /// Number of lattice candidates to offer in ordinary conversions.
     pub n: usize,
+    /// Number of lattice candidates to offer for a long reading without context.
+    pub n_without_context: usize,
     /// Weight of the lattice cost (in nats, cost / 500) relative to the
     /// model log-probability.
     pub mix: f32,
@@ -198,13 +200,28 @@ pub struct ZenzReranker {
 
 impl ZenzReranker {
     pub fn new(zenz: Zenz) -> Self {
-        Self { zenz, n: 5, mix: 0.12 }
+        Self {
+            zenz,
+            n: 5,
+            n_without_context: 7,
+            mix: 0.12,
+        }
     }
 }
 
 impl sweet_engine::Reranker for ZenzReranker {
     fn candidates(&self) -> usize {
         self.n
+    }
+
+    fn candidates_for(&self, reading: &str, left_context: &str) -> usize {
+        // Longer readings can have several independent ambiguous spans.
+        const LONG_READING_CHARS: usize = 16;
+        if left_context.trim().is_empty() && reading.chars().nth(LONG_READING_CHARS - 1).is_some() {
+            self.n_without_context
+        } else {
+            self.n
+        }
     }
 
     fn repeated_homophones(&self) -> bool {
@@ -298,7 +315,7 @@ impl sweet_engine::Reranker for ZenzReranker {
 #[cfg(test)]
 mod tests {
     use super::{Zenz, ZenzReranker};
-    use sweet_engine::{Converter, Dictionary};
+    use sweet_engine::{Converter, Dictionary, Reranker};
 
     #[test]
     fn relative_scores_drop_only_the_shared_prefix_probability() {
@@ -327,7 +344,12 @@ mod tests {
         let Ok(dict) = Dictionary::open(format!("{root}system.dict")) else {
             return;
         };
-        let conv = Converter::new(dict).with_reranker(Box::new(ZenzReranker::new(model)));
+        let reranker = ZenzReranker::new(model);
+        let long = "きしゃのきしゃがきしゃできしゃした";
+        assert_eq!(reranker.candidates_for(long, "　"), 7);
+        assert_eq!(reranker.candidates_for(long, "先ほど、"), 5);
+        assert_eq!(reranker.candidates_for("へんしんまち", ""), 5);
+        let conv = Converter::new(dict).with_reranker(Box::new(reranker));
         for (reading, expected) in [
             (
                 "きしゃのきしゃがきしゃできしゃした",

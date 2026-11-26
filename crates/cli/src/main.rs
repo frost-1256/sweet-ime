@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         let mut r = sweet_zenz::ZenzReranker::new(sweet_zenz::Zenz::load(&path)?);
         if let Some(n) = std::env::var("SWEET_RERANK_N").ok().and_then(|v| v.parse().ok()) {
             r.n = n;
+            r.n_without_context = n;
         }
         if let Some(m) = std::env::var("SWEET_MIX").ok().and_then(|v| v.parse().ok()) {
             r.mix = m;

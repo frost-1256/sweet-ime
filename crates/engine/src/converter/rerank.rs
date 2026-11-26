@@ -11,6 +11,10 @@ pub trait Reranker: Send + Sync {
     fn candidates(&self) -> usize {
         5
     }
+    /// Candidate count for a reading with the given left context.
+    fn candidates_for(&self, _reading: &str, _left_context: &str) -> usize {
+        self.candidates()
+    }
     /// Whether to offer additional combinations of repeated homophones.
     fn repeated_homophones(&self) -> bool {
         false
@@ -182,7 +186,7 @@ impl Converter {
             .reranker
             .as_ref()
             .filter(|_| self.has_reranker())
-            .map_or(1, |r| r.candidates().max(1));
+            .map_or(1, |r| r.candidates_for(text, left_context).max(1));
         let mut res = if n > 1 {
             let normal = n * RERANK_POOL;
             let expand = self
