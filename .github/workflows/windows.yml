@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/system.dict
-          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
           enableCrossOsArchive: true
 
       - name: Build the system dictionary
@@ -100,7 +100,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/system.dict
-          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
           enableCrossOsArchive: true
 
       - name: Check out the Mozc dictionary
@@ -141,7 +141,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/system.dict
-          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
+          key: dict-v1-${{ env.MOZC_REF }}-${{ hashFiles('scripts/build-dictionary.ps1', 'scripts/fetch-sudachidict.ps1', 'crates/dictc/**', 'crates/engine/src/dict.rs', 'crates/engine/src/romaji.rs', 'crates/engine/src/*.tsv') }}
           enableCrossOsArchive: true
 
       - name: Check out the Mozc dictionary
@@ -216,51 +216,12 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Restore AVD snapshot cache
-        id: avd-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.android/avd/sweet-ime-api36.avd
-            ~/.android/avd/sweet-ime-api36.ini
-            ~/.android/adbkey
-            ~/.android/adbkey.pub
-          key: avd-v2-api36-x86_64-google_apis
-
-      - name: Generate AVD snapshot
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
-        with:
-          api-level: 36
-          arch: x86_64
-          target: google_apis
-          avd-name: sweet-ime-api36
-          force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: true
-          script: echo "Generated AVD snapshot"
-
-      - name: Save AVD snapshot cache
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.android/avd/sweet-ime-api36.avd
-            ~/.android/avd/sweet-ime-api36.ini
-            ~/.android/adbkey
-            ~/.android/adbkey.pub
-          key: avd-v2-api36-x86_64-google_apis
-
       - name: Install and start Sweet IME
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 36
           arch: x86_64
           target: google_apis
-          avd-name: sweet-ime-api36
-          force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
-          disable-animations: true
           script: bash android/tests/smoke.sh out/SweetIME-Android.apk
 
   linux:
