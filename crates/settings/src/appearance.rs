@@ -57,13 +57,20 @@ pub(super) fn apply(ui: &mut Ui, theme: Theme, user_theme: &UserTheme) -> Appear
     visuals.weak_text_color = Some(color(colors.sub).lerp_to_gamma(text, 0.35));
     visuals.slider_trailing_fill = true;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border);
-    // Keep slider tracks and inactive control fills distinct from card surfaces.
+    // Keep interactive buttons and slider tracks clearly distinct from card surfaces.
     let track = surface.lerp_to_gamma(text, if colors.dark { 0.18 } else { 0.14 });
+    let button_bg = surface.lerp_to_gamma(text, if colors.dark { 0.09 } else { 0.06 });
+    let button_border = border.lerp_to_gamma(text, if colors.dark { 0.24 } else { 0.20 });
     visuals.widgets.inactive.bg_fill = track;
-    visuals.widgets.inactive.weak_bg_fill = surface;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, border);
+    visuals.widgets.inactive.weak_bg_fill = button_bg;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, button_border);
     visuals.widgets.hovered.bg_fill = selected;
     visuals.widgets.hovered.weak_bg_fill = selected;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent);
+    let active_bg = surface.lerp_to_gamma(accent, if colors.dark { 0.28 } else { 0.20 });
+    visuals.widgets.active.bg_fill = active_bg;
+    visuals.widgets.active.weak_bg_fill = active_bg;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, accent);
     for widget in [
         &mut visuals.widgets.noninteractive,
         &mut visuals.widgets.inactive,

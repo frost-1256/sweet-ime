@@ -647,7 +647,13 @@ impl Converter {
                 match class {
                     PosClass::Functional => segs.is_empty(),
                     PosClass::Noun => !matches!(prev_class, PosClass::Noun | PosClass::Prefix),
-                    PosClass::Content => prev_class != PosClass::Prefix,
+                    PosClass::Content => {
+                        let is_suru = matches!(
+                            w.surface.as_str(),
+                            "し" | "す" | "する" | "すれ" | "しろ" | "せよ" | "さ" | "せ"
+                        );
+                        prev_class != PosClass::Prefix && !(is_suru && prev_class == PosClass::Noun)
+                    }
                     PosClass::Prefix | PosClass::Boundary => true,
                 }
             };
@@ -841,8 +847,11 @@ impl Converter {
                 break;
             }
         }
-        add(reading.to_string(), &mut out);
         add(crate::romaji::to_katakana(reading), &mut out);
+        if !reading.is_empty() && !out.iter().any(|s| s == reading) {
+            let pos = 6.min(out.len());
+            out.insert(pos, reading.to_string());
+        }
         out
     }
 
