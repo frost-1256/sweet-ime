@@ -23,21 +23,41 @@ fn user_table_applies_to_composers_until_reset() {
 fn reading_a_table_file_distinguishes_missing_empty_and_too_large() {
     use sweet_engine::paths::read_romaji_table;
 
-    let dir = std::env::temp_dir().join(format!("sweet-ime-romaji-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("romaji.tsv");
+    /// Removes the directory even when an assertion fails.
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = TempDir(
+        std::env::temp_dir().join(format!("sweet-ime-romaji-{}-{nanos}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = dir.0.join("romaji.tsv");
 
     assert!(read_romaji_table(&path).unwrap().is_none(), "missing");
     std::fs::write(&path, "no tabs\n").unwrap();
-    assert!(read_romaji_table(&path).unwrap().is_none(), "no rows");
-    std::fs::write(&path, "ca\tか\n").unwrap();
     assert_eq!(
         read_romaji_table(&path).unwrap(),
-        Some(vec![Rule::new("ca", "か", "")])
+        Some((vec![], 0)),
+        "no rows"
     );
-    let too_large = "ca\tか\n".repeat(romaji::MAX_TABLE_BYTES as usize / 4);
-    std::fs::write(&path, too_large).unwrap();
+    std::fs::write(&path, "ca\tか\n\tえ\n").unwrap();
+    assert_eq!(
+        read_romaji_table(&path).unwrap(),
+        Some((vec![Rule::new("ca", "か", "")], 1))
+    );
+    // Exactly at the limit is read; one byte more is not.
+    let mut full = "ca\tか\n".repeat(romaji::MAX_TABLE_BYTES as usize / 7);
+    full.push_str(&"\n".repeat(romaji::MAX_TABLE_BYTES as usize - full.len()));
+    std::fs::write(&path, &full).unwrap();
+    assert!(read_romaji_table(&path).is_ok(), "at the limit");
+    full.push('\n');
+    std::fs::write(&path, &full).unwrap();
     assert!(read_romaji_table(&path).is_err(), "larger than the limit");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

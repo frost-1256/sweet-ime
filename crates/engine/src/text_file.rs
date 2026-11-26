@@ -1,8 +1,8 @@
 //! Decoding of text files that other input methods export.
 
 /// Text from a file: UTF-16 with a byte order mark (Microsoft IME and
-/// Google Japanese Input exports), UTF-16 without one (an ASCII first
-/// character next to a zero byte), or else UTF-8 with or without a BOM.
+/// Google Japanese Input exports), UTF-16 without one (see
+/// [`utf16_without_bom`]), or else UTF-8 with or without a BOM.
 pub fn decode_text(bytes: &[u8]) -> String {
     let utf16 = |b: &[u8], le: bool| {
         let units: Vec<u16> = b
@@ -20,11 +20,40 @@ pub fn decode_text(bytes: &[u8]) -> String {
     match bytes {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
-        [a, 0, ..] if *a != 0 && a.is_ascii() => utf16(bytes, true),
-        [0, b, ..] if *b != 0 && b.is_ascii() => utf16(bytes, false),
         [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
+        _ => match utf16_without_bom(bytes) {
+            Some(le) => utf16(bytes, le),
+            None => String::from_utf8_lossy(bytes).into_owned(),
+        },
     }
+}
+
+/// Byte order of UTF-16 text without a byte order mark: `Some(true)` for
+/// little endian. UTF-8 text has no zero bytes, while every ASCII character
+/// in UTF-16 (tabs and line ends at least) has one, on the odd bytes in
+/// little endian and on the even bytes in big endian. The zeros must lean
+/// clearly to one side and make up at least one character in sixteen, so a
+/// stray NUL in UTF-8 text does not count.
+fn utf16_without_bom(bytes: &[u8]) -> Option<bool> {
+    if bytes.len() < 2 || bytes.len() % 2 != 0 {
+        return None;
+    }
+    let zeros = |start: usize| {
+        bytes
+            .iter()
+            .skip(start)
+            .step_by(2)
+            .filter(|&&b| b == 0)
+            .count()
+    };
+    let (even, odd) = (zeros(0), zeros(1));
+    let (most, least, le) = if odd > even {
+        (odd, even, true)
+    } else {
+        (even, odd, false)
+    };
+    let units = bytes.len() / 2;
+    (most >= 2 * least && most * 16 >= units).then_some(le)
 }
 
 #[cfg(test)]
@@ -51,14 +80,22 @@ mod tests {
             decode_text(&[b"\xEF\xBB\xBF".as_slice(), text.as_bytes()].concat()),
             text
         );
-        for le in [true, false] {
-            for bom in [true, false] {
-                assert_eq!(
-                    decode_text(&utf16(text, le, bom)),
-                    text,
-                    "le={le} bom={bom}"
-                );
+        // A table whose first character is not ASCII.
+        let japanese_first = "表\t\na\tあ\n";
+        for text in [text, japanese_first] {
+            for le in [true, false] {
+                for bom in [true, false] {
+                    assert_eq!(
+                        decode_text(&utf16(text, le, bom)),
+                        text,
+                        "le={le} bom={bom}"
+                    );
+                }
             }
         }
+        assert_eq!(decode_text(japanese_first.as_bytes()), japanese_first);
+        // A stray NUL in a longer UTF-8 file stays UTF-8.
+        let stray = format!("{}a\0", "あ\tい\n".repeat(8));
+        assert_eq!(decode_text(stray.as_bytes()), stray);
     }
 }

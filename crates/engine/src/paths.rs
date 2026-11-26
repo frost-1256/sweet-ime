@@ -227,26 +227,43 @@ pub fn romaji_table_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("romaji.tsv"))
 }
 
-/// Reads a romaji table file (UTF-8 or UTF-16). `Ok(None)` when it is
-/// missing or has no rows; an error when it cannot be read or is larger
-/// than [`crate::romaji::MAX_TABLE_BYTES`].
-pub fn read_romaji_table(path: &std::path::Path) -> std::io::Result<Option<Vec<crate::romaji::Rule>>> {
-    match std::fs::metadata(path) {
+/// Reads a romaji table file (UTF-8 or UTF-16): its rows and how many rows
+/// were skipped (see [`crate::romaji::parse_rules_counted`]). `Ok(None)` when
+/// it is missing; an error when it cannot be read or is larger than
+/// [`crate::romaji::MAX_TABLE_BYTES`].
+pub fn read_romaji_table(
+    path: &std::path::Path,
+) -> std::io::Result<Option<(Vec<crate::romaji::Rule>, usize)>> {
+    use std::io::Read;
+
+    let file = match std::fs::File::open(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-        Ok(m) if m.len() > crate::romaji::MAX_TABLE_BYTES => {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the table is larger than 1 MiB"));
-        }
-        Ok(_) => {}
+        file => file?,
+    };
+    // Read one byte past the limit to tell a full-size table from a larger one,
+    // even if the file grows while it is read.
+    let mut bytes = Vec::new();
+    file.take(crate::romaji::MAX_TABLE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > crate::romaji::MAX_TABLE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the table is larger than 1 MiB",
+        ));
     }
-    let text = crate::text_file::decode_text(&std::fs::read(path)?);
-    Ok(Some(crate::romaji::parse_rules(&text)).filter(|rules| !rules.is_empty()))
+    let text = crate::text_file::decode_text(&bytes);
+    Ok(Some(crate::romaji::parse_rules_counted(&text)))
 }
 
-/// Reads the user's romaji table; `Ok(None)` when there is none (the
-/// built-in table applies).
+/// Reads the user's romaji table; `Ok(None)` when there is none or it has no
+/// rows (the built-in table applies).
 pub fn load_romaji_rules() -> std::io::Result<Option<Vec<crate::romaji::Rule>>> {
-    romaji_table_file().map_or(Ok(None), |p| read_romaji_table(&p))
+    let Some(path) = romaji_table_file() else {
+        return Ok(None);
+    };
+    Ok(read_romaji_table(&path)?
+        .map(|(rules, _)| rules)
+        .filter(|rules| !rules.is_empty()))
 }
 
 /// Reads the user's romaji table and makes it the one composers use. A table
@@ -261,10 +278,13 @@ pub fn apply_romaji_table() {
 /// single rename, so readers never see a partly written table.
 pub fn save_romaji_rules(rules: &[crate::romaji::Rule]) -> std::io::Result<()> {
     let p = romaji_table_file().ok_or_else(|| std::io::Error::other("no settings directory"))?;
-    let dir = p.parent().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    let dir = p
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no settings directory"))?;
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!("romaji.{}.tmp", std::process::id()));
-    let result = std::fs::write(&tmp, crate::romaji::format_rules(rules)).and_then(|()| std::fs::rename(&tmp, &p));
+    let result = std::fs::write(&tmp, crate::romaji::format_rules(rules))
+        .and_then(|()| std::fs::rename(&tmp, &p));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }

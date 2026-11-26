@@ -210,15 +210,24 @@ impl RomajiPage {
                 let path = self.file.trim().trim_matches('"').to_string();
                 if ui.add_enabled(!path.is_empty(), egui::Button::new("インポート")).clicked() {
                     *status = Some(match paths::read_romaji_table(std::path::Path::new(&path)) {
-                        Ok(None) => ("ローマ字の行が見つかりませんでした。".into(), false),
+                        Ok(None) => ("ファイルが見つかりませんでした。".into(), false),
+                        Ok(Some((rules, _))) if rules.is_empty() => {
+                            ("ローマ字の行が見つかりませんでした。".into(), false)
+                        }
                         // The editor keeps its table unless the new one was saved.
-                        Ok(Some(rules)) => match paths::save_romaji_rules(&rules) {
+                        Ok(Some((rules, skipped))) => match paths::save_romaji_rules(&rules) {
                             Ok(()) => {
                                 let n = rules.len();
                                 self.rules = rules;
                                 self.filter.clear();
                                 self.load_error = None;
-                                (format!("{n} 行を読み込みました。"), true)
+                                let mut message = format!("{n} 行を読み込みました。");
+                                if skipped > 0 {
+                                    message.push_str(&format!(
+                                        "入力が空か長すぎるなどで使えない {skipped} 行は読み飛ばしました。"
+                                    ));
+                                }
+                                (message, true)
                             }
                             Err(e) => (format!("保存できませんでした: {e}"), false),
                         },

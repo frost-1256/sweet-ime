@@ -1147,9 +1147,29 @@ fn main() -> Result<()> {
                 .unwrap()
                 .set_modified(modified + std::time::Duration::from_secs(2))
                 .expect("set romaji.tsv timestamp");
+            let meta = std::fs::metadata(&path).unwrap();
+            check(
+                "oversized romaji table is in place",
+                (meta.len() > sweet_engine::romaji::MAX_TABLE_BYTES && meta.modified().unwrap() != modified).to_string(),
+                "true",
+                &mut fails,
+            );
             focus.OnKillThreadFocus()?;
             focus.OnSetThreadFocus()?;
             check("oversized romaji table keeps the current one", reading("ca"), "こ", &mut fails);
+            // The same rows under the limit do load, so the reload above ran
+            // and only the size kept them out.
+            let modified = meta.modified().unwrap();
+            std::fs::write(&path, "ca\tか\n").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .expect("set romaji.tsv timestamp");
+            focus.OnKillThreadFocus()?;
+            focus.OnSetThreadFocus()?;
+            check("romaji table under the limit loads", reading("ca"), "か", &mut fails);
             sweet_engine::paths::reset_romaji_rules().expect("remove romaji.tsv");
             focus.OnKillThreadFocus()?;
             focus.OnSetThreadFocus()?;

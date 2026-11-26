@@ -106,10 +106,18 @@ pub const MAX_KEY_CHARS: usize = 32;
 pub const MAX_TABLE_BYTES: u64 = 1 << 20;
 
 /// Reads tab-separated rows (`input`, `output`, optional `next`), the format
-/// Mozc and Google Japanese Input export. Lines without a tab, and rows whose
-/// `input` or `next` is longer than [`MAX_KEY_CHARS`], are skipped.
+/// Mozc and Google Japanese Input export. Lines without a tab are ignored.
+/// Rows with an empty `input`, an `input` or `next` longer than
+/// [`MAX_KEY_CHARS`], or a NUL character (a misread file) are skipped.
 pub fn parse_rules(text: &str) -> Vec<Rule> {
-    text.trim_start_matches('\u{feff}')
+    parse_rules_counted(text).0
+}
+
+/// [`parse_rules`], also returning how many rows it skipped.
+pub fn parse_rules_counted(text: &str) -> (Vec<Rule>, usize) {
+    let mut skipped = 0;
+    let rules = text
+        .trim_start_matches('\u{feff}')
         .lines()
         .filter_map(|line| {
             let mut cols = line.split('\t');
@@ -117,9 +125,12 @@ pub fn parse_rules(text: &str) -> Vec<Rule> {
             let output = cols.next()?;
             let next = cols.next().unwrap_or("");
             let fits = |s: &str| s.chars().count() <= MAX_KEY_CHARS;
-            (!input.is_empty() && fits(input) && fits(next)).then(|| Rule::new(input, output, next))
+            let ok = !input.is_empty() && fits(input) && fits(next) && !line.contains('\0');
+            skipped += usize::from(!ok);
+            ok.then(|| Rule::new(input, output, next))
         })
-        .collect()
+        .collect();
+    (rules, skipped)
 }
 
 /// Writes rows in the format [`parse_rules`] reads.
@@ -495,9 +506,8 @@ mod tests {
         let mozc = "\u{feff}a\tあ\r\nkk\tっ\tk\r\n\r\nno tab\n";
         assert_eq!(parse_rules(mozc), vec![Rule::new("a", "あ", ""), Rule::new("kk", "っ", "k")]);
         let long = "k".repeat(MAX_KEY_CHARS + 1);
-        assert!(parse_rules(&format!("{long}	か
-ka	か	{long}
-")).is_empty());
+        let text = format!("{long}\tか\nka\tか\t{long}\na\0\tあ\n\tえ\nko\tこ\n");
+        assert_eq!(parse_rules_counted(&text), (vec![Rule::new("ko", "こ", "")], 4));
     }
 
     #[test]
