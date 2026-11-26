@@ -42,14 +42,20 @@
 
 ## Accuracy
 
-Top-1 results on Mozc's `evaluation.tsv` (397 cases):
+Top-1 accuracy on Mozc's `evaluation.tsv` (397 cases) and mean conversion
+latency measured locally on Windows.
 
 | Configuration                | Top-1 | Mean latency |
 |------------------------------|-------|--------------|
-| Lattice only                 | 70.8% | ~0.1 ms      |
-| + zenz v3.1 xsmall (default) | 82.6% | ~13 ms       |
-| + zenz v3.1 small            | 85.9% | ~41 ms       |
+| Lattice only                 | 76.8% | ~0.1 ms      |
+| + zenz v3.1 xsmall (default) | 89.7% | ~7.9 ms      |
+| + zenz v3.1 small            | 89.7% | ~28 ms       |
 | Mozc OSS (reference)         | 74.6% | —            |
+
+`sweet-cli data/system.dict eval-ajimee <evaluation_items.json>` measures
+Acc@1 and mean MinCER from the official JSON, separately with and without
+left context. Set `SWEET_ZENZ` to evaluate with a model.
+[AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench)
 
 ## Install
 

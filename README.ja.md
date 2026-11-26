@@ -39,14 +39,18 @@
 
 ## 変換精度
 
-Mozc の `evaluation.tsv`(397 件)での 1 位正解率です。
+Mozc の `evaluation.tsv`（397 件）での 1 位正解率と、Windows で測定した平均変換時間です。
 
 | 構成                          | 1 位正解率 | 平均時間 |
 |-------------------------------|-----------|----------|
-| ラティスのみ                  | 70.8%     | 約 0.1 ms |
-| + zenz v3.1 xsmall(既定)    | 82.6%     | 約 13 ms  |
-| + zenz v3.1 small             | 85.9%     | 約 41 ms  |
+| ラティスのみ                  | 76.8%     | 約 0.1 ms |
+| + zenz v3.1 xsmall(既定)    | 89.7%     | 約 7.9 ms |
+| + zenz v3.1 small             | 89.7%     | 約 28 ms  |
 | Mozc OSS(参考)              | 74.6%     | —        |
+
+`sweet-cli data/system.dict eval-ajimee <evaluation_items.json>` で、公式 JSON の
+Acc@1 と平均 MinCER を左文脈の有無別に測定できます。モデルを使う場合は
+`SWEET_ZENZ` を設定します。[AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench)
 
 ## インストール
 

@@ -101,9 +101,31 @@ impl Zenz {
     /// given the prompt. The candidates form a token trie that is evaluated
     /// in a single tree-attention pass, with the prompt as the trunk.
     pub fn score(&self, prompt: &str, candidates: &[String]) -> Vec<f32> {
-        let ids = self.encode_prompt(prompt);
+        self.score_candidates(prompt, candidates, false)
+    }
+
+    fn score_candidates(&self, prompt: &str, candidates: &[String], relative: bool) -> Vec<f32> {
+        let mut ids = self.encode_prompt(prompt);
         let mut cache = self.model.new_cache();
         let toks: Vec<Vec<u32>> = candidates.iter().map(|c| self.tokenizer.encode(&normalize(c))).collect();
+        // Shared prefix tokens contribute the same log-probability to every
+        // candidate. Keep them in the prompt and skip their vocabulary projections.
+        let mut shared = 0;
+        if relative
+            && !ids.is_empty()
+            && let Some(first) = toks.first()
+        {
+            shared = first
+                .iter()
+                .enumerate()
+                .take_while(|&(i, token)| {
+                    toks[1..]
+                        .iter()
+                        .all(|candidate| candidate.get(i) == Some(token))
+                })
+                .count();
+            ids.extend_from_slice(&first[..shared]);
+        }
         // Trie: node -> (token, parent). The prompt is a chain at the front;
         // candidates hang off its last token.
         let p = ids.len();
@@ -113,7 +135,7 @@ impl Zenz {
         let mut ends: Vec<Option<usize>> = Vec::with_capacity(toks.len());
         for t in &toks {
             let mut cur: Option<usize> = p.checked_sub(1);
-            for &tok in t {
+            for &tok in &t[shared..] {
                 let next = *children.entry((cur, tok)).or_insert_with(|| {
                     nodes.push(tok);
                     parents.push(cur);
@@ -133,7 +155,17 @@ impl Zenz {
         let logits = self.model.forward_tree(&nodes, &parents, &mut cache, from);
         let row = |i: usize| -> &[f32] { &logits[(i - from) * v..(i - from + 1) * v] };
         // A branch can score several child tokens and EOS from the same logits.
-        let normalizers: Vec<_> = logits.chunks_exact(v).map(model::log_normalizer).collect();
+        let normalizers: Vec<_> = if logits.len() >= 4 * v {
+            use rayon::prelude::*;
+            kernels::pool().install(|| {
+                logits
+                    .par_chunks_exact(v)
+                    .map(model::log_normalizer)
+                    .collect()
+            })
+        } else {
+            logits.chunks_exact(v).map(model::log_normalizer).collect()
+        };
         let log_prob = |i, token| {
             let (mx, log_sum) = normalizers[i - from];
             row(i)[token] - mx - log_sum
@@ -157,8 +189,10 @@ impl Zenz {
 /// N-best sentences and mixes in the lattice cost.
 pub struct ZenzReranker {
     pub zenz: Zenz,
-    /// Number of lattice candidates to score.
+    /// Number of lattice candidates to offer in ordinary conversions.
     pub n: usize,
+    /// Number of lattice candidates to offer for a long reading without context.
+    pub n_without_context: usize,
     /// Weight of the lattice cost (in nats, cost / 500) relative to the
     /// model log-probability.
     pub mix: f32,
@@ -166,13 +200,32 @@ pub struct ZenzReranker {
 
 impl ZenzReranker {
     pub fn new(zenz: Zenz) -> Self {
-        Self { zenz, n: 5, mix: 0.12 }
+        Self {
+            zenz,
+            n: 5,
+            n_without_context: 7,
+            mix: 0.12,
+        }
     }
 }
 
 impl sweet_engine::Reranker for ZenzReranker {
     fn candidates(&self) -> usize {
         self.n
+    }
+
+    fn candidates_for(&self, reading: &str, left_context: &str) -> usize {
+        // Longer readings can have several independent ambiguous spans.
+        const LONG_READING_CHARS: usize = 16;
+        if left_context.trim().is_empty() && reading.chars().nth(LONG_READING_CHARS - 1).is_some() {
+            self.n_without_context
+        } else {
+            self.n
+        }
+    }
+
+    fn repeated_homophones(&self) -> bool {
+        true
     }
 
     fn choose(&self, reading: &str, left_context: &str, cands: &[sweet_engine::Conversion]) -> Option<usize> {
@@ -201,17 +254,119 @@ impl sweet_engine::Reranker for ZenzReranker {
         // Distant lattice paths are usually poor homophones. Left context
         // gives the model more evidence, so keep a wider window in that case.
         let best_cost = eligible.iter().map(|&i| cands[i].cost).min()?;
-        let cost_window = if left_context.trim().is_empty() { 2000 } else { 3200 };
-        eligible.retain(|&i| cands[i].cost <= best_cost.saturating_add(cost_window));
+        let first = cands.first()?;
+        let repeated = first.repeated_kanji_reading().map(|(reading, count)| {
+            (
+                reading,
+                count,
+                first.homophone_repetitions(reading, count).unwrap_or(0),
+            )
+        });
+        let repetitions = |candidate: &sweet_engine::Conversion| {
+            repeated.map_or(0, |(reading, count, original)| {
+                candidate
+                    .homophone_repetitions(reading, count)
+                    .unwrap_or(original)
+            })
+        };
+        let cost_window = if left_context.trim().is_empty() {
+            2000
+        } else {
+            3200
+        };
+        eligible.retain(|&i| {
+            let candidate = &cands[i];
+            let window = if repeated
+                .is_some_and(|(_, count, original)| count >= 3 && repetitions(candidate) < original)
+            {
+                4500
+            } else {
+                cost_window
+            };
+            candidate.cost <= best_cost.saturating_add(window)
+        });
         if eligible.len() == 1 {
             return eligible.first().copied();
         }
         let prompt = Zenz::prompt(reading, left_context);
         let surfaces: Vec<String> = eligible.iter().map(|&i| cands[i].surface()).collect();
-        let scores = self.zenz.score(&prompt, &surfaces);
-        (0..eligible.len()).max_by(|&a, &b| {
-            let s = |i: usize| scores[i] - self.mix * cands[eligible[i]].cost as f32 / 500.0;
-            s(a).total_cmp(&s(b))
-        }).map(|i| eligible[i])
+        let scores = self.zenz.score_candidates(&prompt, &surfaces, true);
+        // Repeated readings can make the model copy the first spelling even
+        // where another word is plausible. Keep the original as an option.
+        let repetition_weight = if repeated.is_some_and(|(_, count, _)| count >= 3) {
+            3.2
+        } else {
+            2.7
+        };
+        (0..eligible.len())
+            .max_by(|&a, &b| {
+                let s = |i: usize| {
+                    let candidate = &cands[eligible[i]];
+                    scores[i]
+                        - self.mix * candidate.cost as f32 / 500.0
+                        - repetition_weight * repetitions(candidate) as f32
+                };
+                s(a).total_cmp(&s(b))
+            })
+            .map(|i| eligible[i])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Zenz, ZenzReranker};
+    use sweet_engine::{Converter, Dictionary, Reranker};
+
+    #[test]
+    fn relative_scores_drop_only_the_shared_prefix_probability() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/zenz-v3.1-xsmall.swz"
+        );
+        let Ok(zenz) = Zenz::load(path) else { return };
+        let prompt = Zenz::prompt("きょうははしをわたる", "");
+        let candidates = ["今日は橋を渡る", "今日は箸を渡る", "今日は"].map(str::to_owned);
+        let absolute = zenz.score(&prompt, &candidates);
+        let relative = zenz.score_candidates(&prompt, &candidates, true);
+        assert!(relative[0] > absolute[0]);
+        for i in 1..candidates.len() {
+            let difference = (absolute[i] - absolute[0]) - (relative[i] - relative[0]);
+            assert!(difference.abs() < 1e-3, "{}: {difference}", candidates[i]);
+        }
+    }
+
+    #[test]
+    fn reranks_different_homophones_and_keeps_intentional_repetition() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/");
+        let Ok(model) = Zenz::load(format!("{root}zenz-v3.1-xsmall.swz")) else {
+            return;
+        };
+        let Ok(dict) = Dictionary::open(format!("{root}system.dict")) else {
+            return;
+        };
+        let reranker = ZenzReranker::new(model);
+        let long = "きしゃのきしゃがきしゃできしゃした";
+        assert_eq!(reranker.candidates_for(long, "　"), 7);
+        assert_eq!(reranker.candidates_for(long, "先ほど、"), 5);
+        assert_eq!(reranker.candidates_for("へんしんまち", ""), 5);
+        let conv = Converter::new(dict).with_reranker(Box::new(reranker));
+        for (reading, expected) in [
+            (
+                "きしゃのきしゃがきしゃできしゃした",
+                "貴社の記者が汽車で帰社した",
+            ),
+            (
+                "きかいがあればきかいをしゅうりする",
+                "機会があれば機械を修理する",
+            ),
+            ("きしゃがきしゃにしゅざいした", "記者が記者に取材した"),
+            ("こうえんとこうえんをつなぐ", "公園と公園をつなぐ"),
+        ] {
+            assert_eq!(
+                conv.convert_best(reading, &[], "")[0].surface(),
+                expected,
+                "{reading}"
+            );
+        }
     }
 }

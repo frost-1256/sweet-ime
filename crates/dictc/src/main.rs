@@ -91,18 +91,7 @@ fn main() -> Result<()> {
         }
         entries.extend(added);
     }
-    // Keep the compound's connections to preceding and following words.
-    let conversion = entries.iter().find(|e| e.reading == "へんかん" && e.surface == "変換");
-    let accuracy = entries.iter().find(|e| e.reading == "せいど" && e.surface == "精度");
-    if let (Some(conversion), Some(accuracy)) = (conversion, accuracy) {
-        entries.push(SourceEntry {
-            reading: "へんかんせいど".into(),
-            lid: conversion.lid,
-            rid: accuracy.rid,
-            cost: 700,
-            surface: "変換精度".into(),
-        });
-    }
+    add_compounds(&mut entries)?;
     if let Some(noun) = features.iter().position(|f| f == "名詞,一般,*,*,*,*,*") {
         for (file, terms) in [
             ("vrchat.tsv", VRCHAT_TERMS),
@@ -172,6 +161,45 @@ fn main() -> Result<()> {
         size as f64 / 1048576.0,
         t0.elapsed()
     );
+    Ok(())
+}
+
+/// Builds compound entries using the connection IDs of their outer words.
+fn add_compounds(entries: &mut Vec<SourceEntry>) -> Result<()> {
+    for (i, line) in include_str!("compounds.tsv").lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let source = || format!("compounds.tsv:{}", i + 1);
+        let fields: Vec<_> = line.split('\t').collect();
+        let Some((cost, pairs)) = fields
+            .split_last()
+            .filter(|(_, pairs)| pairs.len() >= 4 && pairs.len().is_multiple_of(2))
+        else {
+            bail!(
+                "{}: expected reading and surface pairs followed by a cost",
+                source()
+            );
+        };
+        let component = |reading, surface| {
+            entries
+                .iter()
+                .filter(|e| e.reading == reading && e.surface == surface)
+                .min_by_key(|e| e.cost)
+                .with_context(|| format!("{}: missing component {reading} {surface}", source()))
+        };
+        let parts: Vec<_> = pairs
+            .chunks_exact(2)
+            .map(|pair| component(pair[0], pair[1]))
+            .collect::<Result<_>>()?;
+        entries.push(SourceEntry {
+            reading: parts.iter().map(|entry| entry.reading.as_str()).collect(),
+            surface: parts.iter().map(|entry| entry.surface.as_str()).collect(),
+            lid: parts[0].lid,
+            rid: parts.last().unwrap().rid,
+            cost: cost.parse().with_context(source)?,
+        });
+    }
     Ok(())
 }
 

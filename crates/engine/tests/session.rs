@@ -803,8 +803,10 @@ fn typo_correction_on_space_and_escape() {
         s.handle(&c, Key::Escape);
         assert_eq!(s.preedit().text, "さいしyぉ");
         s.handle(&c, Key::Space);
+        assert_ne!(s.preedit().text, "最初");
+        s.handle(&c, Key::Escape);
         s.handle(&c, Key::Enter);
-        assert_eq!(s.take_commit(), "最初");
+        assert_eq!(s.take_commit(), "さいしyぉ");
     }
 }
 
@@ -940,7 +942,7 @@ fn live_typo_correction_uses_the_corrected_reading() {
 #[test]
 fn live_typo_correction_survives_more_keys_and_punctuation() {
     let Some(c) = converter() else { return };
-    for convert_first in [false, true] {
+    for expand in [false, true] {
         let mut s = Session::new();
         type_str(&mut s, &c, "saisiylo");
         assert_eq!(s.preedit().text, "最初");
@@ -951,8 +953,8 @@ fn live_typo_correction_survives_more_keys_and_punctuation() {
         assert_eq!(s.preedit().text, "最初の、");
         assert_eq!(s.live_request().unwrap().0, "さいしょの、");
         assert!(!s.apply_live("さいしょ", "最初"));
-        if convert_first {
-            assert!(s.handle(&c, Key::Space));
+        if expand {
+            assert!(s.expand_predictions(&c));
             assert_eq!(s.preedit().text, "最初の、");
         }
         assert!(s.handle(&c, Key::Enter));
@@ -987,8 +989,9 @@ fn editing_or_dismissing_a_live_typo_preserves_the_original_keys() {
     s.reset();
     type_str(&mut s, &c, "saisiylono,");
     assert!(s.handle(&c, Key::Space));
-    assert!(s.handle(&c, Key::Escape));
     assert_eq!(s.preedit().text, "さいしyぉの、");
+    assert!(!s.is_converting());
+    assert_eq!(s.typed_input(), "saisiylono,");
 }
 
 #[test]
@@ -1055,6 +1058,49 @@ fn corrects_early_typos_even_when_the_wrong_reading_is_all_kana() {
     let Some(c) = converter() else { return };
     let fix = sweet_engine::typo::correct(&c, "raigatougozaimasu", 1000, TYPO_TEST_BUDGET).unwrap();
     assert_eq!(fix.reading, "ありがとうございます");
+}
+
+#[test]
+fn space_applies_confident_typos_that_produce_valid_kana() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    let keys = "kaiginnoshiryou";
+    type_str(&mut s, &c, keys);
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "会議の資料");
+    assert!(s.handle(&c, Key::Escape));
+    assert_eq!(s.typed_input(), keys);
+    assert!(s.handle(&c, Key::Space));
+    assert_ne!(s.preedit().text, "会議の資料");
+}
+
+#[test]
+fn confident_kana_typo_is_applied_live_and_space_restores_the_typed_reading() {
+    let Some(c) = converter() else { return };
+    let keys = "raigatougozaimasu";
+    let mut s = Session::new();
+    s.options.simeji_cloud = true;
+
+    type_str(&mut s, &c, keys);
+    assert_eq!(s.preedit().text, "ありがとうございます");
+    assert!(s.handle(&c, Key::Enter));
+    assert_eq!(s.take_commit(), "ありがとうございます");
+
+    type_str(&mut s, &c, keys);
+    assert_eq!(s.simeji_conversion_reading(Key::Space), None);
+    assert!(s.handle(&c, Key::Space));
+    let reading = sweet_engine::romaji::to_hiragana(keys);
+    assert_eq!(s.preedit().text, reading);
+    assert_eq!(s.typed_input(), keys);
+    assert!(!s.apply_live("ありがとうございます", "ありがとうございます"));
+    assert!(!s.is_converting());
+    assert_eq!(
+        s.simeji_conversion_reading(Key::Space).as_deref(),
+        Some(reading.as_str())
+    );
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.is_converting());
+    assert_ne!(s.preedit().text, "ありがとうございます");
 }
 
 #[test]
@@ -1257,11 +1303,12 @@ fn english_words_typed_by_spelling_show_as_words() {
         // Inside a sentence.
         ("vrchatdeasobu", "VRChatで遊ぶ"),
         ("githubnipusshusuru", "GitHubにプッシュする"),
+        ("githubnoissuewomita", "GitHubのissueを見た"),
+        ("githubnodeploywosuru", "GitHubのdeployをする"),
         ("kyouhanvidianokabu", "今日はNVIDIAの株"),
         ("kyouhadiscorddehanasu", "今日はDiscordで話す"),
-        // Japanese is unchanged, typos included.
+        // Japanese is unchanged.
         ("kyouhaiitenkidesu", "今日はいい天気です"),
-        ("arigatpu", "ありがとう"),
     ] {
         let mut s = Session::new();
         type_str(&mut s, &c, typed);
@@ -1356,7 +1403,10 @@ fn listed_english_words_convert_inside_sentences() {
     c.set_english_words(true, true);
     // Romaji and typos stay Japanese.
     for (typed, expected) in [("tesuto", "テスト"), ("shigtoo", "仕事"), ("arigatpu", "ありがとう")] {
-        assert_eq!(convert(&c, typed, true).1, expected, "{typed}");
+        let mut s = Session::new();
+        type_str(&mut s, &c, typed);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected, "{typed}");
     }
     // Off: only bundled spellings are words.
     c.set_english_words(false, true);
@@ -1775,4 +1825,18 @@ fn casual_reactions_keep_their_hiragana_spelling() {
         assert!(c.convert(reading, &[], 12).iter().any(|item| item.surface() == katakana));
     }
     assert_eq!(c.convert("りょうかい", &[], 1)[0].surface(), "了解");
+    assert!(
+        c.convert("もうそろいこう", &[], 1)[0]
+            .surface()
+            .starts_with("もうそろ")
+    );
+    assert!(
+        c.convert_best("もうそろいこう", &[], "")[0]
+            .surface()
+            .starts_with("もうそろ")
+    );
+    assert_eq!(
+        c.convert("もうそろでうたう", &[], 1)[0].surface(),
+        "もうソロで歌う"
+    );
 }

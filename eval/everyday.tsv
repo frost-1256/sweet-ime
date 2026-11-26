@@ -158,3 +158,18 @@ OK:	まどをあける		Conversion Expected	窓を開ける
 OK:	でんきをけす		Conversion Expected	電気を消す
 OK:	えあこんをつける		Conversion Expected	エアコンをつける
 OK:	ほかにあんある		Conversion Match	他に案ある|ほかに案ある
+
+# Compounds and nearby homophones
+OK:	こうほうごかんをたもつ		Conversion Expected	後方互換を保つ
+OK:	とうごうかんじをけんさくする		Conversion Expected	統合漢字を検索する
+OK:	かんりめいがらにしていされた		Conversion Expected	監理銘柄に指定された
+OK:	こうざをかいせつした		Conversion Expected	口座を開設した
+OK:	かんりがいしゃにでんわする		Conversion Expected	管理会社に電話する
+OK:	じょういごかんのきしゅ		Conversion Expected	上位互換の機種
+
+# Homophones in nearby contexts
+OK:	へいきんごえのてんすう		Conversion Expected	平均超えの点数
+OK:	せんぱいのこえがきこえる		Conversion Expected	先輩の声が聞こえる
+OK:	さるのなきごえをきいた		Conversion Expected	猿の鳴き声を聞いた
+OK:	くつをはいてでかける		Conversion Expected	靴を履いて出かける
+OK:	わいんをはいてしまった		Conversion Expected	ワインを吐いてしまった

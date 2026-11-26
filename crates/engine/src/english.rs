@@ -561,6 +561,7 @@ pub fn is_spelling(reading: &str, surface: &str) -> bool {
             .iter()
             .any(|(r, s)| r == reading && *s == surface)
         || marked_spellings().iter().any(|(r, s)| r == reading && *s == surface)
+        || kana_spelled_readings().iter().any(|(r, s)| r == reading && *s == surface)
         // A listed word's loanword (てst -> テスト): only these put katakana
         // over letters.
         || (reading.bytes().any(|b| b.is_ascii_alphabetic())

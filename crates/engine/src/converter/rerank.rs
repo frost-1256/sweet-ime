@@ -11,6 +11,14 @@ pub trait Reranker: Send + Sync {
     fn candidates(&self) -> usize {
         5
     }
+    /// Candidate count for a reading with the given left context.
+    fn candidates_for(&self, _reading: &str, _left_context: &str) -> usize {
+        self.candidates()
+    }
+    /// Whether to offer additional combinations of repeated homophones.
+    fn repeated_homophones(&self) -> bool {
+        false
+    }
     /// Returns the index of the best candidate, or `None` to keep the
     /// lattice order.
     fn choose(&self, reading: &str, left_context: &str, candidates: &[Conversion])
@@ -62,9 +70,9 @@ const RERANK_EXTRA: usize = 2;
 /// best in a part of the reading none of those does. The plain N-best tends
 /// to spend every slot on one spot (機会が故障/こしょう/胡椒...) and never
 /// offer another word elsewhere (機械).
-fn diverse(pool: Vec<Conversion>, n: usize) -> Vec<Conversion> {
+fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
     if pool.len() <= n {
-        return pool;
+        return pool.to_vec();
     }
     let best = word_spans(&pool[0]);
     let personal = personal_spans(&pool[0]);
@@ -95,8 +103,36 @@ fn diverse(pool: Vec<Conversion>, n: usize) -> Vec<Conversion> {
             picked.push(i);
         }
     }
-    let mut pool: Vec<Option<Conversion>> = pool.into_iter().map(Some).collect();
-    picked.into_iter().filter_map(|i| pool[i].take()).collect()
+    picked.into_iter().map(|i| pool[i].clone()).collect()
+}
+
+fn homophone_pool(
+    pool: &[Conversion],
+    ordinary: &mut Vec<Conversion>,
+    reading: &str,
+    count: usize,
+) {
+    let personal = personal_spans(&pool[0]);
+    let repetitions = pool[0].homophone_repetitions(reading, count).unwrap_or(0);
+    let original: Vec<_> = ordinary.iter().map(Conversion::surface).collect();
+    let mut combinations: Vec<_> = pool
+        .iter()
+        .filter_map(|candidate| {
+            let repeats = candidate.homophone_repetitions(reading, count)?;
+            ((repeats < repetitions || (repeats == 0 && repetitions == 0))
+                && keeps_personal_words(candidate, &personal)
+                && !original.contains(&candidate.surface()))
+                .then_some((repeats, candidate))
+        })
+        .collect();
+    combinations.sort_by_key(|(repeats, candidate)| (*repeats, candidate.cost));
+    let limit = if count >= 3 { 12 } else { 6 };
+    ordinary.extend(
+        combinations
+            .into_iter()
+            .take(limit)
+            .map(|(_, candidate)| candidate.clone()),
+    );
 }
 
 /// Reranker key: (reading, left context, candidate surfaces).
@@ -150,9 +186,22 @@ impl Converter {
             .reranker
             .as_ref()
             .filter(|_| self.has_reranker())
-            .map_or(1, |r| r.candidates().max(1));
+            .map_or(1, |r| r.candidates_for(text, left_context).max(1));
         let mut res = if n > 1 {
-            diverse(self.convert(text, boundaries, n * RERANK_POOL), n)
+            let normal = n * RERANK_POOL;
+            let expand = self
+                .reranker
+                .as_ref()
+                .is_some_and(|r| r.repeated_homophones());
+            let pool = self.convert_pool(text, boundaries, normal, expand);
+            let mut candidates = diverse(&pool[..normal.min(pool.len())], n);
+            if expand
+                && let Some((reading, count)) =
+                    pool.first().and_then(Conversion::repeated_kanji_reading)
+            {
+                homophone_pool(&pool, &mut candidates, reading, count);
+            }
+            candidates
         } else {
             self.convert(text, boundaries, 1)
         };

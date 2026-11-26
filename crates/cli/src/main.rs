@@ -2,6 +2,7 @@
 //!
 //!   sweet-cli <dict> repl
 //!   sweet-cli <dict> eval <evaluation.tsv>
+//!   sweet-cli <dict> eval-ajimee <evaluation_items.json>
 //!   sweet-cli <dict> bench
 //!   sweet-cli <dict> audit [readings]   (with SWEET_ZENZ; see audit.rs)
 
@@ -10,12 +11,15 @@ use std::io::{BufRead, Write};
 use std::time::Instant;
 use sweet_engine::{Converter, Dictionary, romaji};
 
+mod ajimee;
 mod audit;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        bail!("usage: sweet-cli <dict> (repl | eval <tsv> | bench | audit [readings])");
+        bail!(
+            "usage: sweet-cli <dict> (repl | eval <tsv> | eval-ajimee <json> | bench | audit [readings])"
+        );
     }
     let t0 = Instant::now();
     let mut conv = Converter::new(Dictionary::open(&args[1])?);
@@ -29,6 +33,7 @@ fn main() -> Result<()> {
         let mut r = sweet_zenz::ZenzReranker::new(sweet_zenz::Zenz::load(&path)?);
         if let Some(n) = std::env::var("SWEET_RERANK_N").ok().and_then(|v| v.parse().ok()) {
             r.n = n;
+            r.n_without_context = n;
         }
         if let Some(m) = std::env::var("SWEET_MIX").ok().and_then(|v| v.parse().ok()) {
             r.mix = m;
@@ -44,6 +49,12 @@ fn main() -> Result<()> {
     match args[2].as_str() {
         "repl" => repl(&conv),
         "eval" => eval(&conv, args.get(3).map(String::as_str).unwrap_or("evaluation.tsv")),
+        "eval-ajimee" => {
+            let Some(path) = args.get(3) else {
+                bail!("usage: sweet-cli <dict> eval-ajimee <evaluation_items.json>");
+            };
+            ajimee::eval(&conv, path)
+        }
         "bench" => bench(&conv),
         "audit" => audit::audit(&conv, args.get(3).and_then(|n| n.parse().ok())),
         other => bail!("unknown command {other}"),

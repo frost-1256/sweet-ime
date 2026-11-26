@@ -4,3 +4,5 @@
 # of the same reading, with a test sentence in eval/everyday.tsv.
 # 他に案ある: the bean paste あん (4845) was cheaper than 案 (4957).
 あん	あん	1000
+# 給料日 is a common noun and should stay intact after a date expression.
+きゅうりょうび	給料日	-1700

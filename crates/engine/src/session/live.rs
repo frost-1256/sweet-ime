@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::romaji::Composer;
 use crate::{Conversion, Converter, english, special, typo};
 
-use super::{Session, explicit_spelling_overrides};
+use super::{KANA_TYPO_MARGIN, MIN_KANA_TYPO_KEYS, Session, explicit_spelling_overrides};
 
 const SUGGESTION_LIMIT: usize = 5;
 const TYPO_SUGGESTION_BUDGET: Duration = Duration::from_millis(4);
@@ -116,12 +116,21 @@ impl Session {
             self.options.suggestions && c.after.is_empty() && settled.chars().count() >= 2;
         let unresolved = typo::has_unresolved_romaji(&settled);
         let mut correction = None;
+        let mut confident = false;
         let listed = self.options.english_words && conv.english_words_enabled();
         let words = english::covers_letters(&settled, listed);
-        if (suggest || (live && unresolved)) && c.composer.pending().is_empty() && !words {
-            if let Some(raw) = c.typo_input(&settled) {
-                correction = typo::correct(conv, raw, 1000, TYPO_SUGGESTION_BUDGET);
-            }
+        if !c.live_off
+            && (suggest || live)
+            && c.composer.pending().is_empty()
+            && !words
+            && let Some(raw) = c.typo_input(&settled)
+            && (suggest || unresolved || raw.len() >= MIN_KANA_TYPO_KEYS)
+            && let Some((fix, gain)) =
+                typo::correct_with_gain(conv, raw, 1000, TYPO_SUGGESTION_BUDGET)
+        {
+            confident = unresolved
+                || (raw.len() >= MIN_KANA_TYPO_KEYS && gain > i64::from(KANA_TYPO_MARGIN));
+            correction = Some(fix);
         }
         // Keys that are not romaji ("github", "discord") show as typed. While
         // a typo fix is still possible (few stray letters, more keys to come)
@@ -151,13 +160,15 @@ impl Session {
                 .and_then(|candidates| candidates.into_iter().next());
             let mut explicit_spelling = false;
             if bundled.is_none()
-                && unresolved
                 && !words
-                && (previous_typo.is_some() || correction.is_some())
+                && (previous_typo.is_some() || confident)
                 && c.raw_spells(&kana)
             {
                 let previous = previous_typo.filter(|fix| c.raw.len() >= fix.prefix_len);
-                let fix = continue_typo(conv, &c.raw, previous, correction.take());
+                let recheck =
+                    (!unresolved && c.composer.pending().is_empty()).then_some(settled.as_str());
+                let challenger = if confident { correction.take() } else { None };
+                let fix = continue_typo(conv, &c.raw, previous, challenger, recheck);
                 explicit_spelling = fix
                     .as_ref()
                     .is_some_and(|fix| explicit_spelling_overrides(conv, &kana, &fix.kana()));
@@ -263,10 +274,14 @@ fn continue_typo(
     raw: &str,
     previous: Option<LiveTypo>,
     challenger: Option<typo::Correction>,
+    original: Option<&str>,
 ) -> Option<LiveTypo> {
-    let previous = previous.map(|mut fix| {
+    let previous = previous.and_then(|mut fix| {
         fix.rebuild(raw);
-        fix
+        // A new suffix can make the original kana reading plausible again.
+        original
+            .is_none_or(|reading| conv.score_typos(|cost| cost(&fix.kana()) < cost(reading)))
+            .then_some(fix)
     });
     let challenger = challenger.filter(|next| {
         previous.as_ref().is_none_or(|fix| {

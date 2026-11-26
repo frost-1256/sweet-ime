@@ -239,6 +239,15 @@ pub(crate) fn has_unresolved_romaji(reading: &str) -> bool {
 /// The best correction of `raw` if it beats the typed text by more than
 /// the edit's penalty (plus `margin`). Stops after `budget`.
 pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Option<Correction> {
+    correct_with_gain(conv, raw, margin, budget).map(|(fix, _)| fix)
+}
+
+pub(crate) fn correct_with_gain(
+    conv: &Converter,
+    raw: &str,
+    margin: i32,
+    budget: Duration,
+) -> Option<(Correction, i64)> {
     let t = Instant::now();
     let typed = romaji::to_hiragana(raw);
     if typed.is_empty() {
@@ -246,7 +255,7 @@ pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Op
     }
     const RECENT_KEYS: usize = 12;
     let variants = edits(raw, RECENT_KEYS, false);
-    let (raw, reading, _) = conv.score_typos(|cost| {
+    let (raw, reading, gain) = conv.score_typos(|cost| {
         let base = cost(&typed);
         let mut pick = |variants: Vec<(String, String, Slip)>, minimum_gain| {
             let mut best = None;
@@ -281,9 +290,12 @@ pub fn correct(conv: &Converter, raw: &str, margin: i32, budget: Duration) -> Op
         pick(edits(raw, RECENT_KEYS, true), earlier_margin).or(recent)
     })?;
     let surface = conv.convert(&reading, &[], 1).into_iter().next()?.surface();
-    Some(Correction {
-        raw,
-        reading,
-        surface,
-    })
+    Some((
+        Correction {
+            raw,
+            reading,
+            surface,
+        },
+        gain,
+    ))
 }

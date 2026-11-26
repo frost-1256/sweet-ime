@@ -12,6 +12,7 @@ use super::{Conversion, Converter, Segment, Word};
 const UNKNOWN_CHAR_COST: i32 = 12_000;
 /// Cost of a run of non-kana characters (ASCII, digits, symbols).
 const UNKNOWN_RUN_COST: i32 = 4_000;
+const MAX_HOMOPHONE_CANDIDATES: usize = 240;
 
 #[derive(Clone, Copy)]
 struct Node<'a> {
@@ -328,48 +329,48 @@ impl Converter {
 
     /// N-best paths (BOS..EOS exclusive) via backward A* over the Viterbi
     /// forward costs, which are an exact heuristic.
-    fn nbest_paths(&self, lat: &Lattice<'_>, n: usize) -> Vec<(i32, Vec<u32>)> {
+    fn nbest_paths<'a>(
+        &'a self,
+        lat: &'a Lattice<'_>,
+        n: usize,
+    ) -> impl Iterator<Item = (i32, Vec<u32>)> + 'a {
         // arena entries: (node, parent arena index, g = cost after node)
         let mut arena: Vec<(u32, u32, i32)> = vec![(EOS, u32::MAX, 0)];
         let mut heap = BinaryHeap::new();
         heap.push((Reverse(lat.nodes[EOS as usize].best), 0u32));
-        let mut out = Vec::new();
         let mut pops = 0;
-        while let Some((Reverse(f), ai)) = heap.pop() {
-            pops += 1;
-            if pops > 20_000 {
-                break;
-            }
-            let (node, _, g) = arena[ai as usize];
-            if node == BOS {
-                let mut path = Vec::new();
-                let mut cur = arena[ai as usize].1;
-                while cur != u32::MAX {
-                    let (nd, parent, _) = arena[cur as usize];
-                    if nd != EOS {
-                        path.push(nd);
+        std::iter::from_fn(move || {
+            while pops < 20_000 {
+                let (Reverse(f), ai) = heap.pop()?;
+                pops += 1;
+                let (node, _, g) = arena[ai as usize];
+                if node == BOS {
+                    let mut path = Vec::new();
+                    let mut cur = arena[ai as usize].1;
+                    while cur != u32::MAX {
+                        let (nd, parent, _) = arena[cur as usize];
+                        if nd != EOS {
+                            path.push(nd);
+                        }
+                        cur = parent;
                     }
-                    cur = parent;
+                    return Some((f, path));
                 }
-                out.push((f, path));
-                if out.len() >= n {
-                    break;
+                let nd = &lat.nodes[node as usize];
+                let g2 = g + nd.wcost;
+                for &p in &lat.ends[nd.start] {
+                    let prev = &lat.nodes[p as usize];
+                    if prev.best == i32::MAX {
+                        continue;
+                    }
+                    let g3 = g2 + self.dict.connection(prev.rid, nd.lid);
+                    arena.push((p, ai, g3));
+                    heap.push((Reverse(prev.best + g3), (arena.len() - 1) as u32));
                 }
-                continue;
             }
-            let nd = &lat.nodes[node as usize];
-            let g2 = g + nd.wcost;
-            for &p in &lat.ends[nd.start] {
-                let prev = &lat.nodes[p as usize];
-                if prev.best == i32::MAX {
-                    continue;
-                }
-                let g3 = g2 + self.dict.connection(prev.rid, nd.lid);
-                arena.push((p, ai, g3));
-                heap.push((Reverse(prev.best + g3), (arena.len() - 1) as u32));
-            }
-        }
-        out
+            None
+        })
+        .take(n)
     }
 
     fn to_words(&self, lat: &Lattice<'_>, text: &str, path: &[u32]) -> Vec<Word> {
@@ -453,6 +454,16 @@ impl Converter {
     /// `boundaries` are byte offsets that segments must break at (user-resized
     /// bunsetsu); pass `&[]` for automatic segmentation.
     pub fn convert(&self, text: &str, boundaries: &[usize], n: usize) -> Vec<Conversion> {
+        self.convert_pool(text, boundaries, n, false)
+    }
+
+    pub(super) fn convert_pool(
+        &self,
+        text: &str,
+        boundaries: &[usize],
+        n: usize,
+        expand_homophones: bool,
+    ) -> Vec<Conversion> {
         if text.is_empty() {
             return Vec::new();
         }
@@ -471,12 +482,33 @@ impl Converter {
         }
         let mut seen = HashSet::new();
         let mut res = Vec::new();
-        for (cost, path) in self.nbest_paths(&lat, n * 3) {
+        let mut limit = n;
+        let maximum = if expand_homophones {
+            n.max(MAX_HOMOPHONE_CANDIDATES)
+        } else {
+            n
+        };
+        for (index, (cost, path)) in self.nbest_paths(&lat, maximum * 3).enumerate() {
+            if index >= limit * 3 {
+                break;
+            }
             let surface: String = lat.path_surface(&path);
             if seen.insert(surface) {
                 let segments = self.segment(self.to_words(&lat, text, &path), boundaries);
-                res.push(Conversion { segments, cost });
-                if res.len() >= n {
+                let candidate = Conversion { segments, cost };
+                if expand_homophones
+                    && res.is_empty()
+                    && let Some((_, occurrences)) = candidate.repeated_kanji_reading()
+                {
+                    // Several occurrences can require several simultaneous replacements.
+                    limit = limit.max(if occurrences >= 4 {
+                        MAX_HOMOPHONE_CANDIDATES
+                    } else {
+                        64
+                    });
+                }
+                res.push(candidate);
+                if res.len() >= limit {
                     break;
                 }
             }
