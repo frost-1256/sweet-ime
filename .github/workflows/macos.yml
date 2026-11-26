@@ -13,7 +13,7 @@ env:
 
 jobs:
   package:
-    name: Build the universal macOS bundle
+    name: Build and test the universal macOS bundle
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -42,50 +42,31 @@ jobs:
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
       - run: cargo test --locked -p sweet-macos -p sweet-settings -p sweet-zenz -- --test-threads=1
       - run: bash macos/build.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: SweetIME-macOS
-          path: out/SweetIME-macOS.zip
-          if-no-files-found: error
-
-  smoke:
-    name: Smoke test on ${{ matrix.runner }}
-    needs: package
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15, macos-15-intel]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked -p sweet-zenz --lib
-      - uses: actions/download-artifact@v8
-        with:
-          name: SweetIME-macOS
-      - run: |
-          ditto -x -k SweetIME-macOS.zip .
-          codesign --verify --deep --strict "Sweet IME.app"
-          "Sweet IME.app/Contents/MacOS/SweetIME" --smoke-test
-      - name: Verify native candidate rows and capture the panel
-        if: matrix.runner == 'macos-15'
-        run: '"Sweet IME.app/Contents/MacOS/SweetIME" --candidate-panel-preview macOS-candidates.png'
-      - name: Verify first install, replacement and invalid bundle rejection
-        if: matrix.runner == 'macos-15'
+      - name: Smoke test the universal bundle on macos-15
         run: |
+          stage="$RUNNER_TEMP/macos-smoke"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          ditto -x -k out/SweetIME-macOS.zip "$stage"
+          codesign --verify --deep --strict "$stage/Sweet IME.app"
+          "$stage/Sweet IME.app/Contents/MacOS/SweetIME" --smoke-test
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 "$stage/Sweet IME.app/Contents/MacOS/SweetIME" --smoke-test
+          fi
+          "$stage/Sweet IME.app/Contents/MacOS/SweetIME" --candidate-panel-preview macOS-candidates.png
+      - name: Verify first install, replacement and invalid bundle rejection
+        run: |
+          stage="$RUNNER_TEMP/macos-smoke"
           export SWEET_IME_INPUT_METHODS_DIR="$RUNNER_TEMP/installer test/Input Methods"
           target="$SWEET_IME_INPUT_METHODS_DIR/Sweet IME.app"
-          test -x "./Install Sweet IME.command"
-          "./Install Sweet IME.command"
+          test -x "$stage/Install Sweet IME.command"
+          (cd "$stage" && "./Install Sweet IME.command")
           codesign --verify --deep --strict "$target"
           touch "$target/Contents/Resources/previous-install"
-          bash macos/install.sh --archive SweetIME-macOS.zip
+          bash macos/install.sh --archive out/SweetIME-macOS.zip
           test ! -e "$target/Contents/Resources/previous-install"
           codesign --verify --deep --strict "$target"
-          cp -R "Sweet IME.app" "$RUNNER_TEMP/tampered.app"
+          cp -R "$stage/Sweet IME.app" "$RUNNER_TEMP/tampered.app"
           printf 'invalid' > "$RUNNER_TEMP/tampered.app/Contents/Resources/system.dict"
           if bash macos/install.sh --bundle "$RUNNER_TEMP/tampered.app"; then
             echo "Installer accepted a modified bundle" >&2
@@ -96,7 +77,7 @@ jobs:
           (
             exec 9>>"$SWEET_IME_INPUT_METHODS_DIR/.sweet-ime-install.lock"
             /usr/bin/perl -MFcntl=:flock -e 'flock(STDIN, LOCK_EX | LOCK_NB) or exit 1' <&9
-            if bash macos/install.sh --archive SweetIME-macOS.zip; then
+            if bash macos/install.sh --archive out/SweetIME-macOS.zip; then
               echo "Installer ignored another process's lock" >&2
               exit 1
             fi
@@ -110,15 +91,39 @@ jobs:
           fi
           codesign --verify --deep --strict "$target"
           test ! -e "$work"
-          bash macos/install.sh --archive SweetIME-macOS.zip
+          bash macos/install.sh --archive out/SweetIME-macOS.zip
           codesign --verify --deep --strict "$target"
           mkdir -p "$work/previous.app/Contents"
-          bash macos/install.sh --archive SweetIME-macOS.zip
+          bash macos/install.sh --archive out/SweetIME-macOS.zip
           test ! -e "$work"
           codesign --verify --deep --strict "$target"
       - uses: actions/upload-artifact@v7
-        if: matrix.runner == 'macos-15'
+        with:
+          name: SweetIME-macOS
+          path: out/SweetIME-macOS.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
         with:
           name: macOS-candidate-panel
           path: macOS-candidates.png
           if-no-files-found: error
+
+  smoke-intel:
+    name: Smoke test on macos-15-intel
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    needs: package
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p sweet-zenz --lib
+      - uses: actions/download-artifact@v8
+        with:
+          name: SweetIME-macOS
+      - run: |
+          ditto -x -k SweetIME-macOS.zip .
+          codesign --verify --deep --strict "Sweet IME.app"
+          "Sweet IME.app/Contents/MacOS/SweetIME" --smoke-test

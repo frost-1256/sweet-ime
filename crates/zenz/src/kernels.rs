@@ -710,6 +710,7 @@ unsafe fn log_normalizer_avx2(logits: &[f32]) -> (f32, f32) {
 
 /// Row-wise LayerNorm across `x` (`[rows, e]`) into `out`.
 pub(crate) fn layer_norm_f32(x: &[f32], w: &[f32], b: &[f32], eps: f32, out: &mut [f32]) {
+    assert!(b.len() >= w.len());
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
         unsafe { layer_norm_avx2(x, w, b, eps, out) };
