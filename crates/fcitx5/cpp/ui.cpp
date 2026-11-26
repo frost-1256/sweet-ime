@@ -31,7 +31,9 @@
 #include <wayland-client.h>
 #include <wayland_public.h>
 #include "ext-background-effect-v1-client-protocol.h"
+#define namespace wl_namespace
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#undef namespace
 #endif
 
 #ifdef SWEET_HAVE_XCB
