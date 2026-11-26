@@ -37,6 +37,8 @@ impl FontPicker {
             let mut selected = None;
             egui::ComboBox::from_id_salt("candidate-font")
                 .selected_text(current)
+                .width(200.0)
+                .truncate()
                 .height(300.0)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show_ui(ui, |ui| {

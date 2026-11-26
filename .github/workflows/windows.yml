@@ -42,6 +42,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target i686-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-workspace-crates: true
 
       - name: Cache the system dictionary
         id: dict-cache
@@ -117,6 +119,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-workspace-crates: true
 
       - name: Build the system dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
@@ -158,6 +162,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target aarch64-linux-android --target x86_64-linux-android
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-workspace-crates: true
 
       - name: Build the system dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'

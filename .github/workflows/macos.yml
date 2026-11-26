@@ -29,6 +29,8 @@ jobs:
           persist-credentials: false
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-workspace-crates: true
       - name: Cache the system dictionary
         id: dict-cache
         uses: actions/cache@v4
@@ -62,6 +64,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-workspace-crates: true
       - run: cargo test --locked -p sweet-zenz --lib
       - uses: actions/download-artifact@v8
         with:

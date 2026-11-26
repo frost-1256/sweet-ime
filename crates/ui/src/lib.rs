@@ -134,15 +134,21 @@ pub fn relative_luminance(color: Color32) -> f32 {
 pub fn card(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
     card_frame(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.set_max_width((ui.available_width() - 120.0).max(200.0));
-                ui.label(RichText::new(title).size(15.5));
-                if !desc.is_empty() {
-                    ui.label(RichText::new(desc).small().weak());
-                }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            control(ui);
+            ui.add_space(6.0);
+            let text_width = ui.available_width().max(120.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(text_width, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.set_max_width(text_width);
+                    ui.label(RichText::new(title).size(15.5));
+                    if !desc.is_empty() {
+                        ui.label(RichText::new(desc).small().weak());
+                    }
+                },
+            );
         });
     });
 }
@@ -166,4 +172,44 @@ pub fn primary_button(text: &str) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.to_owned()).color(Color32::WHITE))
         .fill(Color32::from_rgb(0, 95, 184))
         .min_size(Vec2::new(120.0, 34.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_text_does_not_overlap_wide_control() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(620.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let mut control_rect = egui::Rect::NOTHING;
+        let mut desc_rect = egui::Rect::NOTHING;
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                card(
+                    ui,
+                    "候補のフォント",
+                    "インストール済みのフォントを選びます。アプリを切り替えると候補ウィンドウに反映されます。",
+                    |ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(220.0, 28.0), egui::Sense::hover());
+                        control_rect = rect;
+                    },
+                );
+                // Measure the left text area indirectly via card's max rect vs control.
+                desc_rect = ui.min_rect();
+            });
+        });
+        output.textures_delta.clear();
+        assert!(control_rect.width() >= 220.0);
+        // The card stays within the panel width and leaves room on the left for the text.
+        assert!(desc_rect.width() <= 620.0);
+        assert!(control_rect.left() > desc_rect.left() + 120.0);
+    }
 }

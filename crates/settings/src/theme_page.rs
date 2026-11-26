@@ -70,11 +70,10 @@ fn tile(ui: &mut egui::Ui, theme: Theme, selected: bool) -> egui::Response {
         Stroke::new(1.0, c32(c.border)),
         StrokeKind::Inside,
     );
-    let accent = c.accent.map(c32).unwrap_or(if c.dark {
-        Color32::from_rgb(0x60, 0xcd, 0xff)
-    } else {
-        Color32::from_rgb(0x00, 0x5f, 0xb8)
-    });
+    let accent = c
+        .accent
+        .map(c32)
+        .unwrap_or_else(|| crate::appearance::system_accent(c.dark));
     let row_h = 26.0;
     for (i, word) in ["今日", "京", "強"].iter().enumerate() {
         let top = win.top() + 4.0 + i as f32 * row_h;

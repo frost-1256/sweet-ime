@@ -41,7 +41,9 @@ use windows::Win32::Graphics::Gdi::{
     InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, PAINTSTRUCT,
     SelectObject, ValidateRect,
 };
-use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
+};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
@@ -160,26 +162,50 @@ pub(crate) fn system_light() -> bool {
         != 0
 }
 
+fn windows_accent(dark: bool) -> Option<D2D1_COLOR_F> {
+    // AccentPalette stores 8 RGBA entries (Light3, Light2, Light1, Base, Dark1, ...).
+    // Windows 11 uses Light2 (index 1) on dark surfaces and Dark1 (index 4) on light surfaces.
+    let mut palette = [0u8; 32];
+    let mut size = palette.len() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent"),
+            w!("AccentPalette"),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(palette.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status.is_ok() && size >= 20 {
+        let offset = if dark { 4 } else { 16 };
+        return Some(rgb(palette[offset], palette[offset + 1], palette[offset + 2], 1.0));
+    }
+
+    // Fallback to DWM AccentColor (stored as 0xAABBGGRR).
+    let v = read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor"))?;
+    let (r, g, b) = ((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8);
+    Some(if dark {
+        let l = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
+        rgb(l(r), l(g), l(b), 1.0)
+    } else {
+        rgb(r, g, b, 1.0)
+    })
+}
+
 fn palette() -> Palette {
     let c = crate::theme_colors();
     let col = |v: Rgb, a: f32| rgb(v.0, v.1, v.2, a);
     let accent = match c.accent {
         Some(v) => col(v, 1.0),
-        // AccentColor is stored as 0xAABBGGRR.
-        None => match read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor")) {
-            Some(v) => {
-                let (r, g, b) = ((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8);
-                if c.dark {
-                    // Lighten for dark backgrounds.
-                    let l = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
-                    rgb(l(r), l(g), l(b), 1.0)
-                } else {
-                    rgb(r, g, b, 1.0)
-                }
+        None => windows_accent(c.dark).unwrap_or_else(|| {
+            if c.dark {
+                rgb(0x60, 0xcd, 0xff, 1.0)
+            } else {
+                rgb(0x00, 0x5f, 0xb8, 1.0)
             }
-            None if c.dark => rgb(0x60, 0xcd, 0xff, 1.0),
-            None => rgb(0x00, 0x5f, 0xb8, 1.0),
-        },
+        }),
     };
     let b = c.border;
     Palette {
