@@ -178,16 +178,16 @@ impl Model {
             }
         }
         let wte_t = start..start + v * e;
-        Ok(Self {
+        Ok(Self::build_q8(
             cfg,
-            store: Store::Owned(data),
+            Store::Owned(data),
             wte,
             wte_t,
             wpe,
             layers,
             lnf_w,
             lnf_b,
-        })
+        ))
     }
 
     fn ranges(&self) -> Vec<(String, R)> {
@@ -298,20 +298,20 @@ impl Model {
         }
         let vocab = hdr["vocab"].as_str().unwrap_or("").to_string();
         let merges = hdr["merges"].as_str().unwrap_or("").to_string();
-        let model = Self {
+        let model = Self::build_q8(
             cfg,
-            wte: r("wte")?,
-            wte_t: r("wte_t")?,
-            wpe: r("wpe")?,
-            lnf_w: r("lnf_w")?,
-            lnf_b: r("lnf_b")?,
-            layers,
-            store: Store::Mapped {
+            Store::Mapped {
                 map,
                 offset: off,
                 len: n,
             },
-        };
+            r("wte")?,
+            r("wte_t")?,
+            r("wpe")?,
+            layers,
+            r("lnf_w")?,
+            r("lnf_b")?,
+        );
         Ok((model, vocab, merges))
     }
 }

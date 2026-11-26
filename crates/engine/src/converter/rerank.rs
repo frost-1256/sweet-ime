@@ -23,6 +23,16 @@ pub trait Reranker: Send + Sync {
     /// lattice order.
     fn choose(&self, reading: &str, left_context: &str, candidates: &[Conversion])
     -> Option<usize>;
+    /// Optional neural-generated conversion when the lattice candidates look
+    /// uncertain (e.g. proper nouns or rare compounds outside the N-best pool).
+    fn generate(
+        &self,
+        _reading: &str,
+        _left_context: &str,
+        _best: &Conversion,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// How many lattice candidates per reranker slot `convert_best` draws its
@@ -65,11 +75,64 @@ fn keeps_personal_words(c: &Conversion, personal: &[(usize, usize, &str)]) -> bo
 /// Alternatives `convert_best` offers the reranker beyond its N-best.
 const RERANK_EXTRA: usize = 2;
 
+/// Maximum number of synthesized crossover candidates combining disjoint
+/// single-region alternatives from `diverse`.
+const RERANK_CROSSOVER: usize = 2;
+
+/// Combines two candidates that each differ from `base` in disjoint byte
+/// regions by taking `a`'s words in `ra`, `b`'s words in `rb`, and `base`'s
+/// words everywhere else. Returns the combined surface if the spans align on
+/// word boundaries.
+fn crossover_surface(
+    base: &Conversion,
+    a: &Conversion,
+    ra: (usize, usize),
+    b: &Conversion,
+    rb: (usize, usize),
+) -> Option<String> {
+    let (first_c, first_r, second_c, second_r) = if ra.1 <= rb.0 {
+        (a, ra, b, rb)
+    } else if rb.1 <= ra.0 {
+        (b, rb, a, ra)
+    } else {
+        return None;
+    };
+    let slice_surface = |c: &Conversion, from: usize, to: usize| -> Option<String> {
+        if from == to {
+            return Some(String::new());
+        }
+        let mut out = String::new();
+        let mut pos = from;
+        for (start, end, word) in spans(c) {
+            if end <= from {
+                continue;
+            }
+            if start >= to {
+                break;
+            }
+            if start != pos || end > to {
+                return None;
+            }
+            out.push_str(&word.surface);
+            pos = end;
+        }
+        (pos == to).then_some(out)
+    };
+    let total_len: usize = spans(base).last().map_or(0, |(_, end, _)| end);
+    let mut s = slice_surface(base, 0, first_r.0)?;
+    s.push_str(&slice_surface(first_c, first_r.0, first_r.1)?);
+    s.push_str(&slice_surface(base, first_r.1, second_r.0)?);
+    s.push_str(&slice_surface(second_c, second_r.0, second_r.1)?);
+    s.push_str(&slice_surface(base, second_r.1, total_len)?);
+    Some(s)
+}
+
 /// The reranker's candidates from the cost-ordered `pool`: the `n` best,
 /// then up to [`RERANK_EXTRA`] cheapest alternatives that differ from the
-/// best in a part of the reading none of those does. The plain N-best tends
-/// to spend every slot on one spot (機会が故障/こしょう/胡椒...) and never
-/// offer another word elsewhere (機械).
+/// best in a part of the reading none of those does, plus up to
+/// [`RERANK_CROSSOVER`] pool candidates that combine two disjoint single-region
+/// alternatives (so multi-ambiguity sentences like 講座/口座 + 解説/開設 don't
+/// drop the joint fix).
 fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
     if pool.len() <= n {
         return pool.to_vec();
@@ -84,10 +147,11 @@ fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
         diff.first().zip(diff.last()).map(|(a, b)| (a.0, b.1))
     };
     // Only alternatives the model can use should occupy a region.
-    let mut regions: Vec<(usize, usize)> = pool[1..n]
+    let mut region_sources: Vec<(usize, (usize, usize))> = pool[1..n]
         .iter()
-        .filter(|candidate| keeps_personal_words(candidate, &personal))
-        .filter_map(region)
+        .enumerate()
+        .filter(|(_, candidate)| keeps_personal_words(candidate, &personal))
+        .filter_map(|(idx, candidate)| Some((idx + 1, region(candidate)?)))
         .collect();
     let mut picked: Vec<usize> = (0..n).collect();
     for (i, c) in pool.iter().enumerate().skip(n) {
@@ -98,9 +162,36 @@ fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
             continue;
         }
         let Some(r) = region(c) else { continue };
-        if !regions.iter().any(|&(a, b)| r.0 < b && a < r.1) {
-            regions.push(r);
+        if !region_sources.iter().any(|&(_, (a, b))| r.0 < b && a < r.1) {
+            region_sources.push((i, r));
             picked.push(i);
+        }
+    }
+    // Look for pool candidates that combine two disjoint single-region changes.
+    let mut added_crossovers = 0;
+    'outer: for i in 0..region_sources.len() {
+        for j in (i + 1)..region_sources.len() {
+            if added_crossovers >= RERANK_CROSSOVER {
+                break 'outer;
+            }
+            let (ia, ra) = region_sources[i];
+            let (ib, rb) = region_sources[j];
+            let Some(target) = crossover_surface(&pool[0], &pool[ia], ra, &pool[ib], rb) else {
+                continue;
+            };
+            if picked.iter().any(|&idx| pool[idx].surface() == target) {
+                continue;
+            }
+            if let Some(found) = pool
+                .iter()
+                .enumerate()
+                .skip(n)
+                .find(|(idx, c)| !picked.contains(idx) && keeps_personal_words(c, &personal) && c.surface() == target)
+                .map(|(idx, _)| idx)
+            {
+                picked.push(found);
+                added_crossovers += 1;
+            }
         }
     }
     picked.into_iter().map(|i| pool[i].clone()).collect()
@@ -224,6 +315,30 @@ impl Converter {
             if let Some(i) = self.rerank_index(r.as_ref(), text, left_context, &res) {
                 let c = res.remove(i);
                 res.insert(0, c);
+            }
+            if let Some(best) = res.first()
+                && personal_spans(best).is_empty()
+                && super::extras::casual_phrase(text).is_none()
+                && let Some(surface) = r.generate(text, left_context, best)
+                && !res.iter().any(|c| c.surface() == surface)
+            {
+                let generated = Conversion {
+                    segments: vec![super::Segment {
+                        reading: text.to_string(),
+                        surface: surface.clone(),
+                        words: vec![Word {
+                            reading: text.to_string(),
+                            surface,
+                            lid: self.noun_pos,
+                            rid: self.noun_pos,
+                            cost: best.cost,
+                            learned: false,
+                            user: false,
+                        }],
+                    }],
+                    cost: best.cost,
+                };
+                res.insert(0, generated);
             }
         }
         res

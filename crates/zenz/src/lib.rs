@@ -111,11 +111,37 @@ impl Zenz {
         ids
     }
 
-    /// Greedy decoding until EOS (for diagnostics and free generation).
+    /// Greedy decoding until EOS, reusing the prompt prefix KV cache when
+    /// available so uncertain sentences can generate a fallback candidate fast.
     pub fn generate(&self, prompt: &str, max_tokens: usize) -> String {
         let ids = self.encode_prompt(prompt);
-        let mut cache = self.model.new_cache();
-        let mut logits = self.model.forward(&ids, &mut cache, false);
+        if ids.is_empty() {
+            return String::new();
+        }
+        let cached = self
+            .prefix_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let (mut cache, reuse) = match cached {
+            Some(mut entry) => {
+                let common = entry
+                    .tokens
+                    .iter()
+                    .zip(&ids[..ids.len().saturating_sub(1)])
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                if common > 0 {
+                    entry.kv.truncate(common);
+                    (entry.kv, common)
+                } else {
+                    (self.model.new_cache(), 0)
+                }
+            }
+            None => (self.model.new_cache(), 0),
+        };
+        let mut logits = self.model.forward(&ids[reuse..], &mut cache, false);
+        let prompt_cache_len = ids.len().saturating_sub(1);
         let mut out = Vec::new();
         for _ in 0..max_tokens {
             let next = model::argmax(&logits) as u32;
@@ -124,6 +150,13 @@ impl Zenz {
             }
             out.push(next);
             logits = self.model.forward(&[next], &mut cache, false);
+        }
+        if prompt_cache_len > 0 && cache.len >= prompt_cache_len {
+            cache.truncate(prompt_cache_len);
+            *self.prefix_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(PrefixCache {
+                tokens: ids[..prompt_cache_len].to_vec(),
+                kv: cache,
+            });
         }
         self.tokenizer.decode(&out)
     }
@@ -382,6 +415,65 @@ impl sweet_engine::Reranker for ZenzReranker {
                 s(a).total_cmp(&s(b))
             })
             .map(|i| eligible[i])
+    }
+
+    fn generate(
+        &self,
+        reading: &str,
+        left_context: &str,
+        best: &sweet_engine::Conversion,
+    ) -> Option<String> {
+        let reading_chars = reading.chars().count();
+        // Only trigger generation for Japanese kana readings of bounded length
+        // where the lattice encountered a high-cost/unknown word (typical of
+        // proper nouns or rare compounds outside the N-best pool).
+        if !(4..=48).contains(&reading_chars)
+            || reading.bytes().any(|b| b.is_ascii_alphabetic() || b.is_ascii_digit())
+            || best.repeated_kanji_reading().is_some()
+        {
+            return None;
+        }
+        let max_word_cost = best
+            .segments
+            .iter()
+            .flat_map(|s| &s.words)
+            .map(|w| w.cost)
+            .max()
+            .unwrap_or(0);
+        if max_word_cost < 8500 {
+            return None;
+        }
+        let best_surface = best.surface();
+        let prompt = Zenz::prompt(reading, left_context);
+        let max_tokens = (reading_chars * 2).clamp(16, 80);
+        let generated = self.zenz.generate(&prompt, max_tokens).trim().to_string();
+        if generated.is_empty()
+            || generated == best_surface
+            || generated.chars().any(|c| c.is_control() || matches!(c, '\u{EE00}'..='\u{EE02}'))
+        {
+            return None;
+        }
+        let gen_chars = generated.chars().count();
+        if gen_chars < (reading_chars / 3).max(2) || gen_chars > reading_chars + 2 {
+            return None;
+        }
+        // Guard against hallucination: every hiragana character in the
+        // generated text must appear in `reading` in order.
+        let mut r_iter = reading.chars();
+        for ch in generated.chars() {
+            if ('ぁ'..='ゖ').contains(&ch) && !r_iter.any(|rc| rc == ch) {
+                return None;
+            }
+        }
+        // Accept the generated candidate only when the model strongly prefers
+        // it over the best lattice conversion.
+        let pair = [best_surface, generated.clone()];
+        let scores = self.zenz.score_candidates(&prompt, &pair, true);
+        if scores.len() == 2 && scores[1] > scores[0] + 2.2 {
+            Some(generated)
+        } else {
+            None
+        }
     }
 }
 
