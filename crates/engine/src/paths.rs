@@ -282,9 +282,17 @@ pub fn save_romaji_rules(rules: &[crate::romaji::Rule]) -> std::io::Result<()> {
         .parent()
         .ok_or_else(|| std::io::Error::other("no settings directory"))?;
     std::fs::create_dir_all(dir)?;
+    // A table read from UTF-16 can grow in UTF-8. Keep the old file rather
+    // than save one that would not load.
+    let text = crate::romaji::format_rules(rules);
+    if text.len() as u64 > crate::romaji::MAX_TABLE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the table is larger than 1 MiB",
+        ));
+    }
     let tmp = dir.join(format!("romaji.{}.tmp", std::process::id()));
-    let result = std::fs::write(&tmp, crate::romaji::format_rules(rules))
-        .and_then(|()| std::fs::rename(&tmp, &p));
+    let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &p));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }

@@ -21,10 +21,12 @@ pub fn decode_text(bytes: &[u8]) -> String {
         [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
         [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        _ => match utf16_without_bom(bytes) {
-            Some(le) => utf16(bytes, le),
-            None => String::from_utf8_lossy(bytes).into_owned(),
-        },
+        // Text files here are tab- or line-separated, so a UTF-16 reading
+        // without a single tab or line end is a misreading of UTF-8 text.
+        _ => utf16_without_bom(bytes)
+            .map(|le| utf16(bytes, le))
+            .filter(|text| text.contains(['\t', '\n']))
+            .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
     }
 }
 
@@ -97,5 +99,8 @@ mod tests {
         // A stray NUL in a longer UTF-8 file stays UTF-8.
         let stray = format!("{}a\0", "あ\tい\n".repeat(8));
         assert_eq!(decode_text(stray.as_bytes()), stray);
+        // A short UTF-8 file whose zeros would pass for UTF-16.
+        let short = "xxx\0\tい\nka\tか\n";
+        assert_eq!(decode_text(short.as_bytes()), short);
     }
 }
