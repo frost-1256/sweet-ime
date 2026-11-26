@@ -24,8 +24,8 @@
 ## 特徴
 
 - **超高速な辞書変換**: Mozc OSS 辞書＋SudachiDict 語彙のラティス探索（Viterbi / N-best）により、**約 0.1 ms** で変換します。
-- **1桁 ms 台のオンデバイス AI 変換（任意）**: [zenz](https://huggingface.co/Miwa-Keita/zenz-v3.1-xsmall)（GPT-2）モデルを Rust ネイティブの AVX2 / NEON カーネルと KV キャッシュ共有ツリーアテンションで推論し、カーソル前の文脈を踏まえて **約 6 ms**（`xsmall`）で候補を並べ替えます。ライブ変換中はバックグラウンドで動くため入力を待たせません。
-- **ふだんの入力が快適**: ライブ変換、文の途中からの予測変換、ローマ字の打ち間違い補正、文中の英単語変換（`korehabestdesu` → `これはベストです`）、かな数字変換（`さんぜんえん` → `三千円` / `3000円`）、日付・時刻・計算候補（学習履歴を汚さないよう自動除外）、文節リサイズ、F6〜F10 文字種変換。
+- **超高速オンデバイス AI 変換（任意）**: [zenz](https://huggingface.co/Miwa-Keita/zenz-v3.1-xsmall)（GPT-2）モデルを Rust ネイティブの **INT8（Q8）量子化行列積**・AVX2+FMA / NEON カーネル・プレフィックス KV キャッシュ・**読みガード付きニューラル生成ハイブリッド**で推論し、カーソル前の文脈を踏まえて **約 3.4 ms**（`xsmall`）/ **約 12.4 ms**（`small`）で高精度に変換します。ライブ変換中はバックグラウンドで動くため入力を待たせません。
+- **ふだんの入力が快適**: ライブ変換（デバウンス調整可）、文の途中からの予測変換、ローマ字の打ち間違い補正（長文・句読点入り対応）、日英混在変換（`korehabestdesu` → `これはベストです`、`pcha` → `PCは`）、かな数字変換（`さんぜんえん` → `三千円` / `3000円`）、日付・時刻・計算候補（学習履歴を汚さないよう自動除外）、文節リサイズ、F6〜F10 文字種変換。
 - **自由度の高いテーマ機能**: システム配色に追従する標準テーマや 8 種のプリセットに加え、配色と**背景透過**を自由に設定できる**ユーザーテーマ**と**名前付き保存機能**を搭載。
 - **プライバシー重視**: 変換・学習・設定はすべて端末内で完結します。パスワード欄やシークレットウィンドウでは学習しません（Windows / Android）。
 
@@ -34,22 +34,35 @@
 | 環境 | 配布ファイル | 特徴 |
 |---|---|---|
 | **Windows** | `SweetIME-Setup.exe` | 64bit / 32bit 対応 TSF、Windows のライト/ダーク・アクセントカラー追従 Direct2D 候補ウィンドウ、透過ユーザーテーマ、ゲーミング枠線、「あ」/「A」バッジ、アプリ再起動不要のホットアップデート |
-| **Linux (fcitx5)** | `SweetIME-Linux-{x86_64,aarch64}.tar.gz` / Nix Flake | Wayland（`input-method-v2`: niri / Sway / Hyprland 等）・X11 対応 fcitx5 アドオン、透過＋ブラー対応 classicui テーマ、文字サイズ・余白・縦横切替対応 |
+| **Linux (fcitx5)** | `SweetIME-Linux-{x86_64,aarch64}.tar.gz` / Nix Flake | Wayland（`input-method-v2` ネイティブポップアップ: niri / Sway / Hyprland 等）・X11 対応 fcitx5 アドオン、透過＋ブラー対応 classicui テーマ、文字サイズ・余白・縦横切替対応 |
 | **macOS** | `SweetIME-macOS.zip` | Universal（Apple Silicon / Intel）InputMethodKit IME（macOS 15 以降）、コンパクト候補ウィンドウ、共通設定アプリ、アプリ内アップデート |
 | **Android** | `SweetIME-Android.apk` | QWERTY & 12キーかな・英数フリックキーボード、Material 3 / Expressive 壁紙カラー、カスタム TTF/OTF フォント、端末内 AI 変換（Android 10 以上） |
 
+## 動作要件
+
+| 項目 | 最低動作要件 | 推奨動作要件（AI 変換＋ライブ変換） |
+|---|---|---|
+| **Windows** | Windows 10（64bit `x86_64`。64bit / 32bit アプリ両対応） | Windows 11（64bit `x86_64`） |
+| **Linux** | 64bit（`x86_64` / `aarch64`）＋ fcitx5（Wayland / X11） | 新しめのディストリビューション ＋ fcitx5 ＋ Wayland（`input-method-v2`） |
+| **macOS** | macOS 15（Sequoia）以降（Apple Silicon / Intel） | macOS 15 以降（Apple Silicon） |
+| **Android** | Android 10（API 29）以降（`arm64-v8a` / `x86_64`） | Android 12 以降（`arm64-v8a`） |
+| **CPU** | 64bit プロセッサ（`x86_64` または `aarch64`） | 4 コア以上・**AVX2 + FMA**（`x86_64`）または **NEON**（`aarch64`）対応 |
+| **メモリ（RAM）** | 空き約 100 MB（辞書のみ）/ 約 250 MB（`xsmall`） | 搭載 4 GB 以上（`zenz-v3.1-small` 利用時は空き 512 MB 以上） |
+| **ストレージ** | 空き約 100 MB（`xsmall` 利用時は約 200 MB） | 空き約 500 MB（`zenz-v3.1-small`＋学習履歴込み） |
+
+> **補足**: AI 変換（`zenz`）は汎用フォールバックにより対応 CPU 全般で動作しますが、ライブ変換を 1 桁 ms 台で快適に使うには **AVX2 + FMA**（Intel 第 4 世代 Haswell / AMD Excavator 以降）または **ARM64 NEON** 対応 CPU を推奨します。
+
 ## 変換精度・速度
 
-Mozc `evaluation.tsv`（397 件）での 1 位正解率と Windows 上での平均変換時間:
+Windows（`x86_64` AVX2+FMA 環境）での Q8 量子化 `zenz` 実測値:
 
-| 構成 | 1 位正解率 | 平均変換時間 |
-|---|---|---|
-| ラティスのみ | 76.8% | 約 0.1 ms |
-| **+ zenz v3.1 xsmall（既定）** | **89.7%** | **約 6.0 ms** |
-| + zenz v3.1 small | 89.7% | 約 25 ms |
-| Mozc OSS（参考） | 74.6% | — |
+| 構成 | `eval/everyday.tsv`（169 件） | 平均変換時間 | 最大変換時間 |
+|---|---|---|---|
+| ラティスのみ | 95.9% | 約 0.13 ms | 約 4.7 ms |
+| **+ zenz v3.1 xsmall（既定）** | **95.9%** | **約 3.4 ms** | **約 11.6 ms** |
+| **+ zenz v3.1 small** | **97.6%** | **約 12.4 ms** | **約 41.9 ms** |
 
-[AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench) の評価も `sweet-cli data/system.dict eval-ajimee <evaluation_items.json>`（`SWEET_ZENZ` 指定可）で実行できます。
+Mozc `evaluation.tsv`（397 件）では、ラティスのみ **76.8%** に対し `zenz` 併用で **89.7%**（参考: Mozc OSS **74.6%**）を達成しています。[AJIMEE-Bench](https://github.com/azooKey/AJIMEE-Bench) の評価も `sweet-cli data/system.dict eval-ajimee <evaluation_items.json>`（`SWEET_ZENZ` 指定可）で実行できます。
 
 ---
 
