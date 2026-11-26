@@ -285,6 +285,7 @@ pub struct SweetUiTheme {
     pub panel_padding: u8,
     pub dark: bool,
     pub gaming_mode: bool,
+    pub window_fade: bool,
 }
 
 /// Loads the active Sweet IME theme (including custom User Theme and opacity)
@@ -310,6 +311,7 @@ pub unsafe extern "C" fn sweet_ui_load_theme(out: *mut SweetUiTheme) {
             panel_padding: 6,
             dark: true,
             gaming_mode: false,
+            window_fade: true,
         },
         || {
             let opts = sweet_engine::paths::load_options();
@@ -338,6 +340,7 @@ pub unsafe extern "C" fn sweet_ui_load_theme(out: *mut SweetUiTheme) {
                 ),
                 dark: c.dark,
                 gaming_mode: opts.gaming_mode,
+                window_fade: opts.window_fade,
             }
         },
     );

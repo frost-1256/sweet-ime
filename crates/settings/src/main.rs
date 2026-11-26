@@ -317,7 +317,7 @@ impl eframe::App for App {
                     #[cfg(not(target_os = "macos"))]
                     Page::Theme => {
                         section_header(ui, "候補ウィンドウの表示");
-                        let mut gaming_changed = false;
+                        let mut display_changed = false;
                         card_group(ui, |ui| {
                             self.font_picker
                                 .get_or_insert_with(font_picker::FontPicker::new)
@@ -325,14 +325,25 @@ impl eframe::App for App {
                             setting_divider(ui);
                             setting_row(
                                 ui,
+                                "ウィンドウのフェード",
+                                "候補ウィンドウが表示される時と消える時にフェードアニメーションを行います。",
+                                |ui| {
+                                    display_changed |=
+                                        toggle(ui, &mut self.opts.window_fade).changed();
+                                },
+                            );
+                            setting_divider(ui);
+                            setting_row(
+                                ui,
                                 "ゲーミングモード",
                                 "候補ウィンドウの縁を流れる虹色で光らせます。",
                                 |ui| {
-                                    gaming_changed = toggle(ui, &mut self.opts.gaming_mode).changed();
+                                    display_changed |=
+                                        toggle(ui, &mut self.opts.gaming_mode).changed();
                                 },
                             );
                         });
-                        if gaming_changed {
+                        if display_changed {
                             self.save();
                             #[cfg(not(windows))]
                             if self.status.as_ref().is_none_or(|(_, ok)| *ok) {
@@ -459,6 +470,17 @@ impl App {
                 "入力中に続きの候補を表示します。Tab キーで選択できます。",
                 |ui| {
                     changed |= toggle(ui, &mut self.opts.suggestions).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
+                "常に予測変換を表示する",
+                "1 文字目の入力中や続きの候補が少ないときも、予測変換ウィンドウを常に表示します。",
+                |ui| {
+                    ui.add_enabled_ui(self.opts.suggestions, |ui| {
+                        changed |= toggle(ui, &mut self.opts.always_show_suggestions).changed();
+                    });
                 },
             );
             setting_divider(ui);

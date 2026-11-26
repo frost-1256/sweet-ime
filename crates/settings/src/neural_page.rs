@@ -140,6 +140,8 @@ fn safe_remove(path: &Path) -> std::io::Result<()> {
 
 /// Switches `zenz.swz` to `target`, preserving the previously active known
 /// model in its named file so switching back does not require re-downloading.
+/// Keeps a reversible backup of the previous active file until the final
+/// rename succeeds.
 fn activate_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
     let active = data_dir.join("zenz.swz");
     let source = data_dir.join(target.stored_filename());
@@ -149,6 +151,7 @@ fn activate_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
         }
         return Err(format!("{} のファイルが見つかりません。", target.name()));
     }
+    let mut backup: Option<(PathBuf, bool)> = None;
     if let Some(sz) = file_size(&active) {
         match classify_swz_size(sz) {
             Some(old) if old != target => {
@@ -157,14 +160,26 @@ fn activate_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
                     .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
                 std::fs::rename(&active, &archive)
                     .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
+                backup = Some((archive, false));
             }
             _ => {
-                safe_remove(&active).map_err(|e| format!("既存モデルの置換に失敗しました: {e}"))?;
+                let temp = active.with_extension("swz.bak");
+                let _ = std::fs::remove_file(&temp);
+                std::fs::rename(&active, &temp)
+                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
+                backup = Some((temp, true));
             }
         }
     }
-    std::fs::rename(&source, &active)
-        .map_err(|e| format!("モデルの切り替えに失敗しました: {e}"))?;
+    if let Err(e) = std::fs::rename(&source, &active) {
+        if let Some((path, _)) = backup {
+            let _ = std::fs::rename(&path, &active);
+        }
+        return Err(format!("モデルの切り替えに失敗しました: {e}"));
+    }
+    if let Some((temp, true)) = backup {
+        let _ = std::fs::remove_file(&temp);
+    }
     Ok(())
 }
 

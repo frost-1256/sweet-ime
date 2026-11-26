@@ -82,6 +82,7 @@ FCITX_DEFINE_LOG_CATEGORY(sweet_ui_log, "sweetui");
 using Clock = std::chrono::steady_clock;
 
 constexpr double FADE_MS = 90.0;
+constexpr double FADE_OUT_MS = 90.0;
 constexpr double SLIDE_MS = 70.0;
 constexpr double REFADE_AFTER_MS = 600.0;
 constexpr double SHADOW_PAD = 6.0;
@@ -233,21 +234,35 @@ public:
         const auto now = Clock::now();
         maybeReloadConfig();
 
-        const bool wasVisible = snap_.visible;
+        if (!next.visible) {
+            if (fadingOut_) {
+                tickFadeOut(now);
+                return;
+            }
+            if (snap_.visible && theme_.window_fade && width_ > 0 && height_ > 0) {
+                fadeOutFrom_ = currentFade(now);
+                fadeOutStart_ = now;
+                fadingOut_ = true;
+                hoverIndex_ = -1;
+                return;
+            }
+            if (snap_.visible) {
+                hiddenAt_ = now;
+            }
+            snap_ = next;
+            itemRects_.clear();
+            hoverIndex_ = -1;
+            return;
+        }
+
+        const bool wasFadingOut = fadingOut_;
+        fadingOut_ = false;
+        const bool wasVisible = snap_.visible && !wasFadingOut;
         const int prevCursor = snap_.cursor;
         const int prevWidth = width_;
         const RectF oldHighlight = currentHighlightRect(now);
 
         snap_ = next;
-
-        if (!snap_.visible) {
-            if (wasVisible) {
-                hiddenAt_ = now;
-            }
-            itemRects_.clear();
-            hoverIndex_ = -1;
-            return;
-        }
 
         const bool keepMinWidth = wasVisible && snap_.cursor < 0 && prevCursor < 0;
         measure();
@@ -258,7 +273,10 @@ public:
         if (!wasVisible) {
             const auto sinceHidden =
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - hiddenAt_).count();
-            fadeStart_ = (sinceHidden < static_cast<long long>(REFADE_AFTER_MS))
+            const bool skipFade =
+                !theme_.window_fade || wasFadingOut ||
+                sinceHidden < static_cast<long long>(REFADE_AFTER_MS);
+            fadeStart_ = skipFade
                              ? (now - std::chrono::milliseconds(static_cast<long long>(FADE_MS)))
                              : now;
             if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
@@ -282,7 +300,21 @@ public:
         }
     }
 
+    void tickFadeOut(Clock::time_point now) {
+        if (!fadingOut_) return;
+        const double elapsed =
+            std::chrono::duration<double, std::milli>(now - fadeOutStart_).count();
+        if (elapsed >= FADE_OUT_MS) {
+            fadingOut_ = false;
+            snap_.visible = false;
+            itemRects_.clear();
+            hoverIndex_ = -1;
+            hiddenAt_ = now;
+        }
+    }
+
     bool setHover(double x, double y) {
+        if (fadingOut_) return false;
         int found = -1;
         for (size_t i = 0; i < itemRects_.size(); ++i) {
             if (itemRects_[i].contains(x, y)) {
@@ -298,6 +330,7 @@ public:
     }
 
     int hitTest(double x, double y) const {
+        if (fadingOut_) return -1;
         for (size_t i = 0; i < itemRects_.size(); ++i) {
             if (itemRects_[i].contains(x, y)) {
                 return static_cast<int>(i);
@@ -307,6 +340,7 @@ public:
     }
 
     bool needsAnimation() const {
+        if (fadingOut_) return true;
         if (!snap_.visible) return false;
         if (theme_.gaming_mode) return true;
         const auto now = Clock::now();
@@ -314,20 +348,31 @@ public:
             std::chrono::duration<double, std::milli>(now - fadeStart_).count();
         const double slideMs =
             std::chrono::duration<double, std::milli>(now - slideStart_).count();
-        return fadeMs < FADE_MS || slideMs < SLIDE_MS;
+        return (theme_.window_fade && fadeMs < FADE_MS) || slideMs < SLIDE_MS;
     }
 
     int width() const { return width_; }
     int height() const { return height_; }
-    bool visible() const { return snap_.visible; }
+    bool visible() const { return snap_.visible || fadingOut_; }
     float bgAlpha() const { return theme_.bg_alpha; }
 
-    void paint(cairo_t *cr) {
-        if (!snap_.visible || width_ <= 0 || height_ <= 0) return;
-        const auto now = Clock::now();
+    double currentFade(Clock::time_point now) const {
+        if (fadingOut_) {
+            const double fadeRaw =
+                std::chrono::duration<double, std::milli>(now - fadeOutStart_).count() /
+                FADE_OUT_MS;
+            return std::clamp(fadeOutFrom_ * (1.0 - easeOutCubic(fadeRaw)), 0.0, 1.0);
+        }
+        if (!theme_.window_fade) return 1.0;
         const double fadeRaw =
             std::chrono::duration<double, std::milli>(now - fadeStart_).count() / FADE_MS;
-        const double fade = easeOutCubic(fadeRaw);
+        return easeOutCubic(fadeRaw);
+    }
+
+    void paint(cairo_t *cr) {
+        if (!visible() || width_ <= 0 || height_ <= 0) return;
+        const auto now = Clock::now();
+        const double fade = currentFade(now);
 
         cairo_save(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
@@ -636,6 +681,9 @@ private:
     Clock::time_point fadeStart_{};
     Clock::time_point slideStart_{};
     Clock::time_point hiddenAt_{};
+    bool fadingOut_ = false;
+    Clock::time_point fadeOutStart_{};
+    double fadeOutFrom_ = 1.0;
     RectF slideFrom_{};
     RectF slideTo_{};
 };
@@ -1741,6 +1789,7 @@ private:
     // Renders the current panel state without modifying animTimer_.
     // Returns true if another animation or retry tick should be scheduled.
     bool renderFrame() {
+        renderer_.tickFadeOut(Clock::now());
         if (!renderer_.visible()) {
             hideAll();
             return false;

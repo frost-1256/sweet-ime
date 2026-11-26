@@ -81,6 +81,7 @@ const INPUT_MAX_W: f32 = 360.0;
 const FONT_SIZE: f32 = 16.0;
 const MIN_W: f32 = 140.0;
 const FADE_MS: f32 = 90.0;
+const FADE_OUT_MS: f32 = 90.0;
 const SLIDE_MS: f32 = 70.0;
 
 fn candidate_format(dwrite: &IDWriteFactory, family: &str) -> Result<IDWriteTextFormat> {
@@ -231,6 +232,7 @@ struct State {
     small: IDWriteTextFormat,
     pal: Palette,
     gaming_mode: bool,
+    fade_enabled: bool,
     rainbow_border: Option<RainbowBorder>,
     items: Vec<String>,
     rows: Vec<Option<(IDWriteTextLayout, f32)>>,
@@ -248,6 +250,7 @@ struct State {
     anim_start: Instant,
     shown_at: Instant,
     hidden_at: Option<Instant>,
+    fading_out: Option<(Instant, f32)>,
     visible: bool,
     /// Called with the absolute candidate index when a row is clicked.
     on_click: Option<std::rc::Rc<dyn Fn(usize)>>,
@@ -323,9 +326,25 @@ impl State {
         self.anim_from + (target - self.anim_from) * e
     }
 
+    fn fade_factor(&self) -> f32 {
+        if let Some((start, from)) = self.fading_out {
+            let t = (start.elapsed().as_secs_f32() * 1000.0 / FADE_OUT_MS).min(1.0);
+            let e = 1.0 - (1.0 - t).powi(3);
+            return (from * (1.0 - e)).clamp(0.0, 1.0);
+        }
+        if !self.fade_enabled {
+            return 1.0;
+        }
+        let t = (self.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
+        1.0 - (1.0 - t).powi(3)
+    }
+
     fn animating(&self) -> bool {
+        if self.fading_out.is_some() {
+            return true;
+        }
         self.anim_start.elapsed().as_secs_f32() * 1000.0 < SLIDE_MS
-            || self.shown_at.elapsed().as_secs_f32() * 1000.0 < FADE_MS
+            || (self.fade_enabled && self.shown_at.elapsed().as_secs_f32() * 1000.0 < FADE_MS)
     }
 }
 
@@ -423,6 +442,7 @@ impl CandidateWindow {
                 small,
                 pal: palette(),
                 gaming_mode: false,
+                fade_enabled: true,
                 rainbow_border: None,
                 items: Vec::new(),
                 rows: Vec::new(),
@@ -438,6 +458,7 @@ impl CandidateWindow {
                 anim_start: Instant::now(),
                 shown_at: Instant::now(),
                 hidden_at: None,
+                fading_out: None,
                 visible: false,
                 on_click: None,
                 on_live: None,
@@ -469,6 +490,7 @@ impl CandidateWindow {
         input: Option<&str>,
         anchor: RECT,
         gaming_mode: bool,
+        window_fade: bool,
         font_family: &str,
     ) {
         let gaming_mode = gaming_mode && list.is_some();
@@ -564,10 +586,13 @@ impl CandidateWindow {
             st.suggest = suggest;
             st.anim_from = prev_row;
             st.anim_start = Instant::now();
+            st.fade_enabled = window_fade;
+            let was_fading_out = st.fading_out.take().is_some();
             let mut fade = false;
             if !was_visible {
                 st.pal = palette();
-                fade = !st.bitmap_popup
+                fade = window_fade
+                    && !was_fading_out
                     && st.hidden_at.is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
                 st.shown_at = if fade {
                     Instant::now()
@@ -688,21 +713,48 @@ impl CandidateWindow {
 }
 
 fn hide_now(hwnd: HWND) {
-    let was_visible = with_state(hwnd, |st| {
-        let v = std::mem::replace(&mut st.visible, false);
-        st.input = None;
-        if v {
-            st.hidden_at = Some(Instant::now());
+    let start_fade = with_state(hwnd, |st| {
+        if !st.visible {
+            return None;
         }
-        v
-    });
+        let from = st.fade_factor();
+        st.visible = false;
+        st.input = None;
+        if st.fade_enabled && from > 0.01 {
+            st.fading_out = Some((Instant::now(), from));
+            Some(true)
+        } else {
+            st.fading_out = None;
+            st.hidden_at = Some(Instant::now());
+            Some(false)
+        }
+    })
+    .flatten();
     unsafe {
         let _ = KillTimer(Some(hwnd), HIDE_TIMER_ID);
-        if was_visible == Some(true) {
-            let _ = KillTimer(Some(hwnd), TIMER_ID);
-            let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
-            let _ = ShowWindow(hwnd, SW_HIDE);
+        match start_fade {
+            Some(true) => {
+                let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
+                SetTimer(Some(hwnd), TIMER_ID, 8, None);
+            }
+            Some(false) => {
+                finish_hide(hwnd);
+            }
+            None => {}
         }
+    }
+}
+
+fn finish_hide(hwnd: HWND) {
+    with_state(hwnd, |st| {
+        st.visible = false;
+        st.fading_out = None;
+        st.hidden_at = Some(Instant::now());
+    });
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_ID);
+        let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
+        let _ = ShowWindow(hwnd, SW_HIDE);
     }
 }
 
@@ -1081,12 +1133,10 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             st.rainbow_border = None;
             return Err(e);
         }
+        let alpha = (255.0 * st.pal.bg_alpha * st.fade_factor()).round() as u8;
         if let Some(RenderBackend::Bitmap(_, bitmap)) = &st.target {
-            let alpha = (255.0 * st.pal.bg_alpha).round() as u8;
             bitmap.present(hwnd, alpha)?;
         } else {
-            let t = (st.shown_at.elapsed().as_secs_f32() * 1000.0 / FADE_MS).min(1.0);
-            let alpha = (255.0 * st.pal.bg_alpha * t).round() as u8;
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
         }
     }
@@ -1178,7 +1228,19 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == TIMER_ID => {
-                let animating = with_state(hwnd, |st| st.visible && st.animating()).unwrap_or(false);
+                let fade_done = with_state(hwnd, |st| {
+                    st.fading_out
+                        .is_some_and(|(start, _)| start.elapsed().as_secs_f32() * 1000.0 >= FADE_OUT_MS)
+                })
+                .unwrap_or(false);
+                if fade_done {
+                    finish_hide(hwnd);
+                    return LRESULT(0);
+                }
+                let animating = with_state(hwnd, |st| {
+                    (st.visible || st.fading_out.is_some()) && st.animating()
+                })
+                .unwrap_or(false);
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 if !animating {
                     let _ = KillTimer(Some(hwnd), TIMER_ID);
@@ -1213,7 +1275,7 @@ mod tests {
             right: 120,
             bottom: 100,
         };
-        popup.show(Some(&candidates), None, anchor, false, "");
+        popup.show(Some(&candidates), None, anchor, false, false, "");
         with_state(popup.hwnd, |state| {
             render(popup.hwnd, state).unwrap();
             let Some(RenderBackend::Bitmap(_, bitmap)) = &state.target else {

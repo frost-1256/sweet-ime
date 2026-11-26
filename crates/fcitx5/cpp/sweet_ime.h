@@ -68,6 +68,7 @@ typedef struct SweetUiTheme {
     uint8_t panel_padding;
     bool dark;
     bool gaming_mode;
+    bool window_fade;
 } SweetUiTheme;
 
 void sweet_ui_load_theme(SweetUiTheme *out);

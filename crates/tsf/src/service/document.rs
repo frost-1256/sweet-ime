@@ -261,6 +261,7 @@ pub(super) fn refresh_candidates(
             input,
             rc,
             st.session.options.gaming_mode,
+            st.session.options.window_fade,
             &st.candidate_font,
         );
     };
