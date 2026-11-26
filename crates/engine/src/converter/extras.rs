@@ -233,8 +233,9 @@ impl Converter {
                 _ => None,
             }
         };
-        let mut seen: Vec<(usize, usize, String)> = Vec::new();
+        let mut seen: Vec<(usize, String)> = Vec::new();
         for (pos, _) in text.char_indices() {
+            seen.clear();
             self.dict.common_prefix(&text[pos..], |l, e| {
                 let mut chars = e.surface.chars();
                 let Some(first) = chars.next() else { return };
@@ -247,8 +248,8 @@ impl Converter {
                 }
                 let surface = format!("{digit}{rest}");
                 let end = pos + l;
-                if !seen.iter().any(|(s, e, surf)| *s == pos && *e == end && surf == &surface) {
-                    seen.push((pos, end, surface.clone()));
+                if !seen.iter().any(|(e, surf)| *e == end && surf == &surface) {
+                    seen.push((end, surface.clone()));
                     out.push(Extra {
                         start: pos,
                         end,

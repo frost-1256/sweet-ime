@@ -4,13 +4,13 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
+const MISSING_ID: u32 = u32::MAX;
+
 pub struct Tokenizer {
-    encoder: HashMap<String, u32>,
     decoder: Vec<String>,
     /// Merge table keyed by `(left_id, right_id) -> (rank, merged_id)`.
     merges: HashMap<(u32, u32), (u32, u32)>,
     byte_to_id: [u32; 256],
-    byte_to_char: [char; 256],
     char_to_byte: HashMap<char, u8>,
     pub bos: u32,
     pub eos: u32,
@@ -134,21 +134,21 @@ impl Tokenizer {
             decoder[*v as usize] = k.clone();
         }
         let byte_to_char = bytes_to_unicode();
-        let mut byte_to_id = [0u32; 256];
+        let mut byte_to_id = [MISSING_ID; 256];
         let mut ch_buf = [0u8; 4];
         for (b, &ch) in byte_to_char.iter().enumerate() {
             let s = ch.encode_utf8(&mut ch_buf);
-            byte_to_id[b] = *vocab.get(s).unwrap_or(&0);
+            if let Some(&id) = vocab.get(s) {
+                byte_to_id[b] = id;
+            }
         }
         let char_to_byte = byte_to_char.iter().enumerate().map(|(b, c)| (*c, b as u8)).collect();
         let bos = *vocab.get("<s>").unwrap_or(&1);
         let eos = *vocab.get("</s>").unwrap_or(&2);
         Ok(Self {
-            encoder: vocab,
             decoder,
             merges,
             byte_to_id,
-            byte_to_char,
             char_to_byte,
             bos,
             eos,
@@ -165,9 +165,13 @@ impl Tokenizer {
         loop {
             let mut best: Option<(u32, usize, u32)> = None;
             for i in 0..parts.len().saturating_sub(1) {
-                if let Some(&(r, merged)) = self.merges.get(&(parts[i], parts[i + 1])) {
-                    if best.is_none_or(|(br, _, _)| r < br) {
-                        best = Some((r, i, merged));
+                let (l, r) = (parts[i], parts[i + 1]);
+                if l == MISSING_ID || r == MISSING_ID {
+                    continue;
+                }
+                if let Some(&(rank, merged)) = self.merges.get(&(l, r)) {
+                    if best.is_none_or(|(br, _, _)| rank < br) {
+                        best = Some((rank, i, merged));
                     }
                 }
             }
@@ -175,20 +179,13 @@ impl Tokenizer {
             parts[i] = merged;
             parts.remove(i + 1);
         }
-        out.extend_from_slice(parts);
+        out.extend(parts.iter().map(|&id| if id == MISSING_ID { 0 } else { id }));
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
         let mut out = Vec::with_capacity(text.len() / 2 + 4);
         let mut parts = Vec::with_capacity(32);
         for piece in pre_tokenize(text) {
-            if let Some(&id) = self.encoder.get(piece) {
-                // Fast path for ASCII pieces that are already a single vocab token.
-                if piece.bytes().all(|b| self.byte_to_char[b as usize] as u32 == b as u32) {
-                    out.push(id);
-                    continue;
-                }
-            }
             self.bpe_bytes(piece.as_bytes(), &mut parts, &mut out);
         }
         out

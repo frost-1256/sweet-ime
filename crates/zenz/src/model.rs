@@ -237,8 +237,10 @@ impl Model {
         let max_ctx = past + anc.iter().map(|a| a.len()).max().unwrap_or(0);
         let rows = t - logits_from.min(t - 1);
         let mut logits = vec![0f32; rows * vsz];
-        FORWARD_SCRATCH.with(|cell| {
-            let mut scratch = cell.borrow_mut();
+        // Take scratch out of the TLS cell for the duration of this call so
+        // Rayon work-stealing can safely run nested inferences on this thread.
+        let mut scratch = FORWARD_SCRATCH.with(|cell| cell.take());
+        {
             let ForwardScratch {
                 x,
                 h,
@@ -247,7 +249,7 @@ impl Model {
                 ff,
                 scores,
                 hf,
-            } = &mut *scratch;
+            } = &mut scratch;
             x.resize(t * e, 0.0);
             h.resize(t * e, 0.0);
             qkv.resize(t * 3 * e, 0.0);
@@ -334,8 +336,11 @@ impl Model {
             let src = &x[(t - rows) * e..];
             layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, hf);
             matmul(hf, &d[self.wte_t.clone()], &mut logits, rows, e, vsz, false);
-            // Keep steady-state memory bounded after unusually large batches.
-            scratch.trim(256 * 4 * e);
+        }
+        // Keep steady-state memory bounded after unusually large batches.
+        scratch.trim(256 * 4 * e);
+        FORWARD_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
         });
         if append {
             cache.len = past + t;
