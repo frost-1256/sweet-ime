@@ -33,6 +33,8 @@ Use Rust's built-in test framework. Dictionary-backed session tests skip without
 
 Work on `develop` and open PRs into `main`. Use short, imperative commit subjects such as `Fix delayed candidate layout`. Describe the behavior change, link related issues when available, and list the checks you ran. Include screenshots for visual changes and benchmark results for performance work.
 
+When a PR brings a contribution from `develop` into `main`, link the original PR in its description so release notes can credit the original contributor.
+
 GitHub Actions tests Windows, Android, and Linux. Enable auto-merge per PR when requested to merge after checks. The protected `main` branch requires the six platform CI checks and CodeRabbit.
 
 A passing CodeRabbit check does not mean the review found nothing. CodeRabbit can post review comments after its check succeeds, and auto-merge does not wait for them. Before you merge a PR or enable auto-merge, wait until CodeRabbit has reviewed the latest pushed commit. Read its inline comments with `gh api repos/{owner}/{repo}/pulls/<n>/comments`. Fix each valid finding, or reply to say why you skipped it. Repeat this after every push to the PR. Never tag a release from a merge that has unaddressed review comments.
@@ -44,3 +46,4 @@ Release timing is a separate, manual decision. Use the patch version for bug fix
 1. Bump the workspace version in `Cargo.toml`, the Sweet IME workspace entries in `Cargo.lock`, and the Nix package version in `nix/package.nix`. Merge through a PR and confirm that `Release eligibility` passes for the merged commit on `main`.
 2. Create an annotated tag with `git tag -a vX.Y.Z <main-commit>`. Put the title on the first line, then a blank line and Markdown bullets for the user-visible changes since the previous release. Name the platforms affected by platform-specific changes.
 3. Push that tag to start the release workflow. After it passes, verify that GitHub Releases shows the summary above the generated changelog and includes `SweetIME-Setup.exe` and `SweetIME-Android.apk`.
+4. Check the author and PR link for each changelog entry that came through a separate PR into `main`. Confirm the original author's GitHub login with `gh pr view <original-pr> --json author,url`. If the generated entry credits the maintainer who opened the follow-up PR, update it to mention the original contributor and link their PR. Save the updated notes with `gh release edit <tag> --notes-file <file>` and verify the published attribution.

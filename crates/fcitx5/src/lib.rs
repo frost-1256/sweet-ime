@@ -214,7 +214,8 @@ impl SweetContext {
         if converter().is_none() || !self.open {
             return false;
         }
-        self.session.is_active() || matches!(key, Key::Char(_) | Key::ShiftedLetter(_) | Key::Space)
+        self.session.is_active()
+            || matches!(key, Key::Char(_) | Key::ShiftedLetter(_) | Key::Space | Key::HalfSpace)
     }
 
     fn process_key(&mut self, sym: u32, unicode: u32, mods: u32, allow_cloud: bool) -> u32 {

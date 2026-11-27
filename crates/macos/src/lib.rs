@@ -72,7 +72,11 @@ impl Context {
             || !(self.session.is_active()
                 || matches!(
                     key,
-                    Key::Char(_) | Key::ShiftedLetter(_) | Key::Space | Key::ReportCommit
+                    Key::Char(_)
+                        | Key::ShiftedLetter(_)
+                        | Key::Space
+                        | Key::HalfSpace
+                        | Key::ReportCommit
                 ))
             || !self.session.handle(self.converter, key)
         {

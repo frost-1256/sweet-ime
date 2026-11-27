@@ -933,6 +933,12 @@ final class KeyboardView extends View {
             default:
                 break;
         }
+        if (k.code == Native.KEY_SPACE && shift) {
+            shift = false;
+            listener.onKey(Native.KEY_HALF_SPACE);
+            invalidate();
+            return;
+        }
         if (k.isLetter() && upper()) {
             int upperCode = Character.toUpperCase(k.code);
             // Japanese: Shift starts an English word (the engine's Shift mode).

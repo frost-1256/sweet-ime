@@ -317,6 +317,7 @@ public final class SettingsActivity extends Activity {
         LinearLayout input = card("入力中");
         engineToggle(input, "live_conversion");
         engineToggle(input, "suggestions");
+        engineToggle(input, "halfwidth_space");
         LinearLayout english = card("英単語");
         engineToggle(english, "english_words");
         engineToggle(english, "english_katakana");

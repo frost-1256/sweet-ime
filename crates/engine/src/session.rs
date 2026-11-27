@@ -27,6 +27,8 @@ pub enum Key {
     /// A letter typed with Shift held, which starts a temporary English word.
     ShiftedLetter(char),
     Space,
+    /// Commits active text and inserts an ASCII space.
+    HalfSpace,
     Enter,
     Backspace,
     Delete,
@@ -721,6 +723,7 @@ impl Session {
 
     fn handle_key(&mut self, conv: &Converter, key: Key) -> bool {
         let commit_start = self.commit.len();
+        let half_space = key == Key::HalfSpace;
         let key = if let Key::ShiftedLetter(ch) = key {
             if !self.comp.literal {
                 if self.conv.is_some() {
@@ -731,6 +734,8 @@ impl Session {
                 self.comp.literal = true;
             }
             Key::Char(ch)
+        } else if half_space {
+            Key::Enter
         } else {
             key
         };
@@ -739,13 +744,16 @@ impl Session {
         } else {
             self.handle_composing(conv, key)
         };
+        if half_space {
+            self.commit.push(' ');
+        }
         // A single key can commit the previous text and begin a new reading
         // (for example when Shift-started English gives way to Japanese).
         if self.is_active() && self.commit.len() > commit_start {
             self.left_context.push_str(&self.commit[commit_start..]);
         }
         self.refresh(conv);
-        consumed
+        consumed || half_space
     }
 
     /// Keeps a dedicated symbol key in an active URL or bundled spelling.
@@ -910,7 +918,11 @@ impl Session {
                 true
             }
             Key::Space if empty => {
-                self.commit.push('\u{3000}');
+                self.commit.push(if self.options.halfwidth_space {
+                    ' '
+                } else {
+                    '\u{3000}'
+                });
                 true
             }
             _ if empty => false,

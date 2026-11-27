@@ -25,7 +25,7 @@ pub enum Action {
 }
 
 /// Format version written to files (see [`Keymap::parse`]).
-pub const KEYMAP_VERSION: u32 = 2;
+pub const KEYMAP_VERSION: u32 = 3;
 
 /// When a binding applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -135,6 +135,7 @@ pub const ACTIONS: &[(&str, &str, Action)] = &[
     ("ime_on", "IME オン", Action::ImeOn),
     ("ime_off", "IME オフ", Action::ImeOff),
     ("convert", "変換 / 次の候補", Action::Key(Key::Space)),
+    ("half_space", "半角スペースを入力", Action::Key(Key::HalfSpace)),
     ("commit", "確定", Action::Key(Key::Enter)),
     ("cancel", "取り消し", Action::Key(Key::Escape)),
     ("backspace", "前の文字を削除", Action::Key(Key::Backspace)),
@@ -315,6 +316,7 @@ impl Default for Keymap {
                 b(k(0x1D), ImeOff),
                 b(k(0xF0), ImeOff),
                 b(k(0x20), Key(super::Key::Space)),
+                b(Chord::shift(0x20), Key(super::Key::HalfSpace)),
                 b(k(0x0D), Key(super::Key::Enter)),
                 b(k(0x1B), Key(super::Key::Escape)),
                 b(k(0x08), Key(super::Key::Backspace)),
@@ -357,7 +359,7 @@ impl Keymap {
     ///
     /// A binding for the current state (composing / idle) wins over an
     /// `Always` one. A Shift chord of a non-character key with no binding
-    /// of its own uses the unshifted binding (Shift+Space converts).
+    /// of its own uses the unshifted binding.
     pub fn lookup(&self, chord: Chord, composing: bool) -> Option<Action> {
         let chord = Chord { vk: normalize_vk(chord.vk), ..chord };
         let find = |c: Chord| {
@@ -415,9 +417,10 @@ impl Keymap {
     /// Adds default bindings introduced after file `version`, unless the
     /// user already uses the chord.
     fn upgrade(&mut self, version: u32) {
-        // Version 2: Alt+` toggles.
-        let added: [(u32, Chord, Action); 1] =
-            [(2, Chord { vk: 0xC0, ctrl: false, shift: false, alt: true }, Action::ImeToggle)];
+        let added = [
+            (2, Chord { vk: 0xC0, ctrl: false, shift: false, alt: true }, Action::ImeToggle),
+            (3, Chord::shift(0x20), Action::Key(Key::HalfSpace)),
+        ];
         for (since, chord, action) in added {
             if version < since && !self.bindings.iter().any(|b| b.chord == chord) {
                 self.bindings.push(Binding { chord, action, when: When::Always });
@@ -468,8 +471,7 @@ mod tests {
         assert_eq!(m.lookup(Chord::key(0x1C), false), Some(Action::ImeOn));
         // 半角/全角 codes are normalized.
         assert_eq!(m.lookup(Chord::key(0xF3), false), Some(Action::ImeToggle));
-        // Shift+Space falls back to Space; Shift+Left has its own binding.
-        assert_eq!(m.lookup(Chord::shift(0x20), true), Some(Action::Key(Key::Space)));
+        assert_eq!(m.lookup(Chord::shift(0x20), true), Some(Action::Key(Key::HalfSpace)));
         assert_eq!(m.lookup(Chord::shift(0x25), true), Some(Action::Key(Key::ShrinkSegment)));
         // Letters are typed, Shift+letter too.
         assert_eq!(m.lookup(Chord::key(0x41), true), None);
@@ -488,6 +490,9 @@ mod tests {
         let alt_grave = Chord { vk: 0xC0, ctrl: false, shift: false, alt: true };
         let old = Keymap::parse("Kanji ime_toggle\n");
         assert!(old.bindings.iter().any(|b| b.chord == alt_grave));
+        assert_eq!(old.lookup(Chord::shift(0x20), false), Some(Action::Key(Key::HalfSpace)));
+        let custom = Keymap::parse("#! version 2\nShift+Space convert\n");
+        assert_eq!(custom.lookup(Chord::shift(0x20), true), Some(Action::Key(Key::Space)));
         // A current file keeps the user's choice (Alt+` removed).
         let mut m = Keymap::default();
         m.bindings.retain(|b| b.chord != alt_grave);
@@ -514,7 +519,7 @@ mod tests {
 
     #[test]
     fn parse_skips_bad_lines() {
-        let m = Keymap::parse("#! version 2\nCtrl+Space ime_toggle\nBogus ime_on\nSpace nope\nHenkan convert composing # c\n");
+        let m = Keymap::parse("#! version 3\nCtrl+Space ime_toggle\nBogus ime_on\nSpace nope\nHenkan convert composing # c\n");
         assert_eq!(m.bindings.len(), 2);
         assert_eq!(m.bindings[1].when, When::Composing);
     }

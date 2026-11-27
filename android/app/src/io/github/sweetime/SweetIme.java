@@ -774,6 +774,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                     sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
                 }
                 break;
+            case Native.KEY_HALF_SPACE:
+                ic.commitText(" ", 1);
+                lastSpace = 0;
+                break;
             case Native.KEY_SPACE: {
                 // English: a second space right after a word ends the
                 // sentence (". "), as on common keyboards.

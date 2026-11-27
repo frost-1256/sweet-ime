@@ -22,6 +22,7 @@ pub const KEY_RIGHT: i32 = -5;
 pub const KEY_ESCAPE: i32 = -6;
 pub const KEY_EXPAND: i32 = -7;
 pub const KEY_KANA_VARIANT: i32 = -8;
+pub const KEY_HALF_SPACE: i32 = -9;
 /// Added to a letter typed with Shift.
 pub const SHIFTED: i32 = 0x4000_0000;
 
@@ -184,6 +185,7 @@ impl Context {
             KEY_RIGHT => Key::Right,
             KEY_ESCAPE => Key::Escape,
             KEY_KANA_VARIANT => Key::KanaVariant,
+            KEY_HALF_SPACE => Key::HalfSpace,
             c if c >= 0 && c & SHIFTED != 0 => {
                 Key::ShiftedLetter(char::from_u32((c & !SHIFTED) as u32)?)
             }
@@ -201,7 +203,7 @@ impl Context {
         }
         let key = Self::key_of(code)?;
         let typing = matches!(key, Key::Char(_) | Key::ShiftedLetter(_));
-        if !self.session.is_active() && !typing {
+        if !self.session.is_active() && !typing && !matches!(key, Key::Space | Key::HalfSpace) {
             return None;
         }
         // With the list open, digits pick candidates on the desktop; on the
@@ -507,6 +509,7 @@ mod tests {
             Some(Key::ShiftedLetter('G'))
         );
         assert_eq!(Context::key_of(KEY_SPACE), Some(Key::Space));
+        assert_eq!(Context::key_of(KEY_HALF_SPACE), Some(Key::HalfSpace));
         assert_eq!(Context::key_of(KEY_KANA_VARIANT), Some(Key::KanaVariant));
         assert_eq!(Context::key_of(-100), None);
     }
@@ -525,6 +528,14 @@ mod tests {
         let mut c = Context::new();
         c.session.options.live_conversion = false;
         c.session.options.suggestions = false;
+        c.session.options.halfwidth_space = false;
+        let idle_space = c.key(KEY_SPACE).unwrap();
+        assert_eq!(idle_space.split(FIELD).next(), Some("\u{3000}"));
+        let shifted_space = c.key(KEY_HALF_SPACE).unwrap();
+        assert_eq!(shifted_space.split(FIELD).next(), Some(" "));
+        c.session.options.halfwidth_space = true;
+        let idle_space = c.key(KEY_SPACE).unwrap();
+        assert_eq!(idle_space.split(FIELD).next(), Some(" "));
         assert_eq!(c.key(KEY_KANA_VARIANT), None);
         for kana in "かつはう".chars() {
             c.key(kana as i32).unwrap();

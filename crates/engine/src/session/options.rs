@@ -14,6 +14,8 @@ pub struct Options {
     pub live_debounce_ms: u32,
     /// Show predictions while typing.
     pub suggestions: bool,
+    /// Insert an ASCII space when Space is pressed with no active reading.
+    pub halfwidth_space: bool,
     /// Keep showing predictive suggestions even on 1-char readings or when
     /// dictionary completions are sparse.
     pub always_show_suggestions: bool,
@@ -63,6 +65,8 @@ impl Default for Options {
             live_debounce_ms: DEFAULT_LIVE_DEBOUNCE_MS,
             suggestions: true,
             always_show_suggestions: false,
+            // Android's Japanese keyboard already uses ASCII space by default.
+            halfwidth_space: cfg!(target_os = "android"),
             simeji_cloud: false,
             show_typed_input: false,
             neural: true,
@@ -108,6 +112,7 @@ impl Options {
                     }
                 }
                 "suggestions" => o.suggestions = on,
+                "halfwidth_space" => o.halfwidth_space = on,
                 "always_show_suggestions" => o.always_show_suggestions = on,
                 "simeji_cloud" => o.simeji_cloud = on,
                 "show_typed_input" => o.show_typed_input = on,
@@ -140,6 +145,7 @@ impl Options {
              live_conversion = {}
              live_debounce_ms = {}
              suggestions = {}
+             halfwidth_space = {}
              always_show_suggestions = {}
              simeji_cloud = {}
              show_typed_input = {}
@@ -162,6 +168,7 @@ impl Options {
             b(self.live_conversion),
             self.live_debounce_ms.min(MAX_LIVE_DEBOUNCE_MS),
             b(self.suggestions),
+            b(self.halfwidth_space),
             b(self.always_show_suggestions),
             b(self.simeji_cloud),
             b(self.show_typed_input),
@@ -206,6 +213,7 @@ mod tests {
             live_debounce_ms: 140,
             suggestions: true,
             always_show_suggestions: true,
+            halfwidth_space: true,
             simeji_cloud: true,
             show_typed_input: true,
             neural: false,

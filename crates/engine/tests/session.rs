@@ -62,6 +62,32 @@ fn punctuation_readings_offer_symbols_when_typing_and_converting() {
 }
 
 #[test]
+fn halfwidth_space_option_changes_inserted_spaces_without_disabling_conversion() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    s.options.halfwidth_space = false;
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.take_commit(), "\u{3000}");
+    assert!(s.handle(&c, Key::HalfSpace));
+    assert_eq!(s.take_commit(), " ");
+
+    type_str(&mut s, &c, "nihonn");
+    assert!(s.handle(&c, Key::HalfSpace));
+    assert_eq!(s.take_commit(), "にほん ");
+
+    s.options.halfwidth_space = true;
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.take_commit(), " ");
+    type_str(&mut s, &c, "nihongo");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "日本語");
+    assert_eq!(s.take_commit(), "");
+    assert!(s.handle(&c, Key::HalfSpace));
+    assert_eq!(s.take_commit(), "日本語 ");
+    assert!(!s.is_active());
+}
+
+#[test]
 fn typed_input_stays_original_until_committed() {
     let Some(c) = converter() else { return };
     let mut s = plain();
