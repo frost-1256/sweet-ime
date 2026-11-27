@@ -307,12 +307,16 @@ pub struct ZenzReranker {
     pub mix: f32,
 }
 
+/// Shortest reading (in characters) for which [`ZenzReranker`] generates its
+/// own conversion.
+const GENERATE_MIN_CHARS: usize = 14;
+
 impl ZenzReranker {
     pub fn new(zenz: Zenz) -> Self {
         Self {
             zenz,
-            n: 5,
-            n_without_context: 7,
+            n: 8,
+            n_without_context: 10,
             mix: 0.40,
         }
     }
@@ -366,8 +370,10 @@ impl sweet_engine::Reranker for ZenzReranker {
                 .map(|w| w.reading.len())
                 .sum()
         }).collect();
-        let best_coverage = *coverage.iter().max()?;
-        let mut eligible: Vec<usize> = (0..cands.len()).filter(|&i| coverage[i] == best_coverage).collect();
+        // Keep the lattice best's coverage without forcing spellings from other
+        // candidates (しょっぴんぐ -> しょっPNG).
+        let lattice_coverage = *coverage.first()?;
+        let mut eligible: Vec<usize> = (0..cands.len()).filter(|&i| coverage[i] >= lattice_coverage).collect();
         // Distant lattice paths are usually poor homophones. Left context
         // gives the model more evidence, so keep a wider window in that case.
         let best_cost = eligible.iter().map(|&i| cands[i].cost).min()?;
@@ -440,10 +446,10 @@ impl sweet_engine::Reranker for ZenzReranker {
         best: &sweet_engine::Conversion,
     ) -> Option<String> {
         let reading_chars = reading.chars().count();
-        // Only trigger generation for Japanese kana readings of bounded length
-        // where the lattice encountered a high-cost/unknown word (typical of
-        // proper nouns or rare compounds outside the N-best pool).
-        if !(4..=48).contains(&reading_chars)
+        // Long readings combine several ambiguous spans, so the model's own
+        // conversion often beats every lattice candidate. On short readings
+        // it mostly replaces correct dictionary words.
+        if !(GENERATE_MIN_CHARS..=48).contains(&reading_chars)
             || reading.bytes().any(|b| b.is_ascii_alphabetic() || b.is_ascii_digit())
             || best.repeated_kanji_reading().is_some()
             || best
@@ -452,16 +458,6 @@ impl sweet_engine::Reranker for ZenzReranker {
                 .flat_map(|s| &s.words)
                 .any(is_protected_word)
         {
-            return None;
-        }
-        let max_word_cost = best
-            .segments
-            .iter()
-            .flat_map(|s| &s.words)
-            .map(|w| w.cost)
-            .max()
-            .unwrap_or(0);
-        if max_word_cost < 8500 {
             return None;
         }
         let best_surface = best.surface();
@@ -555,9 +551,9 @@ mod tests {
         };
         let reranker = ZenzReranker::new(model);
         let long = "きしゃのきしゃがきしゃできしゃした";
-        assert_eq!(reranker.candidates_for(long, "　"), 7);
-        assert_eq!(reranker.candidates_for(long, "先ほど、"), 5);
-        assert_eq!(reranker.candidates_for("へんしんまち", ""), 5);
+        assert_eq!(reranker.candidates_for(long, "　"), 10);
+        assert_eq!(reranker.candidates_for(long, "先ほど、"), 8);
+        assert_eq!(reranker.candidates_for("へんしんまち", ""), 8);
         let conv = Converter::new(dict).with_reranker(Box::new(reranker));
         for (reading, expected) in [
             (

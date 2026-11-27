@@ -179,6 +179,18 @@ fn standalone_penalty(input: &str, surface: &str) -> i32 {
 /// rest (e.g. はいか -> は|以下 instead of 配下). When the user actually meant
 /// a leading particle after committed text, it remains in the N-best pool for
 /// the neural reranker to pick using left context.
+/// Auxiliary verbs and adjectives (the くる of 持ってくる) follow another word,
+/// but Mozc connects them to the sentence start more cheaply than the main
+/// verb, so くるじゃん stayed in kana instead of 来るじゃん.
+fn bos_auxiliary_penalty(feature: Option<&str>) -> i32 {
+    if feature.is_some_and(|f| f.starts_with("動詞,非自立,") || f.starts_with("形容詞,非自立,"))
+    {
+        2_000
+    } else {
+        0
+    }
+}
+
 fn bos_particle_penalty(
     pos: usize,
     reading: &str,
@@ -508,7 +520,12 @@ impl Converter {
                                 text,
                                 e.surface,
                                 self.dict.pos_class(e.lid),
-                            ),
+                            )
+                            + if pos == 0 {
+                                bos_auxiliary_penalty(self.dict.feature(e.lid))
+                            } else {
+                                0
+                            },
                         surface: e.surface,
                         best: i32::MAX,
                         origin: None,

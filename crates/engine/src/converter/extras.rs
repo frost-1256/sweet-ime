@@ -815,6 +815,20 @@ impl Converter {
         }
         let mut out = Vec::new();
         for (pos, _) in text.char_indices() {
+            // A learned word does not split a longer non-noun dictionary word
+            // typed at the same place: たま -> 多摩 must not turn たまにする
+            // into 多摩にする. Longer nouns (上二ケ, 京野) are mostly rare names.
+            let mut longest = 0;
+            self.dict.common_prefix(&text[pos..], |l, d| {
+                // Dictionaries without POS features keep the old behavior.
+                if self
+                    .dict
+                    .feature(d.lid)
+                    .is_some_and(|f| !f.starts_with("名詞"))
+                {
+                    longest = longest.max(l);
+                }
+            });
             h.common_prefix(&text[pos..], |l, e| {
                 let base = self
                     .dict
@@ -825,7 +839,11 @@ impl Converter {
                     .min()
                     .unwrap_or(4000)
                     .min(4000);
-                let bonus = 1500.0 + 300.0 * (1.0 + e.count as f32).ln();
+                let bonus = if l < longest {
+                    0.0
+                } else {
+                    1500.0 + 300.0 * (1.0 + e.count as f32).ln()
+                };
                 out.push(Extra {
                     start: pos,
                     end: pos + l,
