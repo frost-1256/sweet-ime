@@ -820,10 +820,11 @@ impl Converter {
             // into 多摩にする. Longer nouns (上二ケ, 京野) are mostly rare names.
             let mut longest = 0;
             self.dict.common_prefix(&text[pos..], |l, d| {
-                if !self
+                // Dictionaries without POS features keep the old behavior.
+                if self
                     .dict
                     .feature(d.lid)
-                    .is_some_and(|f| f.starts_with("名詞"))
+                    .is_some_and(|f| !f.starts_with("名詞"))
                 {
                     longest = longest.max(l);
                 }
