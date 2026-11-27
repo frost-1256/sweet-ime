@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jint, jlong, jstring};
+use sweet_engine::{UserDictionary, user_dict::DEFAULT_POS};
 
 use super::{Context, FIELD, converter, init, pack_zenz, refine, refresh_converter};
 
@@ -311,6 +312,74 @@ pub unsafe extern "system" fn Java_io_github_sweetime_Native_setPrivate(
 ) {
     let c = unsafe { ctx(p) };
     guard((), || c.set_private(on != 0));
+}
+
+/// Lists the reading and surface of each user dictionary entry as TSV.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_userWords(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+) -> jstring {
+    let path = to_string(&mut env, &path);
+    let words = guard(None, || {
+        use std::fmt::Write;
+
+        let mut rows = String::new();
+        for word in UserDictionary::try_with_file(path).ok()?.words() {
+            let _ = writeln!(rows, "{}\t{}", word.reading, word.surface);
+        }
+        Some(rows)
+    });
+    to_java(&mut env, words)
+}
+
+/// Registers, edits or deletes a word, returning a Japanese error or null.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_updateUserWord(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+    old_reading: JString,
+    old_surface: JString,
+    reading: JString,
+    surface: JString,
+    remove: jboolean,
+) -> jstring {
+    let path = to_string(&mut env, &path);
+    let old_reading = to_string(&mut env, &old_reading);
+    let old_surface = to_string(&mut env, &old_surface);
+    let reading = to_string(&mut env, &reading);
+    let surface = to_string(&mut env, &surface);
+    let error = guard(Some("ユーザー辞書を更新できませんでした".into()), || {
+        let Ok(mut dict) = UserDictionary::try_with_file(path) else {
+            return Some("ユーザー辞書を読み込めませんでした".into());
+        };
+        if old_reading.is_empty() && remove == 0 {
+            return dict
+                .add(&reading, &surface, DEFAULT_POS, "")
+                .err()
+                .map(|error| error.to_string());
+        }
+        let Some(index) = dict
+            .words()
+            .iter()
+            .position(|word| word.reading == old_reading && word.surface == old_surface)
+        else {
+            return Some("この単語はユーザー辞書にありません".into());
+        };
+        if remove != 0 {
+            return dict
+                .remove(index)
+                .err()
+                .map(|_| "単語を削除できませんでした".into());
+        }
+        let original = dict.words()[index].clone();
+        dict.replace(index, &reading, &surface, &original.pos, &original.comment)
+            .err()
+            .map(|error| error.to_string())
+    });
+    to_java(&mut env, error)
 }
 
 /// How many words the user history at `path` holds.

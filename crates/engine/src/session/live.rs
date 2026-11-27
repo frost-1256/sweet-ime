@@ -245,6 +245,9 @@ impl Session {
             }
         }
         if suggest {
+            if let Some(brackets) = special::bracket_candidate(&settled) {
+                c.suggestions.push(brackets.to_owned());
+            }
             let shown = c
                 .live
                 .as_ref()

@@ -73,6 +73,11 @@ final class Native {
     static native boolean zenzActive();
     /** Learn nothing in this field (a password or a private tab). */
     static native void setPrivate(long ctx, boolean on);
+    /** Registered readings and words, as tab-separated rows. */
+    static native String userWords(String path);
+    /** Adds, replaces or deletes a word. Returns null on success. */
+    static native String updateUserWord(String path, String oldReading, String oldSurface,
+                                        String reading, String surface, boolean remove);
     /** How many words the conversion history file holds. */
     static native int learnedCount(String path);
     /** Forgets the last {@code secs} seconds of learning, or all of it if 0; -1 on failure. */

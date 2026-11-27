@@ -1,6 +1,7 @@
 package io.github.sweetime;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
@@ -59,6 +60,7 @@ import java.nio.file.Files;
 public final class SettingsActivity extends Activity {
     private static final String HOME = "";
     private static final String CONVERSION = "conversion";
+    private static final String USER_DICTIONARY = "user_dictionary";
     private static final String AI = "ai";
     private static final String LEARNING = "learning";
     private static final String KEYBOARD = "keyboard";
@@ -200,6 +202,9 @@ public final class SettingsActivity extends Activity {
             case CONVERSION:
                 conversionPage();
                 break;
+            case USER_DICTIONARY:
+                userDictionaryPage();
+                break;
             case AI:
                 aiPage();
                 break;
@@ -294,6 +299,7 @@ public final class SettingsActivity extends Activity {
         LinearLayout list = card("設定");
         list.setPadding(0, dp(6), 0, dp(6));
         entry(list, Icons.CONVERT, "変換", "ライブ変換・予測・英単語・絵文字など", CONVERSION);
+        entry(list, Icons.CONVERT, "ユーザー辞書", "変換候補に出す単語を登録", USER_DICTIONARY);
         aiSummary = entry(list, Icons.SPARKLE, "AI 変換", "", AI);
         learningSummary = entry(list, Icons.HISTORY, "学習とプライバシー", "", LEARNING);
         entry(list, Icons.KEYBOARD, "キーボード", "かな・英数フリック、キーの高さ、振動と音", KEYBOARD);
@@ -322,6 +328,79 @@ public final class SettingsActivity extends Activity {
         extra.addView(prefToggle("Simejiクラウド変換",
                 "候補バーの雲アイコンを押すと、入力中のかなの読みをSimejiに送信し、顔文字候補を一覧に表示します。",
                 Prefs.SIMEJI_CLOUD, false));
+    }
+
+    private void userDictionaryPage() {
+        header("ユーザー辞書");
+        String path = new File(new File(getFilesDir(), "sweet-ime"), "user_dict.tsv").getAbsolutePath();
+        LinearLayout actions = card(null);
+        LinearLayout words = card("登録した単語");
+        Button add = button("単語を登録");
+        add.setOnClickListener(v -> editUserWord(words, path, "", ""));
+        actions.addView(add);
+        refreshUserWords(words, path);
+    }
+
+    private void refreshUserWords(LinearLayout list, String path) {
+        list.removeAllViews();
+        String words = Native.userWords(path);
+        if (words == null || words.isEmpty()) {
+            list.addView(text(words == null ? "ユーザー辞書を読み込めませんでした" : "登録した単語はありません",
+                    14, theme.subText));
+            return;
+        }
+        for (String row : words.split("\n")) {
+            String[] fields = row.split("\t", 2);
+            if (fields.length != 2) continue;
+            Button entry = tonalButton(fields[1] + "\n" + fields[0]);
+            entry.setOnClickListener(v -> editUserWord(list, path, fields[0], fields[1]));
+            list.addView(entry);
+        }
+    }
+
+    private void editUserWord(LinearLayout list, String path, String oldReading, String oldSurface) {
+        boolean editing = !oldReading.isEmpty();
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(24), 0, dp(24), 0);
+        EditText reading = new EditText(this);
+        reading.setSingleLine(true);
+        reading.setHint("読み");
+        reading.setText(oldReading);
+        fields.addView(reading);
+        EditText surface = new EditText(this);
+        surface.setSingleLine(true);
+        surface.setHint("単語");
+        surface.setText(oldSurface);
+        fields.addView(surface);
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(editing ? "単語を編集" : "単語を登録")
+                .setView(fields)
+                .setPositiveButton(editing ? "保存" : "登録", null)
+                .setNegativeButton("キャンセル", null);
+        if (editing) {
+            builder.setNeutralButton("削除", (dialog, which) -> new AlertDialog.Builder(this)
+                    .setTitle("登録した単語を削除しますか？")
+                    .setMessage(oldSurface)
+                    .setPositiveButton("削除", (confirm, button) -> {
+                        String error = Native.updateUserWord(path, oldReading, oldSurface, "", "", true);
+                        if (error != null) Toast.makeText(this, error, Toast.LENGTH_SHORT).show();
+                        refreshUserWords(list, path);
+                    })
+                    .setNegativeButton("キャンセル", null)
+                    .show());
+        }
+        AlertDialog dialog = builder.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String error = Native.updateUserWord(path, oldReading, oldSurface,
+                    reading.getText().toString(), surface.getText().toString(), false);
+            if (error != null) {
+                Toast.makeText(this, error, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            dialog.dismiss();
+            refreshUserWords(list, path);
+        });
     }
 
     private void aiPage() {

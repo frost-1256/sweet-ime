@@ -22,6 +22,23 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
+fn kakko_offers_ascii_parentheses_when_typing_and_converting() {
+    let Some(c) = converter() else { return };
+    for convert in [false, true] {
+        let mut s = if convert { plain() } else { Session::new() };
+        type_str(&mut s, &c, "かっこ");
+        if convert {
+            assert!(s.handle(&c, Key::Space));
+            assert!(s.handle(&c, Key::Space));
+        }
+        let list = s.candidates().unwrap();
+        let index = list.items.iter().position(|item| item == "()").unwrap();
+        assert!(s.select_candidate(&c, index));
+        assert_eq!(s.take_commit(), "()");
+    }
+}
+
+#[test]
 fn typed_input_stays_original_until_committed() {
     let Some(c) = converter() else { return };
     let mut s = plain();
