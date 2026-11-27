@@ -46,7 +46,7 @@ fn symbol_readings_offer_symbols_when_typing_and_converting() {
         ("ちぇっく", &["✓", "☑"]),
         ("かいてんやじるし", &["↻", "⟲"]),
         ("せきぶん", &["∫", "∬"]),
-        ("ふとうごう", &["≤", "≥"]),
+        ("ふとうごう", &["<", "≤", "≥"]),
         ("ぶんすう", &["½", "⅔"]),
         ("まるつきすうじ", &["①", "③"]),
         ("えんまーく", &["¥", "￥"]),
@@ -81,7 +81,9 @@ fn symbol_readings_offer_symbols_when_typing_and_converting() {
                     "{reading} exceeded the suggestion limit"
                 );
             }
-            for symbol in symbols {
+            // Typing shows only the first symbols; conversion lists them all.
+            let expected = if convert { &symbols[..] } else { &symbols[..1] };
+            for symbol in expected {
                 assert!(
                     list.items.iter().any(|item| item == symbol)
                         || !convert && s.preedit().text == *symbol,
@@ -96,6 +98,50 @@ fn symbol_readings_offer_symbols_when_typing_and_converting() {
             }
             assert_eq!(s.take_commit(), symbols[0]);
         }
+    }
+}
+
+#[test]
+fn symbol_suggestions_keep_the_plain_conversion_without_live_conversion() {
+    let Some(c) = converter() else { return };
+    for (keys, plain, symbol) in [
+        ("shiguma", "シグマ", "σ"),
+        ("arufa", "アルファ", "α"),
+        ("maru", "丸", "○"),
+        ("yajirusi", "矢印", "→"),
+    ] {
+        let mut s = Session::new();
+        s.options.live_conversion = false;
+        type_str(&mut s, &c, keys);
+        let list = s.candidates().unwrap();
+        assert_eq!(list.items[0], plain, "{keys}: {:?}", list.items);
+        assert!(
+            list.items.iter().any(|item| item == symbol),
+            "{keys}: {:?}",
+            list.items
+        );
+        assert!(s.select_candidate(&c, 0));
+        assert_eq!(s.take_commit(), plain);
+    }
+}
+
+#[test]
+fn symbol_suggestions_leave_room_for_predictions() {
+    let Some(c) = converter() else { return };
+    for keys in ["kakeru", "batu", "kakudo", "kigou", "yajirusi"] {
+        let mut s = Session::new();
+        type_str(&mut s, &c, keys);
+        let list = s.candidates().unwrap();
+        let symbols = list
+            .items
+            .iter()
+            .filter(|item| {
+                !item
+                    .chars()
+                    .any(|ch| ('ぁ'..='ヶ').contains(&ch) || ('一'..='鿿').contains(&ch))
+            })
+            .count();
+        assert!(symbols <= 2, "{keys}: {:?}", list.items);
     }
 }
 

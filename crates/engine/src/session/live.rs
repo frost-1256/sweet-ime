@@ -8,6 +8,7 @@ use crate::{Conversion, Converter, english, special, typo};
 use super::{KANA_TYPO_MARGIN, MIN_KANA_TYPO_KEYS, Session, explicit_spelling_overrides};
 
 const SUGGESTION_LIMIT: usize = 5;
+const SYMBOL_SUGGESTIONS: usize = 2;
 const TYPO_SUGGESTION_BUDGET: Duration = Duration::from_millis(4);
 const TYPO_REPLACEMENT_MARGIN: i32 = 1000;
 
@@ -249,12 +250,25 @@ impl Session {
                 .live
                 .as_ref()
                 .map_or(settled.as_str(), |live| live.surface.as_str());
+            let symbols = special::symbol_candidates(&settled);
+            // Without live conversion the plain conversion (シグマ for しぐま)
+            // would otherwise lose its slot to the symbols and predictions.
+            if c.live.is_none() && !symbols.is_empty() {
+                if let Some(best) = conv.convert(&settled, &[], 1).into_iter().next() {
+                    let surface = best.surface();
+                    if surface != shown && c.suggestions.len() < SUGGESTION_LIMIT {
+                        c.suggestions.push(surface);
+                    }
+                }
+            }
             c.suggestions.extend(
-                special::symbol_candidates(&settled)
+                symbols
                     .iter()
                     .copied()
                     .filter(|&symbol| symbol != shown)
-                    .take(SUGGESTION_LIMIT - c.suggestions.len())
+                    // Symbol readings include common words (かける, ばつ), so
+                    // leave room for predictions; conversion lists all symbols.
+                    .take(SYMBOL_SUGGESTIONS.min(SUGGESTION_LIMIT - c.suggestions.len()))
                     .map(str::to_owned),
             );
             if let Some(fix) = correction.filter(|fix| fix.surface != shown)

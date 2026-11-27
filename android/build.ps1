@@ -62,7 +62,7 @@ try {
         }
         Remove-Item -LiteralPath $build -Recurse -Force
     }
-    New-Item -ItemType Directory -Force "$build\lib", "$build\assets\licenses", "$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
+    New-Item -ItemType Directory -Force "$build\lib", "$build\assets","$build\res\mipmap-xxxhdpi", "$build\gen", "$build\classes", "$build\dex" | Out-Null
 
     Write-Host '== System dictionary'
     if ($dictSource) {
@@ -84,7 +84,6 @@ try { Invoke-Tool cargo ndk -t arm64-v8a -t x86_64 -P 29 -o "$build\lib" build -
 finally { Pop-Location }
 
 Write-Host '== Resources'
-Copy-Item "$root\assets\licenses\sudachidict.txt" "$build\assets\licenses\"
 Copy-Item (Join-Path $root 'assets\icon\sweet-ime-256.png') "$build\res\mipmap-xxxhdpi\ic_launcher.png"
 $aapt2 = Join-Path $tools 'aapt2.exe'
 Invoke-Tool $aapt2 compile --dir (Join-Path $app 'res') -o "$build\res-app.zip"
@@ -112,6 +111,12 @@ try {
         $abi = $so.Directory.Name
         [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $so.FullName, "lib/$abi/$($so.Name)") | Out-Null
     }
+    # aapt2 on Windows names assets in subdirectories with a backslash
+    # (assets/licenses\x.txt), which AssetManager cannot open, so they are
+    # added here with explicit names.
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, "$root\assets\licenses\sudachidict.txt", 'assets/licenses/sudachidict.txt') | Out-Null
+    $bad = @($zip.Entries | Where-Object { $_.FullName.Contains('\') } | ForEach-Object FullName)
+    if ($bad) { throw "APK entries with a backslash: $($bad -join ', ')" }
 } finally { $zip.Dispose() }
 
 Invoke-Tool (Join-Path $tools 'zipalign.exe') -f -p 4 "$build\base.apk" "$build\aligned.apk"
