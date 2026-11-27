@@ -1333,6 +1333,20 @@ fn neural_reranking_keeps_learned_words_and_still_picks_other_words() {
 }
 
 #[test]
+fn learned_words_do_not_split_a_longer_adverb() {
+    let Some(c) = converter() else { return };
+    c.learn("たま", "多摩");
+    for (reading, expected) in [
+        ("たまにする", "たまにする"),
+        ("たまにされる", "たまにされる"),
+    ] {
+        assert_eq!(c.convert(reading, &[], 1)[0].surface(), expected);
+    }
+    c.learn("かみ", "紙");
+    assert_eq!(c.convert("かみにかく", &[], 1)[0].surface(), "紙に書く");
+}
+
+#[test]
 fn live_conversion_uses_the_text_committed_before_the_new_reading() {
     let Some(c) = converter() else { return };
     let mut s = Session::new();
