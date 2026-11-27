@@ -84,6 +84,7 @@ using Clock = std::chrono::steady_clock;
 constexpr double FADE_MS = 90.0;
 constexpr double FADE_OUT_MS = 90.0;
 constexpr double SLIDE_MS = 70.0;
+constexpr double RESIZE_MS = 110.0;
 constexpr double REFADE_AFTER_MS = 600.0;
 constexpr double SHADOW_PAD = 6.0;
 constexpr double CORNER_RADIUS = 8.0;
@@ -260,6 +261,7 @@ public:
         const bool wasVisible = snap_.visible && !wasFadingOut;
         const int prevCursor = snap_.cursor;
         const int prevWidth = width_;
+        const auto oldSize = currentSize(now);
         const RectF oldHighlight = currentHighlightRect(now);
 
         snap_ = next;
@@ -271,6 +273,11 @@ public:
         }
 
         if (!wasVisible) {
+            sizeFromW_ = static_cast<double>(width_);
+            sizeFromH_ = static_cast<double>(height_);
+            sizeToW_ = static_cast<double>(width_);
+            sizeToH_ = static_cast<double>(height_);
+            sizeStart_ = now - std::chrono::milliseconds(static_cast<long long>(RESIZE_MS));
             const auto sinceHidden =
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - hiddenAt_).count();
             const bool skipFade =
@@ -284,17 +291,28 @@ public:
                 slideTo_ = itemRects_[snap_.cursor];
             }
             slideStart_ = now - std::chrono::milliseconds(static_cast<long long>(SLIDE_MS));
-        } else if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
-            const RectF target = itemRects_[snap_.cursor];
-            // Keep an in-progress slide intact if the target geometry has not changed.
-            if (!target.approxEqual(slideTo_)) {
-                if (oldHighlight.w > 0.0 && oldHighlight.h > 0.0) {
-                    slideFrom_ = oldHighlight;
-                    slideTo_ = target;
-                    slideStart_ = now;
-                } else {
-                    slideFrom_ = target;
-                    slideTo_ = target;
+        } else {
+            const double targetW = static_cast<double>(width_);
+            const double targetH = static_cast<double>(height_);
+            if (std::fabs(targetW - sizeToW_) > 0.5 || std::fabs(targetH - sizeToH_) > 0.5) {
+                sizeFromW_ = oldSize.first;
+                sizeFromH_ = oldSize.second;
+                sizeToW_ = targetW;
+                sizeToH_ = targetH;
+                sizeStart_ = now;
+            }
+            if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
+                const RectF target = itemRects_[snap_.cursor];
+                // Keep an in-progress slide intact if the target geometry has not changed.
+                if (!target.approxEqual(slideTo_)) {
+                    if (oldHighlight.w > 0.0 && oldHighlight.h > 0.0) {
+                        slideFrom_ = oldHighlight;
+                        slideTo_ = target;
+                        slideStart_ = now;
+                    } else {
+                        slideFrom_ = target;
+                        slideTo_ = target;
+                    }
                 }
             }
         }
@@ -358,11 +376,17 @@ public:
             std::chrono::duration<double, std::milli>(now - fadeStart_).count();
         const double slideMs =
             std::chrono::duration<double, std::milli>(now - slideStart_).count();
-        return (theme_.window_fade && fadeMs < FADE_MS) || slideMs < SLIDE_MS;
+        return (theme_.window_fade && fadeMs < FADE_MS) || slideMs < SLIDE_MS || isResizing(now);
     }
 
-    int width() const { return width_; }
-    int height() const { return height_; }
+    int width() const {
+        if (width_ <= 0) return 0;
+        return std::max(1, static_cast<int>(std::lround(currentSize(Clock::now()).first)));
+    }
+    int height() const {
+        if (height_ <= 0) return 0;
+        return std::max(1, static_cast<int>(std::lround(currentSize(Clock::now()).second)));
+    }
     bool visible() const { return snap_.visible || fadingOut_; }
     float bgAlpha() const { return theme_.bg_alpha; }
 
@@ -390,10 +414,19 @@ public:
         cairo_paint(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
+        cairo_surface_t *targetSurf = cairo_get_target(cr);
+        const int surfW =
+            targetSurf ? cairo_image_surface_get_width(targetSurf) : 0;
+        const int surfH =
+            targetSurf ? cairo_image_surface_get_height(targetSurf) : 0;
+        const auto curSz = currentSize(now);
+        const double drawW = surfW > 0 ? static_cast<double>(surfW) : curSz.first;
+        const double drawH = surfH > 0 ? static_cast<double>(surfH) : curSz.second;
+
         const double cardX = SHADOW_PAD;
         const double cardY = SHADOW_PAD;
-        const double cardW = width_ - 2.0 * SHADOW_PAD;
-        const double cardH = height_ - 2.0 * SHADOW_PAD;
+        const double cardW = std::max(1.0, drawW - 2.0 * SHADOW_PAD);
+        const double cardH = std::max(1.0, drawH - 2.0 * SHADOW_PAD);
 
         // Soft drop shadow.
         for (int i = 3; i >= 1; --i) {
@@ -433,11 +466,21 @@ public:
             cairo_stroke(cr);
         }
 
+        // Clip panel contents to the animated card bounds so shrinking never overflows.
+        cairo_save(cr);
+        roundedRectPath(cr, cardX, cardY, cardW, cardH, CORNER_RADIUS);
+        cairo_clip(cr);
+
+        const double padVClip = static_cast<double>(theme_.panel_padding);
+        const double contentPadClip = std::max(4.0, padVClip - 1.0);
+        const double innerWClip = std::max(0.0, cardW - 2.0 * contentPadClip);
+
         // Hover highlight (when hovering a non-selected item).
         if (hoverIndex_ >= 0 && hoverIndex_ < static_cast<int>(itemRects_.size()) &&
             hoverIndex_ != snap_.cursor) {
             const auto &hr = itemRects_[hoverIndex_];
-            roundedRectPath(cr, hr.x, hr.y, hr.w, hr.h, HIGHLIGHT_RADIUS);
+            const double hw = prefs_.vertical ? innerWClip : hr.w;
+            roundedRectPath(cr, hr.x, hr.y, hw, hr.h, HIGHLIGHT_RADIUS);
             cairo_set_source_rgba(cr, theme_.hover[0] / 255.0, theme_.hover[1] / 255.0,
                                   theme_.hover[2] / 255.0, theme_.hover_alpha * 0.55 * fade);
             cairo_fill(cr);
@@ -445,7 +488,10 @@ public:
 
         // Animated selection highlight pill + accent bar.
         if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
-            const RectF pill = currentHighlightRect(now);
+            RectF pill = currentHighlightRect(now);
+            if (prefs_.vertical) {
+                pill.w = innerWClip;
+            }
             roundedRectPath(cr, pill.x, pill.y, pill.w, pill.h, HIGHLIGHT_RADIUS);
             cairo_set_source_rgba(cr, theme_.hover[0] / 255.0, theme_.hover[1] / 255.0,
                                   theme_.hover[2] / 255.0, theme_.hover_alpha * fade);
@@ -547,10 +593,29 @@ public:
         g_object_unref(layout);
         pango_font_description_free(smallDesc);
         pango_font_description_free(fontDesc);
+        cairo_restore(cr); // pop card clip
         cairo_restore(cr);
     }
 
 private:
+    bool isResizing(Clock::time_point now) const {
+        if (std::fabs(sizeToW_ - sizeFromW_) <= 0.5 && std::fabs(sizeToH_ - sizeFromH_) <= 0.5) {
+            return false;
+        }
+        const double ms =
+            std::chrono::duration<double, std::milli>(now - sizeStart_).count();
+        return ms < RESIZE_MS;
+    }
+
+    std::pair<double, double> currentSize(Clock::time_point now) const {
+        const double raw =
+            std::chrono::duration<double, std::milli>(now - sizeStart_).count() / RESIZE_MS;
+        const double e = easeOutCubic(raw);
+        return {
+            sizeFromW_ + (sizeToW_ - sizeFromW_) * e,
+            sizeFromH_ + (sizeToH_ - sizeFromH_) * e,
+        };
+    }
     RectF currentHighlightRect(Clock::time_point now) const {
         if (snap_.cursor < 0 || snap_.cursor >= static_cast<int>(itemRects_.size())) {
             return {};
@@ -686,6 +751,11 @@ private:
     std::vector<RectF> itemRects_;
     int width_ = 0;
     int height_ = 0;
+    double sizeFromW_ = 0.0;
+    double sizeFromH_ = 0.0;
+    double sizeToW_ = 0.0;
+    double sizeToH_ = 0.0;
+    Clock::time_point sizeStart_{};
     int hoverIndex_ = -1;
     Clock::time_point lastConfigReload_{};
     Clock::time_point fadeStart_{};
