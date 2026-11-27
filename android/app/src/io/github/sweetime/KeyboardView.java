@@ -375,6 +375,9 @@ final class KeyboardView extends View {
     /** Shift for the next letter (English at the start of a sentence). */
     void setAutoShift(boolean on) {
         if (capsLock) return;
+        // Japanese: only the Shift key changes shift; a selection update
+        // must not clear it before Shift+Space or Shift+letter.
+        if (!on && !english) return;
         if (shift != on) {
             shift = on;
             invalidate();
