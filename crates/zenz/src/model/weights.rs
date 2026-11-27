@@ -87,7 +87,7 @@ pub(super) fn f16_to_f32(h: u16) -> f32 {
             s
         } else {
             // subnormal
-            let mut e = -1i32;
+            let mut e = 0i32;
             let mut m = m;
             while m & 0x400 == 0 {
                 m <<= 1;
@@ -313,5 +313,19 @@ impl Model {
             r("lnf_b")?,
         );
         Ok((model, vocab, merges))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::f16_to_f32;
+
+    #[test]
+    fn decodes_f16_subnormal_and_minimum_normal() {
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
+        assert_eq!(f16_to_f32(0x8001), -(2f32.powi(-24)));
+        assert_eq!(f16_to_f32(0x03ff), 1023.0 * 2f32.powi(-24));
+        assert_eq!(f16_to_f32(0x0400), 2f32.powi(-14));
+        assert_eq!(f16_to_f32(0x3c00), 1.0);
     }
 }

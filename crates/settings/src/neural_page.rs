@@ -100,18 +100,62 @@ fn file_size(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|m| m.len())
 }
 
+/// Records which model `zenz.swz` holds, so a custom model whose size falls
+/// in a built-in range is never mistaken for that built-in.
+const ACTIVE_MARKER: &str = "zenz-active.txt";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveModel {
+    Builtin(ModelKind),
+    Custom,
+}
+
+fn read_marker(data_dir: &Path) -> Option<ActiveModel> {
+    let text = std::fs::read_to_string(data_dir.join(ACTIVE_MARKER)).ok()?;
+    match text.trim() {
+        "xsmall" => Some(ActiveModel::Builtin(ModelKind::Xsmall)),
+        "small" => Some(ActiveModel::Builtin(ModelKind::Small)),
+        "custom" => Some(ActiveModel::Custom),
+        _ => None,
+    }
+}
+
+fn write_marker(data_dir: &Path, model: Option<ActiveModel>) -> std::io::Result<()> {
+    let path = data_dir.join(ACTIVE_MARKER);
+    let text = match model {
+        None => {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            };
+        }
+        Some(ActiveModel::Builtin(ModelKind::Xsmall)) => "xsmall",
+        Some(ActiveModel::Builtin(ModelKind::Small)) => "small",
+        Some(ActiveModel::Custom) => "custom",
+    };
+    std::fs::write(path, text)
+}
+
+/// Returns the identity and size of `zenz.swz`, using the marker file when
+/// present and falling back to the file size for older installs.
+fn active_model(data_dir: &Path) -> Option<(ActiveModel, u64)> {
+    let sz = file_size(&data_dir.join("zenz.swz"))?;
+    let id = read_marker(data_dir)
+        .unwrap_or_else(|| classify_swz_size(sz).map_or(ActiveModel::Custom, ActiveModel::Builtin));
+    Some((id, sz))
+}
+
 fn inspect_models(data_dir: &Path) -> ModelInventory {
     let mut inv = ModelInventory {
         xsmall: ModelSlot::NotInstalled,
         small: ModelSlot::NotInstalled,
         custom_active: None,
     };
-    if let Some(sz) = file_size(&data_dir.join("zenz.swz")) {
-        match classify_swz_size(sz) {
-            Some(ModelKind::Xsmall) => inv.xsmall = ModelSlot::Active(sz),
-            Some(ModelKind::Small) => inv.small = ModelSlot::Active(sz),
-            None => inv.custom_active = Some(sz),
-        }
+    match active_model(data_dir) {
+        Some((ActiveModel::Builtin(ModelKind::Xsmall), sz)) => inv.xsmall = ModelSlot::Active(sz),
+        Some((ActiveModel::Builtin(ModelKind::Small), sz)) => inv.small = ModelSlot::Active(sz),
+        Some((ActiveModel::Custom, sz)) => inv.custom_active = Some(sz),
+        None => {}
     }
     if inv.xsmall == ModelSlot::NotInstalled
         && let Some(sz) = file_size(&data_dir.join(ModelKind::Xsmall.stored_filename()))
@@ -139,67 +183,116 @@ fn safe_remove(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Switches `zenz.swz` to `target`, preserving the previously active known
+/// Moves the current `zenz.swz` aside before activating another model: a
+/// built-in model other than `keep` goes to its named file (kept), anything
+/// else goes to a temporary backup (removed after success).
+fn move_active_aside(
+    data_dir: &Path,
+    keep: Option<ModelKind>,
+) -> Result<Option<(PathBuf, bool)>, String> {
+    let active = data_dir.join("zenz.swz");
+    let Some((id, _)) = active_model(data_dir) else {
+        return Ok(None);
+    };
+    let fail = |e: std::io::Error| format!("既存モデルの退避に失敗しました: {e}");
+    match id {
+        ActiveModel::Builtin(old) if Some(old) != keep => {
+            let archive = data_dir.join(old.stored_filename());
+            safe_remove(&archive).map_err(fail)?;
+            std::fs::rename(&active, &archive).map_err(fail)?;
+            Ok(Some((archive, false)))
+        }
+        _ => {
+            let temp = active.with_extension("swz.bak");
+            let _ = std::fs::remove_file(&temp);
+            std::fs::rename(&active, &temp).map_err(fail)?;
+            Ok(Some((temp, true)))
+        }
+    }
+}
+
+/// Puts the previous model back after a failed activation and describes
+/// where it remains if that also fails.
+fn restore_backup(backup: Option<(PathBuf, bool)>, active: &Path, error: String) -> String {
+    if let Some((path, _)) = backup
+        && let Err(e) = std::fs::rename(&path, active)
+    {
+        return format!(
+            "{error}（以前のモデルを元に戻せませんでした: {e}。以前のモデルは {} に残っています）",
+            path.display()
+        );
+    }
+    error
+}
+
+/// Renames `source` to `zenz.swz` with the previous model moved aside, then
+/// records `id` as the active model.
+fn swap_in(
+    data_dir: &Path,
+    source: &Path,
+    keep: Option<ModelKind>,
+    id: ActiveModel,
+    apply_error: &str,
+) -> Result<(), String> {
+    let active = data_dir.join("zenz.swz");
+    let backup = move_active_aside(data_dir, keep)?;
+    if let Err(e) = std::fs::rename(source, &active) {
+        return Err(restore_backup(
+            backup,
+            &active,
+            format!("{apply_error}: {e}"),
+        ));
+    }
+    if let Some((temp, true)) = &backup {
+        let _ = std::fs::remove_file(temp);
+    }
+    write_marker(data_dir, Some(id))
+        .map_err(|e| format!("モデルは切り替えましたが、状態を保存できませんでした: {e}"))
+}
+
+/// Switches `zenz.swz` to `target`, preserving the previously active built-in
 /// model in its named file so switching back does not require re-downloading.
 /// Keeps a reversible backup of the previous active file until the final
 /// rename succeeds.
 fn activate_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
-    let active = data_dir.join("zenz.swz");
     let source = data_dir.join(target.stored_filename());
     if !source.exists() {
-        if file_size(&active).and_then(classify_swz_size) == Some(target) {
+        if matches!(active_model(data_dir), Some((ActiveModel::Builtin(k), _)) if k == target) {
             return Ok(());
         }
         return Err(format!("{} のファイルが見つかりません。", target.name()));
     }
-    let mut backup: Option<(PathBuf, bool)> = None;
-    if let Some(sz) = file_size(&active) {
-        match classify_swz_size(sz) {
-            Some(old) if old != target => {
-                let archive = data_dir.join(old.stored_filename());
-                safe_remove(&archive)
-                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
-                std::fs::rename(&active, &archive)
-                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
-                backup = Some((archive, false));
-            }
-            _ => {
-                let temp = active.with_extension("swz.bak");
-                let _ = std::fs::remove_file(&temp);
-                std::fs::rename(&active, &temp)
-                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
-                backup = Some((temp, true));
-            }
-        }
-    }
-    if let Err(e) = std::fs::rename(&source, &active) {
-        if let Some((path, _)) = backup {
-            let _ = std::fs::rename(&path, &active);
-        }
-        return Err(format!("モデルの切り替えに失敗しました: {e}"));
-    }
-    if let Some((temp, true)) = backup {
-        let _ = std::fs::remove_file(&temp);
-    }
-    Ok(())
+    swap_in(
+        data_dir,
+        &source,
+        Some(target),
+        ActiveModel::Builtin(target),
+        "モデルの切り替えに失敗しました",
+    )
 }
 
 /// Deletes `target` whether it is currently active or stored as inactive.
 fn delete_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
-    let active = data_dir.join("zenz.swz");
-    if file_size(&active).and_then(classify_swz_size) == Some(target) {
-        safe_remove(&active).map_err(|e| format!("削除できませんでした: {e}"))?;
+    let fail = |e: std::io::Error| format!("削除できませんでした: {e}");
+    if matches!(active_model(data_dir), Some((ActiveModel::Builtin(k), _)) if k == target) {
+        safe_remove(&data_dir.join("zenz.swz")).map_err(fail)?;
+        write_marker(data_dir, None).map_err(fail)?;
     }
     let stored = data_dir.join(target.stored_filename());
     if stored.exists() {
-        safe_remove(&stored).map_err(|e| format!("削除できませんでした: {e}"))?;
+        safe_remove(&stored).map_err(fail)?;
     }
     Ok(())
 }
 
+/// Deletes the active custom model; built-in models are left untouched.
 fn delete_custom_model(data_dir: &Path) -> Result<(), String> {
-    let active = data_dir.join("zenz.swz");
-    safe_remove(&active).map_err(|e| format!("削除できませんでした: {e}"))
+    let fail = |e: std::io::Error| format!("削除できませんでした: {e}");
+    if matches!(active_model(data_dir), Some((ActiveModel::Custom, _))) {
+        safe_remove(&data_dir.join("zenz.swz")).map_err(fail)?;
+        write_marker(data_dir, None).map_err(fail)?;
+    }
+    Ok(())
 }
 
 /// Activates a staged `.swz` file (from custom `.swz` or `.gguf` import) as
@@ -209,35 +302,121 @@ fn activate_staged_custom(data_dir: &Path, staged: &Path) -> Result<(), String> 
     if !staged.exists() {
         return Err("変換後のモデルファイルが見つかりません。".into());
     }
-    let active = data_dir.join("zenz.swz");
-    let mut backup: Option<(PathBuf, bool)> = None;
-    if let Some(sz) = file_size(&active) {
-        match classify_swz_size(sz) {
-            Some(old) => {
-                let archive = data_dir.join(old.stored_filename());
-                safe_remove(&archive)
-                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
-                std::fs::rename(&active, &archive)
-                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
-                backup = Some((archive, false));
-            }
-            None => {
-                let temp = active.with_extension("swz.bak");
-                let _ = std::fs::remove_file(&temp);
-                std::fs::rename(&active, &temp)
-                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
-                backup = Some((temp, true));
-            }
+    swap_in(
+        data_dir,
+        staged,
+        None,
+        ActiveModel::Custom,
+        "モデルの適用に失敗しました",
+    )
+}
+
+/// Layer tensor names in a packed model with their element counts as
+/// multiples of `n_embd` squared (`.0`) or `n_embd` (`.1`).
+const SWZ_LAYER_TENSORS: [(&str, usize, usize); 12] = [
+    ("ln_1.weight", 0, 1),
+    ("ln_1.bias", 0, 1),
+    ("attn.c_attn.weight", 3, 0),
+    ("attn.c_attn.bias", 0, 3),
+    ("attn.c_proj.weight", 1, 0),
+    ("attn.c_proj.bias", 0, 1),
+    ("ln_2.weight", 0, 1),
+    ("ln_2.bias", 0, 1),
+    ("mlp.c_fc.weight", 4, 0),
+    ("mlp.c_fc.bias", 0, 4),
+    ("mlp.c_proj.weight", 4, 0),
+    ("mlp.c_proj.bias", 0, 1),
+];
+
+/// Checks that a packed `.swz` file is complete and internally consistent
+/// (header, tokenizer, and every tensor range and size) before it is used.
+fn validate_swz(path: &Path) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let bad = |why: &str| format!("有効な .swz モデルファイルではありません（{why}）。");
+    let mut f =
+        std::fs::File::open(path).map_err(|e| format!("ファイルを開けませんでした: {e}"))?;
+    let len = f
+        .metadata()
+        .map_err(|e| format!("ファイルを読み込めませんでした: {e}"))?
+        .len();
+    let mut head = [0u8; 16];
+    f.read_exact(&mut head)
+        .map_err(|_| bad("ファイルが短すぎます"))?;
+    if &head[..8] != b"SWZENZ01" {
+        return Err(bad("形式が違います"));
+    }
+    let hl = u64::from_le_bytes(head[8..16].try_into().unwrap());
+    if hl > len.saturating_sub(16) {
+        return Err(bad("ヘッダーが途中で切れています"));
+    }
+    let mut hdr_bytes = vec![0u8; hl as usize];
+    f.read_exact(&mut hdr_bytes)
+        .map_err(|_| bad("ヘッダーが途中で切れています"))?;
+    let hdr: serde_json::Value =
+        serde_json::from_slice(&hdr_bytes).map_err(|_| bad("ヘッダーが壊れています"))?;
+    let off = (16 + hl).div_ceil(64) * 64;
+    f.seek(SeekFrom::Start(off))
+        .map_err(|_| bad("重みが途中で切れています"))?;
+    let mut nb = [0u8; 8];
+    f.read_exact(&mut nb)
+        .map_err(|_| bad("重みが途中で切れています"))?;
+    let n = u64::from_le_bytes(nb);
+    let data_off = (off + 8).div_ceil(64) * 64;
+    let need = n
+        .checked_mul(4)
+        .and_then(|b| b.checked_add(data_off))
+        .ok_or_else(|| bad("重みのサイズが不正です"))?;
+    if need > len {
+        return Err(bad("重みが途中で切れています"));
+    }
+    let g = |k: &str| hdr[k].as_u64().filter(|&v| v > 0);
+    let (Some(e), Some(h), Some(l), Some(p), Some(v)) = (
+        g("n_embd"),
+        g("n_head"),
+        g("n_layer"),
+        g("n_positions"),
+        g("vocab_size"),
+    ) else {
+        return Err(bad("モデル設定が不足しています"));
+    };
+    if e % h != 0 {
+        return Err(bad("モデル設定が不正です"));
+    }
+    let check = |name: &str, elems: Option<u64>| -> Result<(), String> {
+        let a = hdr["tensors"][name]
+            .as_array()
+            .ok_or_else(|| bad(&format!("{name} がありません")))?;
+        let (Some(s), Some(t)) = (
+            a.first().and_then(|x| x.as_u64()),
+            a.get(1).and_then(|x| x.as_u64()),
+        ) else {
+            return Err(bad(&format!("{name} の範囲が不正です")));
+        };
+        if s > t || t > n || Some(t - s) != elems {
+            return Err(bad(&format!("{name} の範囲が不正です")));
+        }
+        Ok(())
+    };
+    check("wte", v.checked_mul(e))?;
+    check("wte_t", v.checked_mul(e))?;
+    check("wpe", p.checked_mul(e))?;
+    check("lnf_w", Some(e))?;
+    check("lnf_b", Some(e))?;
+    for i in 0..l {
+        for (t, sq, lin) in SWZ_LAYER_TENSORS {
+            let elems = e
+                .checked_mul(e)
+                .and_then(|ee| ee.checked_mul(sq as u64))
+                .and_then(|x| x.checked_add(e * lin as u64));
+            check(&format!("h.{i}.{t}"), elems)?;
         }
     }
-    if let Err(e) = std::fs::rename(staged, &active) {
-        if let Some((path, _)) = backup {
-            let _ = std::fs::rename(&path, &active);
-        }
-        return Err(format!("モデルの適用に失敗しました: {e}"));
-    }
-    if let Some((temp, true)) = backup {
-        let _ = std::fs::remove_file(&temp);
+    let vocab_ok = hdr["vocab"]
+        .as_str()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .is_some_and(|v| v.as_object().is_some_and(|o| !o.is_empty()));
+    if !vocab_ok || hdr["merges"].as_str().is_none() {
+        return Err(bad("トークナイザーが壊れています"));
     }
     Ok(())
 }
@@ -474,9 +653,16 @@ fn start_import(src_path: &Path, data_dir: &Path, ctx: egui::Context) -> Result<
                 let _ = tx.send(DownloadEvent::Output("モデルファイルをコピー中…".into()));
                 ctx.request_repaint();
                 match std::fs::copy(&src, &dst) {
-                    Ok(_) => {
-                        let _ = tx.send(DownloadEvent::Finished(true));
-                    }
+                    Ok(_) => match validate_swz(&dst) {
+                        Ok(()) => {
+                            let _ = tx.send(DownloadEvent::Finished(true));
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&dst);
+                            let _ = tx.send(DownloadEvent::Output(e));
+                            let _ = tx.send(DownloadEvent::Finished(false));
+                        }
+                    },
                     Err(e) => {
                         let _ = std::fs::remove_file(&dst);
                         let _ =
@@ -537,7 +723,11 @@ fn start_import(src_path: &Path, data_dir: &Path, ctx: egui::Context) -> Result<
                     let _ = tx.send(DownloadEvent::Output(line));
                     ctx.request_repaint();
                 }
-                let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                let mut ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                if ok && let Err(e) = validate_swz(&staged_cleanup) {
+                    let _ = tx.send(DownloadEvent::Output(e));
+                    ok = false;
+                }
                 if !ok {
                     let _ = std::fs::remove_file(&staged_cleanup);
                 }
@@ -585,6 +775,7 @@ impl App {
                         match activate_staged_custom(&dir, &staged) {
                             Ok(()) => {
                                 self.import_model_path.clear();
+                                self.import_model_source = None;
                                 self.status = Some((
                                     format!("{label} をインポートしました。{}", applied_notice()),
                                     true,
@@ -820,8 +1011,11 @@ impl App {
                     })
                 })
         });
-        if let Some(path) = dropped {
+        // Ignore drops while an import runs so its completion cannot clear a
+        // newer selection. Keep the native path for non-UTF-8 file names.
+        if !busy && let Some(path) = dropped {
             self.import_model_path = path.to_string_lossy().into_owned();
+            self.import_model_source = Some(path);
         }
 
         section_header(ui, "カスタムモデルのインポート");
@@ -829,7 +1023,7 @@ impl App {
             ui.set_width(ui.available_width());
             ui.label(
                 RichText::new(
-                    "ローカルの zenz モデルファイル（.swz または GPT-2 形式の .gguf）を読み込んで AI 変換に使います。ファイルをこのウィンドウへドラッグ＆ドロップしても指定できます。",
+                    "ローカルの zenz モデルファイル（.swz、または GPT-2 形式でリトルエンディアンの .gguf）を読み込んで AI 変換に使います。ファイルをこのウィンドウへドラッグ＆ドロップしても指定できます。",
                 )
                 .small()
                 .weak(),
@@ -837,12 +1031,15 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let field_w = (ui.available_width() - 180.0).max(160.0);
-                ui.add_enabled(
+                let edit = ui.add_enabled(
                     !busy,
                     egui::TextEdit::singleline(&mut self.import_model_path)
                         .hint_text("モデルファイルのパス (.swz / .gguf)")
                         .desired_width(field_w),
                 );
+                if edit.changed() {
+                    self.import_model_source = None;
+                }
                 let trimmed = self.import_model_path.trim().trim_matches('"').to_string();
                 if ui
                     .add_enabled(
@@ -852,7 +1049,14 @@ impl App {
                     .clicked()
                 {
                     match data_dir.as_deref() {
-                        Some(dir) => match start_import(Path::new(&trimmed), dir, ui.ctx().clone()) {
+                        Some(dir) => match start_import(
+                            &self
+                                .import_model_source
+                                .clone()
+                                .unwrap_or_else(|| PathBuf::from(&trimmed)),
+                            dir,
+                            ui.ctx().clone(),
+                        ) {
                             Ok(d) => self.download = Some(d),
                             Err(e) => self.status = Some((e, false)),
                         },
@@ -993,6 +1197,92 @@ mod tests {
         assert_eq!(inv.xsmall, ModelSlot::NotInstalled);
         assert!(!inv.has_active());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_import_in_builtin_size_range_keeps_builtin_separate() {
+        let dir = temp_dir("custom-identity");
+        write_sized(&dir.join("zenz.swz"), 98_000_000);
+        let staged = dir.join("zenz-custom-import.swz");
+        write_sized(&staged, 99_000_000);
+
+        activate_staged_custom(&dir, &staged).unwrap();
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.custom_active, Some(99_000_000));
+        assert_eq!(inv.xsmall, ModelSlot::Downloaded(98_000_000));
+
+        // Deleting xsmall leaves the custom model alone.
+        write_sized(&staged, 99_500_000);
+        delete_model(&dir, ModelKind::Xsmall).unwrap();
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.custom_active, Some(99_000_000));
+        assert_eq!(inv.xsmall, ModelSlot::NotInstalled);
+
+        // A second custom import replaces the first without touching built-ins.
+        write_sized(&dir.join(ModelKind::Xsmall.stored_filename()), 98_000_000);
+        activate_staged_custom(&dir, &staged).unwrap();
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.custom_active, Some(99_500_000));
+        assert_eq!(inv.xsmall, ModelSlot::Downloaded(98_000_000));
+
+        // Switching back to the built-in works and clears the custom model.
+        activate_model(&dir, ModelKind::Xsmall).unwrap();
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.xsmall, ModelSlot::Active(98_000_000));
+        assert_eq!(inv.custom_active, None);
+        delete_custom_model(&dir).unwrap();
+        assert_eq!(inspect_models(&dir).xsmall, ModelSlot::Active(98_000_000));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tiny_swz(path: &Path, truncate: bool) {
+        let (e, l, p, v) = (4u64, 1u64, 2u64, 2u64);
+        let mut tensors = serde_json::Map::new();
+        let mut at = 0u64;
+        let mut add = |name: String, n: u64| {
+            tensors.insert(name, serde_json::json!([at, at + n]));
+            at += n;
+        };
+        add("wte".into(), v * e);
+        add("wte_t".into(), v * e);
+        add("wpe".into(), p * e);
+        add("lnf_w".into(), e);
+        add("lnf_b".into(), e);
+        for i in 0..l {
+            for (t, sq, lin) in SWZ_LAYER_TENSORS {
+                add(format!("h.{i}.{t}"), e * e * sq as u64 + e * lin as u64);
+            }
+        }
+        let n = at;
+        let hdr = serde_json::json!({
+            "n_embd": e, "n_head": 2, "n_layer": l, "n_positions": p, "vocab_size": v,
+            "eps": 1e-5, "tensors": tensors, "vocab": "{\"a\":0,\"b\":1}", "merges": "",
+        });
+        let hb = serde_json::to_vec(&hdr).unwrap();
+        let mut buf = b"SWZENZ01".to_vec();
+        buf.extend_from_slice(&(hb.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&hb);
+        buf.resize(buf.len().div_ceil(64) * 64, 0);
+        buf.extend_from_slice(&n.to_le_bytes());
+        buf.resize(buf.len().div_ceil(64) * 64, 0);
+        buf.resize(buf.len() + n as usize * 4, 0);
+        if truncate {
+            buf.truncate(buf.len() - 4);
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn validate_swz_accepts_complete_and_rejects_truncated_files() {
+        let dir = temp_dir("validate");
+        let ok = dir.join("ok.swz");
+        let short = dir.join("short.swz");
+        tiny_swz(&ok, false);
+        tiny_swz(&short, true);
+        assert!(validate_swz(&ok).is_ok());
+        assert!(validate_swz(&short).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

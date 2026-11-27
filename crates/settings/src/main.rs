@@ -147,6 +147,8 @@ struct App {
     confirm_clear: bool,
     download: Option<Download>,
     import_model_path: String,
+    /// Native path of a dropped model file (kept for non-UTF-8 names).
+    import_model_source: Option<std::path::PathBuf>,
     keys: keys_page::KeysPage,
     romaji: romaji_page::RomajiPage,
     apps: apps_page::AppsPage,
@@ -197,6 +199,7 @@ impl App {
             confirm_clear: false,
             download: None,
             import_model_path: String::new(),
+            import_model_source: None,
             keys: keys_page::KeysPage::new(),
             romaji: romaji_page::RomajiPage::new(),
             apps: apps_page::AppsPage::new(),

@@ -1,5 +1,9 @@
 //! GGUF v2/v3 loader for GPT-2 (`zenz`) models, supporting F32, F16, BF16,
 //! Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q4_K, Q5_K, and Q6_K tensors.
+//!
+//! Only little-endian GGUF files (the format written by llama.cpp on all
+//! common platforms) are supported; big-endian files are rejected with an
+//! explicit error.
 
 use std::collections::HashMap;
 use std::io;
@@ -9,6 +13,14 @@ use super::weights::{f16_to_f32, invalid, layer_from};
 use super::{Config, Model, R, Store};
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
+/// Maximum nesting depth accepted for metadata arrays.
+const MAX_META_DEPTH: u32 = 8;
+/// GGML supports at most four tensor dimensions.
+const MAX_TENSOR_DIMS: usize = 4;
+/// Minimum encoded size of a GGUF string (its u64 length prefix).
+const MIN_STRING_BYTES: usize = 8;
+/// Minimum encoded size of a tensor info record: name, n_dims, type, offset.
+const MIN_TENSOR_INFO_BYTES: usize = 8 + 4 + 4 + 8;
 
 // GGML tensor element / quantization types.
 const GGML_TYPE_F32: u32 = 0;
@@ -69,6 +81,27 @@ impl<'a> Cursor<'a> {
         Ok(slice)
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
+    }
+
+    /// Rejects `count` entries that cannot fit in the remaining bytes, then
+    /// reserves capacity fallibly.
+    fn check_count(&self, count: usize, min_entry_bytes: usize) -> io::Result<()> {
+        if count > self.remaining() / min_entry_bytes.max(1) {
+            return Err(invalid("gguf declared count exceeds file size"));
+        }
+        Ok(())
+    }
+
+    fn reserve_vec<T>(&self, count: usize, min_entry_bytes: usize) -> io::Result<Vec<T>> {
+        self.check_count(count, min_entry_bytes)?;
+        let mut v = Vec::new();
+        v.try_reserve_exact(count)
+            .map_err(|_| invalid("gguf declared count too large"))?;
+        Ok(v)
+    }
+
     fn u8(&mut self) -> io::Result<u8> {
         Ok(self.take(1)?[0])
     }
@@ -101,7 +134,10 @@ impl<'a> Cursor<'a> {
             .map_err(|_| invalid("invalid utf-8 in gguf"))
     }
 
-    fn skip_value(&mut self, vtype: u32) -> io::Result<()> {
+    fn skip_value(&mut self, vtype: u32, depth: u32) -> io::Result<()> {
+        if depth > MAX_META_DEPTH {
+            return Err(invalid("gguf metadata arrays nested too deeply"));
+        }
         match vtype {
             META_U8 | META_I8 | META_BOOL => {
                 self.take(1)?;
@@ -125,7 +161,7 @@ impl<'a> Cursor<'a> {
                 let count =
                     usize::try_from(self.u64()?).map_err(|_| invalid("gguf array too long"))?;
                 for _ in 0..count {
-                    self.skip_value(elem_type)?;
+                    self.skip_value(elem_type, depth + 1)?;
                 }
             }
             _ => return Err(invalid(format!("unsupported gguf metadata type {vtype}"))),
@@ -140,7 +176,7 @@ impl<'a> Cursor<'a> {
             META_U32 => Ok(MetaValue::Uint(u64::from(self.u32()?))),
             META_U64 => Ok(MetaValue::Uint(self.u64()?)),
             META_I8 | META_I16 | META_I32 | META_I64 | META_BOOL => {
-                self.skip_value(vtype)?;
+                self.skip_value(vtype, 0)?;
                 Ok(MetaValue::Other)
             }
             META_F32 => Ok(MetaValue::Float(f64::from(self.f32()?))),
@@ -151,14 +187,14 @@ impl<'a> Cursor<'a> {
                 let count =
                     usize::try_from(self.u64()?).map_err(|_| invalid("gguf array too long"))?;
                 if keep_strings && elem_type == META_STRING {
-                    let mut out = Vec::with_capacity(count);
+                    let mut out = self.reserve_vec(count, MIN_STRING_BYTES)?;
                     for _ in 0..count {
                         out.push(self.string()?);
                     }
                     Ok(MetaValue::StringArray(out))
                 } else {
                     for _ in 0..count {
-                        self.skip_value(elem_type)?;
+                        self.skip_value(elem_type, 1)?;
                     }
                     Ok(MetaValue::Other)
                 }
@@ -412,13 +448,14 @@ fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
 }
 
 impl Model {
-    /// Loads a GPT-2 (`zenz`) GGUF v2/v3 file, returning the model and its
-    /// `(vocab.json, merges.txt)` tokenizer strings for packing into `.swz`.
+    /// Loads a little-endian GPT-2 (`zenz`) GGUF v2/v3 file, returning the
+    /// model and its `(vocab.json, merges.txt)` tokenizer strings for packing
+    /// into `.swz`. Big-endian GGUF files are rejected.
     pub fn load_gguf(path: impl AsRef<Path>) -> io::Result<(Self, String, String)> {
-        let file = std::fs::File::open(path.as_ref())?;
-        // SAFETY: the GGUF file is opened read-only for the duration of this call.
-        let map = unsafe { memmap2::Mmap::map(&file)? };
-        Self::load_gguf_bytes(&map)
+        // Read an owned snapshot so concurrent writers cannot change the
+        // bytes while they are parsed.
+        let bytes = std::fs::read(path.as_ref())?;
+        Self::load_gguf_bytes(&bytes)
     }
 
     fn load_gguf_bytes(bytes: &[u8]) -> io::Result<(Self, String, String)> {
@@ -428,6 +465,11 @@ impl Model {
         }
         let version = cur.u32()?;
         if version != 2 && version != 3 {
+            if matches!(version.swap_bytes(), 2 | 3) {
+                return Err(invalid(
+                    "big-endian GGUF files are not supported (use a little-endian GGUF)",
+                ));
+            }
             return Err(invalid(format!("unsupported GGUF version {version}")));
         }
         let tensor_count =
@@ -455,9 +497,16 @@ impl Model {
             let val = cur.read_value(vtype, keep_strings)?;
             match (key.as_str(), val) {
                 ("general.architecture", MetaValue::String(s)) => arch = s,
-                ("general.alignment", MetaValue::Uint(v)) if v > 0 && v.is_power_of_two() => {
-                    alignment = v as usize;
+                ("general.alignment", MetaValue::Uint(v)) => {
+                    if v == 0 || v % 8 != 0 {
+                        return Err(invalid(format!(
+                            "invalid gguf alignment {v} (must be a positive multiple of 8)"
+                        )));
+                    }
+                    alignment =
+                        usize::try_from(v).map_err(|_| invalid("gguf alignment overflow"))?;
                 }
+                ("general.alignment", _) => return Err(invalid("invalid gguf alignment type")),
                 ("gpt2.embedding_length", MetaValue::Uint(v)) => n_embd = Some(v as usize),
                 ("gpt2.attention.head_count", MetaValue::Uint(v)) => n_head = Some(v as usize),
                 ("gpt2.block_count", MetaValue::Uint(v)) => n_layer = Some(v as usize),
@@ -484,11 +533,29 @@ impl Model {
             vocab_size: tokens.len(),
             eps,
         };
+        if cfg.n_embd == 0 || cfg.n_layer == 0 || cfg.n_positions == 0 || cfg.vocab_size == 0 {
+            return Err(invalid("gguf model dimensions must be positive"));
+        }
+        if cfg.n_head == 0 || cfg.n_embd % cfg.n_head != 0 {
+            return Err(invalid(format!(
+                "gguf head count {} must be positive and divide embedding length {}",
+                cfg.n_head, cfg.n_embd
+            )));
+        }
 
-        let mut infos = HashMap::with_capacity(tensor_count);
+        cur.check_count(tensor_count, MIN_TENSOR_INFO_BYTES)?;
+        let mut infos = HashMap::new();
+        infos
+            .try_reserve(tensor_count)
+            .map_err(|_| invalid("gguf tensor count too large"))?;
         for _ in 0..tensor_count {
             let name = cur.string()?;
             let n_dims = cur.u32()? as usize;
+            if n_dims > MAX_TENSOR_DIMS {
+                return Err(invalid(format!(
+                    "gguf tensor {name} has too many dimensions"
+                )));
+            }
             let mut dims = Vec::with_capacity(n_dims);
             for _ in 0..n_dims {
                 dims.push(usize::try_from(cur.u64()?).map_err(|_| invalid("gguf dim overflow"))?);
@@ -506,7 +573,11 @@ impl Model {
             );
         }
 
-        let data_start = cur.pos.div_ceil(alignment) * alignment;
+        let data_start = cur
+            .pos
+            .div_ceil(alignment)
+            .checked_mul(alignment)
+            .ok_or_else(|| invalid("gguf tensor section offset overflow"))?;
         if data_start > bytes.len() {
             return Err(invalid("truncated gguf tensor section"));
         }
@@ -520,69 +591,77 @@ impl Model {
             start..start + vals.len()
         };
 
-        let read_tensor = |name: &str, transpose: bool| -> io::Result<Vec<f32>> {
-            let info = infos
-                .get(name)
-                .ok_or_else(|| invalid(format!("missing gguf tensor {name}")))?;
-            let n_elems = info.dims.iter().try_fold(1usize, |acc, &d| {
-                acc.checked_mul(d)
-                    .ok_or_else(|| invalid("gguf tensor shape overflow"))
-            })?;
-            let raw = tensor_data
-                .get(info.offset..)
-                .ok_or_else(|| invalid(format!("gguf tensor {name} offset out of range")))?;
-            let vals = dequantize(raw, info.ggml_type, n_elems)?;
-            if transpose {
-                if info.dims.len() != 2 {
-                    return Err(invalid(format!("expected 2D gguf tensor {name}")));
+        // `expected` lists GGUF dims in order `[ne0, ne1, ...]` (ne0 innermost).
+        let read_tensor =
+            |name: &str, expected: &[usize], transpose: bool| -> io::Result<Vec<f32>> {
+                let info = infos
+                    .get(name)
+                    .ok_or_else(|| invalid(format!("missing gguf tensor {name}")))?;
+                if info.dims != expected {
+                    return Err(invalid(format!(
+                        "gguf tensor {name} has shape {:?}, expected {expected:?}",
+                        info.dims
+                    )));
                 }
-                // GGUF dims are [ne0, ne1] where ne0 is the contiguous inner
-                // dimension, so memory layout is row-major [ne1, ne0].
-                Ok(transpose_2d(&vals, info.dims[1], info.dims[0]))
-            } else {
-                Ok(vals)
-            }
-        };
+                let n_elems = info.dims.iter().try_fold(1usize, |acc, &d| {
+                    acc.checked_mul(d)
+                        .ok_or_else(|| invalid("gguf tensor shape overflow"))
+                })?;
+                let raw = tensor_data
+                    .get(info.offset..)
+                    .ok_or_else(|| invalid(format!("gguf tensor {name} offset out of range")))?;
+                let vals = dequantize(raw, info.ggml_type, n_elems)?;
+                if transpose {
+                    if info.dims.len() != 2 {
+                        return Err(invalid(format!("expected 2D gguf tensor {name}")));
+                    }
+                    // GGUF dims are [ne0, ne1] where ne0 is the contiguous inner
+                    // dimension, so memory layout is row-major [ne1, ne0].
+                    Ok(transpose_2d(&vals, info.dims[1], info.dims[0]))
+                } else {
+                    Ok(vals)
+                }
+            };
 
-        let wte_vals = read_tensor("token_embd.weight", false)?;
-        let wpe_vals = read_tensor("position_embd.weight", false)?;
         let (v, e) = (cfg.vocab_size, cfg.n_embd);
-        if wte_vals.len() != v * e {
-            return Err(invalid("gguf token_embd.weight shape mismatch"));
-        }
-        if wpe_vals.len() != cfg.n_positions * e {
-            return Err(invalid("gguf position_embd.weight shape mismatch"));
-        }
+        let wte_vals = read_tensor("token_embd.weight", &[e, v], false)?;
+        let wpe_vals = read_tensor("position_embd.weight", &[e, cfg.n_positions], false)?;
         let wte = push_aligned(&wte_vals);
         let wpe = push_aligned(&wpe_vals);
 
         let mut layers = Vec::with_capacity(cfg.n_layer);
         for i in 0..cfg.n_layer {
-            let specs = [
-                (format!("blk.{i}.attn_norm.weight"), false),
-                (format!("blk.{i}.attn_norm.bias"), false),
-                (format!("blk.{i}.attn_qkv.weight"), true),
-                (format!("blk.{i}.attn_qkv.bias"), false),
-                (format!("blk.{i}.attn_output.weight"), true),
-                (format!("blk.{i}.attn_output.bias"), false),
-                (format!("blk.{i}.ffn_norm.weight"), false),
-                (format!("blk.{i}.ffn_norm.bias"), false),
-                (format!("blk.{i}.ffn_up.weight"), true),
-                (format!("blk.{i}.ffn_up.bias"), false),
-                (format!("blk.{i}.ffn_down.weight"), true),
-                (format!("blk.{i}.ffn_down.bias"), false),
+            let specs: [(String, Vec<usize>, bool); 12] = [
+                (format!("blk.{i}.attn_norm.weight"), vec![e], false),
+                (format!("blk.{i}.attn_norm.bias"), vec![e], false),
+                (format!("blk.{i}.attn_qkv.weight"), vec![e, 3 * e], true),
+                (format!("blk.{i}.attn_qkv.bias"), vec![3 * e], false),
+                (format!("blk.{i}.attn_output.weight"), vec![e, e], true),
+                (format!("blk.{i}.attn_output.bias"), vec![e], false),
+                (format!("blk.{i}.ffn_norm.weight"), vec![e], false),
+                (format!("blk.{i}.ffn_norm.bias"), vec![e], false),
+                (format!("blk.{i}.ffn_up.weight"), vec![e, 4 * e], true),
+                (format!("blk.{i}.ffn_up.bias"), vec![4 * e], false),
+                (format!("blk.{i}.ffn_down.weight"), vec![4 * e, e], true),
+                (format!("blk.{i}.ffn_down.bias"), vec![e], false),
             ];
             let mut ranges = Vec::with_capacity(12);
-            for (name, transpose) in specs {
-                let vals = read_tensor(&name, transpose)?;
+            for (name, expected, transpose) in specs {
+                let vals = read_tensor(&name, &expected, transpose)?;
                 ranges.push(push_aligned(&vals));
             }
             layers.push(layer_from(&ranges));
         }
-        let lnf_w = push_aligned(&read_tensor("output_norm.weight", false)?);
-        let lnf_b = push_aligned(&read_tensor("output_norm.bias", false)?);
+        let lnf_w = push_aligned(&read_tensor("output_norm.weight", &[e], false)?);
+        let lnf_b = push_aligned(&read_tensor("output_norm.bias", &[e], false)?);
 
-        let wte_t_vals = transpose_2d(&wte_vals, v, e);
+        // Untied models carry a separate LM head with the same `{n_embd,
+        // n_vocab}` layout as the token embedding; tied models omit it.
+        let wte_t_vals = if infos.contains_key("output.weight") {
+            read_tensor("output.weight", &[e, v], true)?
+        } else {
+            transpose_2d(&wte_vals, v, e)
+        };
         let wte_t = push_aligned(&wte_t_vals);
 
         let mut vocab_map = serde_json::Map::with_capacity(tokens.len());
@@ -642,13 +721,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn loads_minimal_gpt2_gguf_and_packs_to_swz() {
-        let (e, h, l, p, v) = (4usize, 2usize, 1usize, 8usize, 4usize);
-        let mut buf = Vec::new();
-        buf.extend_from_slice(GGUF_MAGIC);
-        buf.extend_from_slice(&3u32.to_le_bytes()); // version 3
-        let tensor_specs: Vec<(&str, Vec<usize>, Vec<f32>)> = vec![
+    const E: usize = 4;
+    const H: usize = 2;
+    const L: usize = 1;
+    const P: usize = 8;
+    const V: usize = 4;
+
+    fn base_tensors() -> Vec<(&'static str, Vec<usize>, Vec<f32>)> {
+        let (e, p, v) = (E, P, V);
+        vec![
             ("token_embd.weight", vec![e, v], vec![0.1; v * e]),
             ("position_embd.weight", vec![e, p], vec![0.05; p * e]),
             ("blk.0.attn_norm.weight", vec![e], vec![1.0; e]),
@@ -673,20 +754,27 @@ mod tests {
             ("blk.0.ffn_down.bias", vec![e], vec![0.0; e]),
             ("output_norm.weight", vec![e], vec![1.0; e]),
             ("output_norm.bias", vec![e], vec![0.0; e]),
-        ];
+        ]
+    }
+
+    fn build_gguf(tensor_specs: &[(&str, Vec<usize>, Vec<f32>)], head_count: u32) -> Vec<u8> {
+        let (e, l, p) = (E, L, P);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(GGUF_MAGIC);
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version 3
         buf.extend_from_slice(&(tensor_specs.len() as u64).to_le_bytes());
         buf.extend_from_slice(&7u64.to_le_bytes()); // 7 metadata KV entries
 
         push_kv_str(&mut buf, "general.architecture", "gpt2");
         push_kv_u32(&mut buf, "gpt2.embedding_length", e as u32);
-        push_kv_u32(&mut buf, "gpt2.attention.head_count", h as u32);
+        push_kv_u32(&mut buf, "gpt2.attention.head_count", head_count);
         push_kv_u32(&mut buf, "gpt2.block_count", l as u32);
         push_kv_u32(&mut buf, "gpt2.context_length", p as u32);
         push_kv_str_arr(&mut buf, "tokenizer.ggml.tokens", &["a", "b", "ab", "</s>"]);
         push_kv_str_arr(&mut buf, "tokenizer.ggml.merges", &["a b"]);
 
         let mut data_section = Vec::new();
-        for (name, dims, vals) in &tensor_specs {
+        for (name, dims, vals) in tensor_specs {
             let offset = data_section.len();
             push_str(&mut buf, name);
             buf.extend_from_slice(&(dims.len() as u32).to_le_bytes());
@@ -702,12 +790,24 @@ mod tests {
         }
         buf.resize(buf.len().div_ceil(32) * 32, 0);
         buf.extend_from_slice(&data_section);
+        buf
+    }
 
+    #[test]
+    fn loads_minimal_gpt2_gguf_and_packs_to_swz() {
+        let buf = build_gguf(&base_tensors(), H as u32);
         let (model, vocab, merges) = Model::load_gguf_bytes(&buf).unwrap();
-        assert_eq!(model.cfg.n_embd, e);
-        assert_eq!(model.cfg.n_head, h);
-        assert_eq!(model.cfg.n_layer, l);
-        assert_eq!(model.cfg.vocab_size, v);
+        assert_eq!(model.cfg.n_embd, E);
+        assert_eq!(model.cfg.n_head, H);
+        assert_eq!(model.cfg.n_layer, L);
+        assert_eq!(model.cfg.vocab_size, V);
+        // Tied model: the LM head is the transposed token embedding.
+        let d = model.store.data();
+        assert!(
+            d[model.wte_t.clone()]
+                .iter()
+                .all(|&x| (x - 0.1).abs() < 1e-6)
+        );
         assert!(vocab.contains("\"ab\":2"));
         assert!(merges.contains("a b"));
 
@@ -721,5 +821,63 @@ mod tests {
         assert!((deq[0] - (-16.0)).abs() < 1e-4);
         assert!((deq[16] - 0.0).abs() < 1e-4);
         assert!((deq[31] - 15.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn uses_untied_output_weight_for_lm_head() {
+        let mut specs = base_tensors();
+        let out: Vec<f32> = (0..V * E).map(|i| i as f32).collect();
+        specs.push(("output.weight", vec![E, V], out.clone()));
+        let buf = build_gguf(&specs, H as u32);
+        let (model, _, _) = Model::load_gguf_bytes(&buf).unwrap();
+        let d = model.store.data();
+        let head = &d[model.wte_t.clone()];
+        // output.weight is row-major [V, E]; the LM head is stored as [E, V].
+        for r in 0..V {
+            for c in 0..E {
+                assert_eq!(head[c * V + r], out[r * E + c]);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_head_count_and_misshaped_tensor() {
+        assert!(Model::load_gguf_bytes(&build_gguf(&base_tensors(), 0)).is_err());
+        assert!(Model::load_gguf_bytes(&build_gguf(&base_tensors(), 3)).is_err());
+        let mut specs = base_tensors();
+        // Same element count as [E, 3E] but wrong orientation.
+        specs[4].1 = vec![3 * E, E];
+        assert!(Model::load_gguf_bytes(&build_gguf(&specs, H as u32)).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_counts_and_deep_nesting() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(GGUF_MAGIC);
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&u64::MAX.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&1u64.to_le_bytes()); // kv count
+        push_str(&mut buf, "tokenizer.ggml.tokens");
+        buf.extend_from_slice(&META_ARRAY.to_le_bytes());
+        buf.extend_from_slice(&META_STRING.to_le_bytes());
+        buf.extend_from_slice(&(u64::MAX / 2).to_le_bytes());
+        assert!(Model::load_gguf_bytes(&buf).is_err());
+
+        let mut cur_bytes = Vec::new();
+        for _ in 0..(MAX_META_DEPTH + 2) {
+            cur_bytes.extend_from_slice(&META_ARRAY.to_le_bytes());
+            cur_bytes.extend_from_slice(&1u64.to_le_bytes());
+        }
+        let mut cur = Cursor::new(&cur_bytes);
+        assert!(cur.skip_value(META_ARRAY, 0).is_err());
+    }
+
+    #[test]
+    fn reports_big_endian_files() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(GGUF_MAGIC);
+        buf.extend_from_slice(&3u32.to_be_bytes());
+        let err = Model::load_gguf_bytes(&buf).err().unwrap();
+        assert!(err.to_string().contains("big-endian"));
     }
 }
