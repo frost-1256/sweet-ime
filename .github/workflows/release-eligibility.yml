@@ -1,8 +1,11 @@
 name: Verify release eligibility
 
+# The tag ruleset requires this check on the tagged commit. Commits on
+# develop pass too, for pre-release tags; the release job still requires
+# main for tags without a hyphen.
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read
@@ -13,4 +16,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Verify the branch
-        run: test "$GITHUB_REF" = refs/heads/main
+        run: test "$GITHUB_REF" = refs/heads/main || test "$GITHUB_REF" = refs/heads/develop
