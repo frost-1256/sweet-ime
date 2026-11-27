@@ -175,6 +175,29 @@ fn standalone_penalty(input: &str, surface: &str) -> i32 {
     if input == "し" && surface == "死" { 4_000 } else { 0 }
 }
 
+/// Discourages splitting a word at BOS into a bare 1-char particle plus the
+/// rest (e.g. はいか -> は|以下 instead of 配下). When the user actually meant
+/// a leading particle after committed text, it remains in the N-best pool for
+/// the neural reranker to pick using left context.
+fn bos_particle_penalty(
+    pos: usize,
+    reading: &str,
+    text: &str,
+    surface: &str,
+    class: PosClass,
+) -> i32 {
+    if pos == 0
+        && reading.len() < text.len()
+        && class == PosClass::Functional
+        && surface == reading
+        && matches!(surface, "は" | "が" | "を" | "に" | "の" | "へ" | "で" | "も")
+    {
+        2_000
+    } else {
+        0
+    }
+}
+
 /// Prefer common homophones where the surrounding reading already supplies
 /// unambiguous collocation context.
 fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32 {
@@ -457,7 +480,14 @@ impl Converter {
                         rid: e.rid,
                         wcost: i32::from(e.cost)
                             - context_bonus(&text[..pos], &rest[..l], &rest[l..], e.surface)
-                            + standalone_penalty(text, e.surface),
+                            + standalone_penalty(text, e.surface)
+                            + bos_particle_penalty(
+                                pos,
+                                &rest[..l],
+                                text,
+                                e.surface,
+                                self.dict.pos_class(e.lid),
+                            ),
                         surface: e.surface,
                         best: i32::MAX,
                         origin: None,

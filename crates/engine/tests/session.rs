@@ -1887,3 +1887,11 @@ fn always_show_suggestions_offers_predictions_from_first_kana() {
     assert_eq!(list.kind, ListKind::Suggestion);
     assert!(!list.items.is_empty());
 }
+
+#[test]
+fn leading_particle_kana_does_not_split_words_like_haika() {
+    let Some(c) = converter() else { return };
+    assert_eq!(c.convert("はいか", &[], 1)[0].surface(), "配下");
+    assert_eq!(c.convert("はいかの", &[], 1)[0].surface(), "配下の");
+    assert_eq!(c.convert("はいかにある", &[], 1)[0].surface(), "配下にある");
+}
