@@ -31,6 +31,8 @@ KEYSYMS = {
     "Down": 0xFF54,
     "F7": 0xFFC4,
     "Zenkaku_Hankaku": 0xFF2A,
+    "Alt_L": 0xFFE9,
+    "Alt_R": 0xFFEA,
 }
 
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -84,10 +86,15 @@ def pump(seconds=0.05):
         time.sleep(0.005)
 
 
-def key(name, mods=0):
+def key_event(name, mods=0, released=False):
     sym = KEYSYMS.get(name, ord(name[0]) if len(name) == 1 else None)
-    eaten = ic.ProcessKeyEvent(dbus.UInt32(sym), dbus.UInt32(0), dbus.UInt32(mods), False, dbus.UInt32(0))
-    ic.ProcessKeyEvent(dbus.UInt32(sym), dbus.UInt32(0), dbus.UInt32(mods), True, dbus.UInt32(0))
+    return bool(ic.ProcessKeyEvent(
+        dbus.UInt32(sym), dbus.UInt32(0), dbus.UInt32(mods), released, dbus.UInt32(0)))
+
+
+def key(name, mods=0):
+    eaten = key_event(name, mods)
+    key_event(name, mods, released=True)
     pump()
     return bool(eaten)
 
@@ -170,6 +177,27 @@ type_str("nginx")
 key("space")
 key("Return")
 check("technical spelling", state["commit"], "Nginx")
+
+clear()
+ic.FocusOut()
+ic.FocusIn()
+# Submit the first press immediately after focus, without pumping the UI.
+check("first letter after refocus starts composing", key_event("k"), True)
+key_event("k", released=True)
+type_str("onnichiha")
+key("Return")
+check("first letter participates in kana conversion", state["commit"], "こんにちは")
+
+check("left Alt press passes through", key_event("Alt_L"), False)
+check("left Alt release passes through", key_event("Alt_L", ALT, released=True), False)
+check("left Alt tap switched the IME off", key("a"), False)
+key_event("Alt_R")
+check("Alt chord passes through", key("x", ALT), False)
+key_event("Alt_R", ALT, released=True)
+check("chord left the IME off", key("a"), False)
+key_event("Alt_R")
+key_event("Alt_R", ALT, released=True)
+check("right Alt tap switched the IME on", key("a"), True)
 
 print("ALL PASSED" if failures == 0 else f"{failures} FAILED")
 sys.exit(1 if failures else 0)

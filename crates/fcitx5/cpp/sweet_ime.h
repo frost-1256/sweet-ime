@@ -15,6 +15,8 @@ enum {
     SWEET_MOD_SHIFT = 1,
     SWEET_MOD_CTRL = 2,
     SWEET_MOD_ALT = 4,
+    SWEET_MOD_RELEASE = 8,
+    SWEET_MOD_SUPER = 16,
 };
 
 enum {
@@ -34,6 +36,7 @@ void sweet_context_free(SweetContext *ctx);
 void sweet_context_set_notify(SweetContext *ctx, SweetNotifyFn fn, void *user);
 
 uint32_t sweet_process_key(SweetContext *ctx, uint32_t sym, uint32_t unicode, uint32_t mods, bool allow_cloud);
+void sweet_reset_modifier_tap(SweetContext *ctx);
 bool sweet_apply_live(SweetContext *ctx, bool allow_cloud);
 bool sweet_select_candidate(SweetContext *ctx, uint32_t index);
 void sweet_commit_all(SweetContext *ctx);

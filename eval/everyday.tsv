@@ -173,3 +173,27 @@ OK:	せんぱいのこえがきこえる		Conversion Expected	先輩の声が聞
 OK:	さるのなきごえをきいた		Conversion Expected	猿の鳴き声を聞いた
 OK:	くつをはいてでかける		Conversion Expected	靴を履いて出かける
 OK:	わいんをはいてしまった		Conversion Expected	ワインを吐いてしまった
+
+# Reported conversion issues
+OK:	じょうら		Conversion Expected	上裸
+OK:	でかくしてくれ		Conversion Expected	デカくしてくれ
+OK:	あとさいずでかくしてくれ		Conversion Expected	あとサイズデカくしてくれ
+OK:	ありか？		Conversion Expected	ありか？
+OK:	がくしゅう、どう？		Conversion Expected	学習、どう？
+OK:	ほせいご		Conversion Expected	補正後
+
+# Related contextual readings and competing homophones
+OK:	こんかいはなしか？		Conversion Expected	今回はなしか？
+OK:	それはまじか？		Conversion Match	それは(まじ|マジ)か？
+OK:	よてい、どう？		Conversion Expected	予定、どう？
+OK:	かぎのありかをさがす		Conversion Match	鍵の(ありか|在り処|在りか|在処)を探す
+OK:	ほせいごのがぞう		Conversion Expected	補正後の画像
+OK:	ここでかくしてくれ		Conversion Expected	ここで隠してくれ
+OK:	むしをたいじしておく		Conversion Expected	虫を退治しておく
+OK:	あいてとたいじする		Conversion Expected	相手と対峙する
+OK:	せいどがひくいからやりなおす		Conversion Expected	精度が低いからやり直す
+OK:	いまのせいどをみなおす		Conversion Expected	今の制度を見直す
+OK:	ともだちといっしょにかえろう		Conversion Expected	友達と一緒に帰ろう
+OK:	おおきなみちをわたった		Conversion Expected	大きな道を渡った
+OK:	しばくでくるー		Conversion Expected	しばくでクルー
+OK:	しばく		Conversion Expected 10	芝区

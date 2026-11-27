@@ -57,6 +57,12 @@ pub struct Binding {
 /// (file name, display name, virtual-key code) of every bindable key.
 pub const KEYS: &[(&str, &str, u16)] = &[
     ("Space", "Space", 0x20),
+    ("LeftShift", "左 Shift", 0xA0),
+    ("RightShift", "右 Shift", 0xA1),
+    ("LeftCtrl", "左 Ctrl", 0xA2),
+    ("RightCtrl", "右 Ctrl", 0xA3),
+    ("LeftAlt", "左 Alt / Option", 0xA4),
+    ("RightAlt", "右 Alt / Option", 0xA5),
     ("Enter", "Enter", 0x0D),
     ("Escape", "Esc", 0x1B),
     ("Tab", "Tab", 0x09),
@@ -191,6 +197,43 @@ pub fn is_character_key(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF | 0xE2)
 }
 
+pub const fn is_modifier_key(vk: u16) -> bool {
+    matches!(vk, 0xA0..=0xA5)
+}
+
+/// Tracks an isolated modifier press across the platform's press and release events.
+#[derive(Default)]
+pub struct ModifierTap {
+    down: u8,
+    pending: Option<u16>,
+}
+
+impl ModifierTap {
+    pub fn press(&mut self, vk: u16, alone: bool) {
+        if !is_modifier_key(vk) {
+            self.pending = None;
+            return;
+        }
+        let bit = 1 << (vk - 0xA0);
+        if self.down & bit == 0 {
+            self.pending = (alone && self.down == 0).then_some(vk);
+            self.down |= bit;
+        }
+    }
+
+    pub fn will_release(&self, vk: u16) -> bool {
+        self.pending == Some(vk)
+    }
+
+    pub fn release(&mut self, vk: u16) -> bool {
+        if !is_modifier_key(vk) {
+            return false;
+        }
+        self.down &= !(1 << (vk - 0xA0));
+        self.pending.take() == Some(vk)
+    }
+}
+
 pub fn key_name(vk: u16) -> Option<&'static str> {
     KEYS.iter().find(|k| k.2 == vk).map(|k| k.0)
 }
@@ -289,7 +332,7 @@ impl Chord {
             None => u16::from_str_radix(key.strip_prefix("0x").or_else(|| key.strip_prefix("0X"))?, 16).ok()?,
         };
         c.vk = normalize_vk(c.vk);
-        Some(c)
+        (!is_modifier_key(c.vk) || c == Chord::key(c.vk)).then_some(c)
     }
 }
 
@@ -522,5 +565,44 @@ mod tests {
         let m = Keymap::parse("#! version 3\nCtrl+Space ime_toggle\nBogus ime_on\nSpace nope\nHenkan convert composing # c\n");
         assert_eq!(m.bindings.len(), 2);
         assert_eq!(m.bindings[1].when, When::Composing);
+    }
+    #[test]
+    fn modifier_taps_are_side_specific_and_cancelled_by_chords() {
+        let mut tap = super::ModifierTap::default();
+        tap.press(0xA5, true);
+        tap.press(0xA5, true); // Duplicate test-down or autorepeat.
+        assert!(tap.will_release(0xA5));
+        assert!(!tap.will_release(0xA4));
+        assert!(tap.release(0xA5));
+        assert!(!tap.release(0xA5));
+
+        tap.press(0xA5, true);
+        tap.press(0x41, false);
+        assert!(!tap.release(0xA5));
+
+        tap.press(0xA0, true);
+        tap.press(0xA1, true);
+        assert!(!tap.release(0xA1));
+        assert!(!tap.release(0xA0));
+    }
+
+    #[test]
+    fn modifier_key_names_round_trip_as_standalone_bindings() {
+        let map = super::Keymap::parse("#! version 3\nRightAlt ime_on\nCtrl+LeftShift ime_off\n");
+        assert_eq!(
+            map.lookup(super::Chord::key(0xA5), false),
+            Some(super::Action::ImeOn)
+        );
+        assert_eq!(
+            map.lookup(
+                super::Chord {
+                    ctrl: true,
+                    ..super::Chord::key(0xA0)
+                },
+                false
+            ),
+            None
+        );
+        assert_eq!(Keymap::parse(&map.to_text()), map);
     }
 }

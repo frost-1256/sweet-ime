@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use serde_json::json;
-use sweet_engine::keymap::{Action, Chord, Keymap};
+use sweet_engine::keymap::{Action, Chord, Keymap, ModifierTap};
 use sweet_engine::live::LiveConversionWorker;
 use sweet_engine::simeji;
 use sweet_engine::{CandidateList, Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
@@ -18,6 +18,7 @@ pub struct Context {
     converter: &'static Converter,
     session: Session,
     keymap: Keymap,
+    modifier_tap: ModifierTap,
     enabled: bool,
     live: Option<Receiver<(String, String)>>,
     cloud: Option<Receiver<simeji::Response>>,
@@ -26,6 +27,7 @@ pub struct Context {
 
 impl Context {
     fn reload(&mut self) {
+        self.modifier_tap = ModifierTap::default();
         let options = paths::load_options();
         self.converter.apply_options(&options);
         self.session.options = options;
@@ -149,6 +151,7 @@ impl Context {
     }
 
     fn finish(&mut self, commit: bool) {
+        self.modifier_tap = ModifierTap::default();
         self.live = None;
         self.cloud = None;
         if commit {
@@ -233,6 +236,7 @@ pub extern "C" fn sweet_macos_new() -> *mut Context {
         converter,
         session: Session::new(),
         keymap: Keymap::default(),
+        modifier_tap: ModifierTap::default(),
         enabled: true,
         live: None,
         cloud: None,
@@ -259,7 +263,23 @@ pub extern "C" fn sweet_macos_key(
     character: u32,
     modifiers: u8,
 ) -> bool {
+    context.modifier_tap.press(0, false);
     context.handle(vk, character, modifiers)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sweet_macos_modifier(
+    context: &mut Context,
+    vk: u16,
+    pressed: bool,
+    alone: bool,
+) -> bool {
+    if pressed {
+        context.modifier_tap.press(vk, alone);
+        false
+    } else {
+        context.modifier_tap.release(vk) && alone && context.handle(vk, 0, 0)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -331,11 +351,27 @@ mod tests {
             converter,
             session: Session::new(),
             keymap: Keymap::default(),
+            modifier_tap: ModifierTap::default(),
             enabled: true,
             live: None,
             cloud: None,
             snapshot: CString::default(),
         };
+        context
+            .keymap
+            .bindings
+            .extend(Keymap::parse("#! version 3\nLeftAlt ime_off\nRightAlt ime_on\n").bindings);
+        assert!(!sweet_macos_modifier(&mut context, 0xA4, true, true));
+        assert!(sweet_macos_modifier(&mut context, 0xA4, false, true));
+        assert!(!context.enabled);
+        assert!(!sweet_macos_modifier(&mut context, 0xA5, true, true));
+        assert!(!sweet_macos_key(&mut context, 0x41, 'a' as u32, 4));
+        assert!(!sweet_macos_modifier(&mut context, 0xA5, false, true));
+        assert!(!context.enabled);
+        assert!(!sweet_macos_modifier(&mut context, 0xA5, true, true));
+        assert!(sweet_macos_modifier(&mut context, 0xA5, false, true));
+        assert!(context.enabled);
+
         context.session.options.live_conversion = false;
         assert!(context.handle(0x20, ' ' as u32, 0));
         let state: serde_json::Value =

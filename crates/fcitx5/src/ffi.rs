@@ -54,7 +54,7 @@ pub unsafe extern "C" fn sweet_context_set_notify(
     });
 }
 
-/// Handles a key press. `sym` is an X keysym, `unicode` the character it
+/// Handles a key event. `sym` is an X keysym, `unicode` the character it
 /// types (0 if none), `mods` a combination of `MOD_*`. Returns `RESULT_*`
 /// flags.
 ///
@@ -119,6 +119,13 @@ pub unsafe extern "C" fn sweet_reset(p: *mut SweetContext) {
         c.session.reset();
         c.snapshot();
     })
+}
+
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sweet_reset_modifier_tap(p: *mut SweetContext) {
+    unsafe { ctx(p) }.modifier_tap = Default::default();
 }
 
 /// # Safety

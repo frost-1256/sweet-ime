@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+use sweet_engine::keymap::{Chord, ModifierTap};
 use sweet_engine::live::LiveConversionWorker;
 use sweet_engine::{Keymap, Session};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
@@ -57,6 +58,8 @@ struct State {
     /// "あ" / "A" badge near the caret.
     indicator: Option<ModeIndicator>,
     keymap: Keymap,
+    modifier_tap: ModifierTap,
+    modifier_context: Option<ITfContext>,
     /// Settings file times when last loaded.
     settings_stamp: crate::SettingsStamp,
     /// The per-application settings turn the IME off in this application.
@@ -308,6 +311,73 @@ impl TextService_Impl {
             Some(Input::Key(k)) => k,
         };
         self.allows_key(key)
+    }
+
+    fn note_key_press(&self, ctx: Option<&ITfContext>, vk: u32, lparam: isize) -> bool {
+        let modifier = keys::modifier_vk(vk, lparam);
+        let mut st = self.st.borrow_mut();
+        if st.modifier_context.as_ref() != ctx {
+            st.modifier_tap = ModifierTap::default();
+            st.modifier_context = modifier.and(ctx).cloned();
+        }
+        st.modifier_tap.press(
+            modifier.unwrap_or_default(),
+            modifier.is_some_and(keys::modifier_alone),
+        );
+        modifier.is_some()
+    }
+
+    fn modifier_input(&self, ctx: Option<&ITfContext>, vk: u16, release: bool) -> Option<Input> {
+        let mut st = self.st.borrow_mut();
+        let tapped = if release {
+            st.modifier_tap.release(vk)
+        } else {
+            st.modifier_tap.will_release(vk)
+        };
+        if !tapped
+            || st.app_off
+            || ctx.is_none()
+            || st.modifier_context.as_ref() != ctx
+            || !keys::modifier_alone(vk)
+        {
+            return None;
+        }
+        st.keymap
+            .lookup(Chord::key(vk), st.session.is_active())
+            .map(keys::action_input)
+    }
+
+    fn handle_input(&self, pic: Ref<ITfContext>, input: Input) -> Result<BOOL> {
+        let key = match input {
+            Input::Toggle(t) => {
+                self.handle_toggle(pic.as_ref(), t);
+                return Ok(BOOL(1));
+            }
+            Input::Key(key) => key,
+        };
+        if !self.allows_key(key) {
+            return Ok(BOOL(0));
+        }
+        let Some(conv) = crate::converter() else {
+            return Ok(BOOL(0));
+        };
+        let ctx = pic.ok()?.clone();
+        self.track_context(&ctx);
+        let cloud_reading = self.st.borrow().session.simeji_conversion_reading(key);
+        let consumed = self.st.borrow_mut().session.handle(conv, key);
+        let report = self.st.borrow_mut().session.take_report();
+        if let Some(report) = report {
+            self.save_report(report);
+            return Ok(BOOL(1));
+        }
+        if consumed {
+            if let Some(i) = &self.st.borrow().indicator {
+                i.hide();
+            }
+            self.update(&ctx, cloud_reading)?;
+            self.request_live_refinement();
+        }
+        Ok(BOOL(consumed as i32))
     }
 
     fn allows_key(&self, key: sweet_engine::Key) -> bool {
@@ -566,6 +636,8 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             st.window = None;
             st.indicator = None;
             st.ctx = None;
+            st.modifier_tap = ModifierTap::default();
+            st.modifier_context = None;
             Ok(())
         })
     }
@@ -702,59 +774,63 @@ impl ITfCompartmentEventSink_Impl for TextService_Impl {
 
 impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnSetFocus(&self, _foreground: BOOL) -> Result<()> {
+        if let Ok(mut st) = self.st.try_borrow_mut() {
+            st.modifier_tap = ModifierTap::default();
+            st.modifier_context = None;
+        }
         Ok(())
     }
 
-    fn OnTestKeyDown(&self, _pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+    fn OnTestKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         crate::guard(|| {
-            let wants = self.wants_key(wparam.0 as u32, lparam.0);
+            let modifier = self.note_key_press(pic.as_ref(), wparam.0 as u32, lparam.0);
+            let wants = !modifier && self.wants_key(wparam.0 as u32, lparam.0);
             crate::debug_log!("test key 0x{:02X} -> {wants}", wparam.0);
             Ok(BOOL(wants as i32))
         })
     }
 
-    fn OnTestKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(BOOL(0))
+    fn OnTestKeyUp(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        crate::guard(|| {
+            let Some(vk) = keys::modifier_vk(wparam.0 as u32, lparam.0) else {
+                return Ok(BOOL(0));
+            };
+            let wants = match self.modifier_input(pic.as_ref(), vk, false) {
+                Some(Input::Toggle(_)) => true,
+                Some(Input::Key(key)) => self.allows_key(key),
+                None => false,
+            };
+            if !wants {
+                self.modifier_input(pic.as_ref(), vk, true);
+            }
+            Ok(BOOL(wants as i32))
+        })
     }
 
     fn OnKeyDown(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         crate::guard(|| {
             let vk = wparam.0 as u32;
             crate::debug_log!("key down 0x{vk:02X}");
-            let key = match self.translate(vk, lparam.0) {
-                None => return Ok(BOOL(0)),
-                Some(Input::Toggle(t)) => {
-                    self.handle_toggle(pic.as_ref(), t);
-                    return Ok(BOOL(1));
-                }
-                Some(Input::Key(k)) => k,
-            };
-            if !self.allows_key(key) {
+            if self.note_key_press(pic.as_ref(), vk, lparam.0) {
                 return Ok(BOOL(0));
             }
-            let Some(conv) = crate::converter() else { return Ok(BOOL(0)) };
-            let ctx = pic.ok()?.clone();
-            self.track_context(&ctx);
-            let cloud_reading = self.st.borrow().session.simeji_conversion_reading(key);
-            let consumed = self.st.borrow_mut().session.handle(conv, key);
-            let report = self.st.borrow_mut().session.take_report();
-            if let Some(report) = report {
-                self.save_report(report);
-                return Ok(BOOL(1));
+            match self.translate(vk, lparam.0) {
+                Some(input) => self.handle_input(pic, input),
+                None => Ok(BOOL(0)),
             }
-            if consumed {
-                if let Some(i) = &self.st.borrow().indicator {
-                    i.hide();
-                }
-                self.update(&ctx, cloud_reading)?;
-                self.request_live_refinement();
-            }
-            Ok(BOOL(consumed as i32))
         })
     }
 
-    fn OnKeyUp(&self, _pic: Ref<ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(BOOL(0))
+    fn OnKeyUp(&self, pic: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
+        crate::guard(|| {
+            let Some(vk) = keys::modifier_vk(wparam.0 as u32, lparam.0) else {
+                return Ok(BOOL(0));
+            };
+            match self.modifier_input(pic.as_ref(), vk, true) {
+                Some(input) => self.handle_input(pic, input),
+                None => Ok(BOOL(0)),
+            }
+        })
     }
 
     fn OnPreservedKey(&self, pic: Ref<ITfContext>, rguid: *const GUID) -> Result<BOOL> {
@@ -765,7 +841,8 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
             }
             let g = unsafe { *rguid };
             crate::debug_log!("preserved key {g:?}");
-            let st = self.st.borrow();
+            let mut st = self.st.borrow_mut();
+            st.modifier_tap.press(0, false);
             let t = st.preserved.iter().find(|(x, _, _)| *x == g).filter(|_| !st.app_off).map(|(_, _, t)| *t);
             drop(st);
             let Some(t) = t else { return Ok(BOOL(0)) };
@@ -835,6 +912,8 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
         let _ = crate::guard(|| {
             if let Ok(mut st) = self.st.try_borrow_mut() {
                 st.thread_focused = false;
+                st.modifier_tap = ModifierTap::default();
+                st.modifier_context = None;
                 st.session.cancel_simeji();
                 if let Some(w) = &st.window {
                     w.hide();

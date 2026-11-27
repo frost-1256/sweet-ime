@@ -22,7 +22,7 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
-fn punctuation_readings_offer_symbols_when_typing_and_converting() {
+fn symbol_readings_offer_symbols_when_typing_and_converting() {
     let Some(c) = converter() else { return };
     for (reading, symbols) in [
         ("なかぐろ", &["・", "･"][..]),
@@ -36,6 +36,34 @@ fn punctuation_readings_offer_symbols_when_typing_and_converting() {
         ("くりかえし", &["々"]),
         ("おなじ", &["々"]),
         ("のま", &["々"]),
+        ("まる", &["○", "●"]),
+        ("さんかく", &["△", "▲", "▽", "▼"]),
+        ("しかく", &["□", "■", "◇", "◆"]),
+        ("やじるし", &["→", "←"]),
+        ("きごう", &["※", "☆"]),
+        ("けいせん", &["─", "│"]),
+        ("にじゅうけいせん", &["═", "║"]),
+        ("ちぇっく", &["✓", "☑"]),
+        ("かいてんやじるし", &["↻", "⟲"]),
+        ("せきぶん", &["∫", "∬"]),
+        ("ふとうごう", &["≤", "≥"]),
+        ("ぶんすう", &["½", "⅔"]),
+        ("まるつきすうじ", &["①", "③"]),
+        ("えんまーく", &["¥", "￥"]),
+        ("ゆーろ", &["€"]),
+        ("こぴーらいと", &["©", "℗"]),
+        ("おんぷ", &["♪", "♬"]),
+        ("とおんきごう", &["𝄞"]),
+        ("とらんぷ", &["♠", "♣"]),
+        ("あるふぁ", &["α", "Α"]),
+        ("arufa", &["α", "Α"]),
+        ("アルファ", &["α", "Α"]),
+        ("べーた", &["β", "Β"]),
+        ("がんま", &["γ", "Γ"]),
+        ("しぐま", &["σ", "Σ", "ς"]),
+        ("shiguma", &["σ", "Σ", "ς"]),
+        ("シグマ", &["σ", "Σ", "ς"]),
+        ("おめが", &["ω", "Ω"]),
     ] {
         for convert in [false, true] {
             let mut s = if convert { plain() } else { Session::new() };
@@ -47,17 +75,58 @@ fn punctuation_readings_offer_symbols_when_typing_and_converting() {
             let list = s
                 .candidates()
                 .unwrap_or_else(|| panic!("{reading} did not offer any candidates"));
+            if !convert {
+                assert!(
+                    list.items.len() <= 5,
+                    "{reading} exceeded the suggestion limit"
+                );
+            }
             for symbol in symbols {
                 assert!(
-                    list.items.iter().any(|item| item == symbol),
+                    list.items.iter().any(|item| item == symbol)
+                        || !convert && s.preedit().text == *symbol,
                     "{reading} -> {symbol} missing from {:?}",
                     list.items
                 );
             }
-            let index = list.items.iter().position(|item| item == symbols[0]).unwrap();
-            assert!(s.select_candidate(&c, index));
+            if let Some(index) = list.items.iter().position(|item| item == symbols[0]) {
+                assert!(s.select_candidate(&c, index));
+            } else {
+                assert!(s.handle(&c, Key::Enter));
+            }
             assert_eq!(s.take_commit(), symbols[0]);
         }
+    }
+}
+
+#[test]
+fn symbol_conversion_keeps_candidates_beyond_the_first_page() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    type_str(&mut s, &c, "まるつきすうじ");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Space));
+    let list = s.candidates().unwrap();
+    let index = list.items.iter().position(|item| item == "⑳").unwrap();
+    assert!(index >= list.page_size);
+    assert!(s.select_candidate(&c, index));
+    assert_eq!(s.take_commit(), "⑳");
+}
+
+#[test]
+fn question_conversion_keeps_punctuation_and_colloquial_kana() {
+    let Some(c) = converter() else { return };
+    for (keys, expected) in [
+        ("gakusyuu,dou?", "学習、どう？"),
+        ("arika?", "ありか？"),
+        ("konkaihanasika?", "今回はなしか？"),
+    ] {
+        let mut s = plain();
+        type_str(&mut s, &c, keys);
+        assert!(s.handle(&c, Key::Space));
+        assert_eq!(s.preedit().text, expected);
+        assert!(s.handle(&c, Key::Enter));
+        assert_eq!(s.take_commit(), expected);
     }
 }
 
@@ -1054,7 +1123,7 @@ fn editing_or_dismissing_a_live_typo_preserves_the_original_keys() {
 
     s.reset();
     type_str(&mut s, &c, "saisiylono,");
-    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Escape));
     assert_eq!(s.preedit().text, "さいしyぉの、");
     assert!(!s.is_converting());
     assert_eq!(s.typed_input(), "saisiylono,");
@@ -1141,7 +1210,7 @@ fn space_applies_confident_typos_that_produce_valid_kana() {
 }
 
 #[test]
-fn confident_kana_typo_is_applied_live_and_space_restores_the_typed_reading() {
+fn explicit_conversion_keeps_the_live_typo_fix_until_cancelled() {
     let Some(c) = converter() else { return };
     let keys = "raigatougozaimasu";
     let mut s = Session::new();
@@ -1155,10 +1224,13 @@ fn confident_kana_typo_is_applied_live_and_space_restores_the_typed_reading() {
     type_str(&mut s, &c, keys);
     assert_eq!(s.simeji_conversion_reading(Key::Space), None);
     assert!(s.handle(&c, Key::Space));
+    assert!(s.is_converting());
+    assert_eq!(s.preedit().text, "ありがとうございます");
+    assert!(!s.apply_live("ありがとうございます", "ありがとうございます"));
+    assert!(s.handle(&c, Key::Escape));
     let reading = sweet_engine::romaji::to_hiragana(keys);
     assert_eq!(s.preedit().text, reading);
     assert_eq!(s.typed_input(), keys);
-    assert!(!s.apply_live("ありがとうございます", "ありがとうございます"));
     assert!(!s.is_converting());
     assert_eq!(
         s.simeji_conversion_reading(Key::Space).as_deref(),

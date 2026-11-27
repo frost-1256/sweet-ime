@@ -226,7 +226,7 @@ fn homophone_pool(
 }
 
 /// Reranker key: (reading, left context, candidate surfaces).
-type RerankKey = (String, String, Vec<String>);
+type RerankKey = (String, String, Vec<Conversion>);
 
 /// Generation cache key: (reading, left context, best total cost, best words'
 /// `(reading, surface, cost, learned, user)`).
@@ -327,7 +327,7 @@ impl Converter {
             if boundaries.is_empty()
                 && let Some(best) = res.first()
                 && personal_spans(best).is_empty()
-                && super::extras::casual_phrase(text).is_none()
+                && super::extras::casual_phrases(text).next().is_none()
                 && let Some(surface) =
                     self.rerank
                         .cached_generate(r.as_ref(), text, left_context, best)
@@ -366,14 +366,13 @@ impl Converter {
             return None;
         }
         let mut protected = personal_spans(&candidates[0]);
-        if let Some((phrase, _)) = super::extras::casual_phrase(reading)
-            && spans(&candidates[0])
-                .next()
-                .is_some_and(|(start, end, word)| {
-                    start == 0 && end == phrase.len() && word.surface == phrase
-                })
-        {
-            protected.push((0, phrase.len(), phrase));
+        for (start, phrase, _) in super::extras::casual_phrases(reading) {
+            let end = start + phrase.len();
+            if spans(&candidates[0])
+                .any(|(a, b, word)| a == start && b == end && word.surface == phrase)
+            {
+                protected.push((start, end, phrase));
+            }
         }
         if protected.is_empty() {
             return self.choose_ranked(reranker, reading, context, candidates);
@@ -400,10 +399,9 @@ impl Converter {
         if candidates.len() < 2 {
             return None;
         }
-        let surfaces = candidates.iter().map(Conversion::surface).collect();
         let index = self
             .rerank
-            .cached_choice(reranker, reading, context, candidates, surfaces)?;
+            .cached_choice(reranker, reading, context, candidates)?;
         let picked = candidates.get(index)?;
         if self.katakana_on.load(Relaxed) {
             // Preserve the lattice choice between spellings like best and ベスト.
@@ -423,9 +421,9 @@ impl RerankState {
         text: &str,
         left_context: &str,
         res: &[Conversion],
-        surfaces: Vec<String>,
     ) -> Option<usize> {
-        let key: RerankKey = (text.to_string(), left_context.to_string(), surfaces);
+        // Learning can change costs and word origins without changing the surfaces.
+        let key: RerankKey = (text.to_string(), left_context.to_string(), res.to_vec());
         let mut st = self.decisions.lock().unwrap_or_else(|e| e.into_inner());
         // The same run already in progress (the live conversion worker, when
         // Space follows the last key): wait for it rather than run the model
@@ -457,8 +455,8 @@ impl RerankState {
                     st.running.swap_remove(pos);
                 }
                 if let Some(choice) = self.2 {
-                    let (t, l, _) = self.1;
-                    st.cache.retain(|((ct, cl, _), _)| !(ct == t && cl == l));
+                    // Other snapshots with the same text and context stay cached.
+                    st.cache.retain(|(k, _)| k != self.1);
                     st.cache.push((self.1.clone(), choice));
                     if st.cache.len() > RERANK_CACHE {
                         st.cache.remove(0);
@@ -530,9 +528,7 @@ impl RerankState {
                     st.gen_running.swap_remove(pos);
                 }
                 if let Some(outcome) = self.2.take() {
-                    let (t, l, _, _) = self.1;
-                    st.gen_cache
-                        .retain(|((ct, cl, _, _), _)| !(ct == t && cl == l));
+                    st.gen_cache.retain(|(k, _)| k != self.1);
                     st.gen_cache.push((self.1.clone(), outcome));
                     if st.gen_cache.len() > RERANK_CACHE {
                         st.gen_cache.remove(0);
@@ -583,8 +579,13 @@ mod tests {
     }
 
     impl Reranker for CountingReranker {
-        fn choose(&self, _: &str, _: &str, _: &[Conversion]) -> Option<usize> {
-            None
+        fn choose(&self, _: &str, _: &str, candidates: &[Conversion]) -> Option<usize> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            candidates
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, candidate)| candidate.cost)
+                .map(|(index, _)| index)
         }
 
         fn generate(&self, _: &str, _: &str, _: &Conversion) -> Option<String> {
@@ -594,6 +595,35 @@ mod tests {
             }
             self.result.clone()
         }
+    }
+
+    #[test]
+    fn cached_choice_recomputes_when_the_same_surfaces_change_cost() {
+        let state = RerankState::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reranker = CountingReranker {
+            calls: calls.clone(),
+            result: None,
+            barrier: None,
+        };
+        let mut candidates = [
+            sample_conversion("阿曇野", 12000, 9000),
+            sample_conversion("安曇野", 13000, 9500),
+        ];
+        for _ in 0..2 {
+            assert_eq!(
+                state.cached_choice(&reranker, "あずみの", "", &candidates),
+                Some(0)
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        candidates[1].cost = 11000;
+        assert_eq!(
+            state.cached_choice(&reranker, "あずみの", "", &candidates),
+            Some(1)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -1,17 +1,11 @@
 //! Candidates computed from special readings: dates and times (きょう ->
-//! 2026/11/22), punctuation (なかぐろ -> ・), emoji (えがお -> 😊),
+//! 2026/11/22), symbols (やじるし -> →), emoji (えがお -> 😊),
 //! kaomoji (かお) and arithmetic
 //! (123・456= -> 0.2697…).
 
-pub(crate) fn punctuation_candidates(reading: &str) -> &'static [&'static str] {
-    match reading {
-        "なかぐろ" | "なかてん" | "てん" => &["・", "･"],
-        "さんてんりーだー" | "さんてん" | "てんてんてん" => &["…"],
-        "かっこ" => &["()", "（）", "「」"],
-        "おどりじ" | "くりかえし" | "おなじ" | "のま" => &["々"],
-        _ => &[],
-    }
-}
+mod symbols;
+
+pub(crate) use symbols::symbol_candidates;
 
 /// Local date and time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

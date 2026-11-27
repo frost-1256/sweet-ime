@@ -937,12 +937,6 @@ impl Session {
                 true
             }
             Key::Down if self.comp.literal => false,
-            Key::Space if self.comp.live_typo.is_some() => {
-                // Restore the original keys before a subsequent conversion.
-                self.comp.live_off = true;
-                self.comp.refined = None;
-                true
-            }
             Key::Space | Key::Down => {
                 self.start_conversion(conv);
                 true
