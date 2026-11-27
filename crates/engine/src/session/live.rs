@@ -250,13 +250,16 @@ impl Session {
                 .as_ref()
                 .map_or(settled.as_str(), |live| live.surface.as_str());
             c.suggestions.extend(
-                special::punctuation_candidates(&settled)
+                special::symbol_candidates(&settled)
                     .iter()
                     .copied()
                     .filter(|&symbol| symbol != shown)
+                    .take(SUGGESTION_LIMIT - c.suggestions.len())
                     .map(str::to_owned),
             );
-            if let Some(fix) = correction.filter(|fix| fix.surface != shown) {
+            if let Some(fix) = correction.filter(|fix| fix.surface != shown)
+                && c.suggestions.len() < SUGGESTION_LIMIT
+            {
                 c.suggestions.push(fix.surface.clone());
                 c.typo_suggestion = Some(fix);
             }
@@ -270,11 +273,11 @@ impl Session {
                 live_best.as_ref(),
                 min_suggest_chars,
             ) {
+                if c.suggestions.len() == SUGGESTION_LIMIT {
+                    break;
+                }
                 if suggestion != shown && !c.suggestions.contains(&suggestion) {
                     c.suggestions.push(suggestion);
-                    if c.suggestions.len() == SUGGESTION_LIMIT {
-                        break;
-                    }
                 }
             }
             // When always_show_suggestions is enabled, fall back to lattice

@@ -91,7 +91,7 @@ fn main() -> Result<()> {
         }
         entries.extend(added);
     }
-    add_compounds(&mut entries)?;
+    add_compounds(&mut entries, &matrix, dim)?;
     if let Some(noun) = features.iter().position(|f| f == "名詞,一般,*,*,*,*,*") {
         for (file, terms) in [
             ("vrchat.tsv", VRCHAT_TERMS),
@@ -164,8 +164,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Builds compound entries using the connection IDs of their outer words.
-fn add_compounds(entries: &mut Vec<SourceEntry>) -> Result<()> {
+/// Builds compounds using the outer connection IDs of the best component path.
+fn add_compounds(entries: &mut Vec<SourceEntry>, matrix: &[i16], dim: usize) -> Result<()> {
     for (i, line) in include_str!("compounds.tsv").lines().enumerate() {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -181,22 +181,35 @@ fn add_compounds(entries: &mut Vec<SourceEntry>) -> Result<()> {
                 source()
             );
         };
-        let component = |reading, surface| {
-            entries
+        let mut paths: Vec<(&SourceEntry, u16, i32)> = Vec::new();
+        for pair in pairs.chunks_exact(2) {
+            let (reading, surface) = (pair[0], pair[1]);
+            let next: Vec<_> = entries
                 .iter()
                 .filter(|e| e.reading == reading && e.surface == surface)
-                .min_by_key(|e| e.cost)
-                .with_context(|| format!("{}: missing component {reading} {surface}", source()))
-        };
-        let parts: Vec<_> = pairs
-            .chunks_exact(2)
-            .map(|pair| component(pair[0], pair[1]))
-            .collect::<Result<_>>()?;
+                .map(|entry| {
+                    let (lid, cost) = paths
+                        .iter()
+                        .map(|&(previous, lid, cost)| {
+                            let at = usize::from(previous.rid) * dim + usize::from(entry.lid);
+                            (lid, cost + i32::from(matrix[at]))
+                        })
+                        .min_by_key(|&(_, cost)| cost)
+                        .unwrap_or((entry.lid, 0));
+                    (entry, lid, cost + i32::from(entry.cost))
+                })
+                .collect();
+            if next.is_empty() {
+                bail!("{}: missing component {reading} {surface}", source());
+            }
+            paths = next;
+        }
+        let (last, lid, _) = paths.into_iter().min_by_key(|&(_, _, cost)| cost).unwrap();
         entries.push(SourceEntry {
-            reading: parts.iter().map(|entry| entry.reading.as_str()).collect(),
-            surface: parts.iter().map(|entry| entry.surface.as_str()).collect(),
-            lid: parts[0].lid,
-            rid: parts.last().unwrap().rid,
+            reading: pairs.chunks_exact(2).map(|pair| pair[0]).collect(),
+            surface: pairs.chunks_exact(2).map(|pair| pair[1]).collect(),
+            lid,
+            rid: last.rid,
             cost: cost.parse().with_context(source)?,
         });
     }

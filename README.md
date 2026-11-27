@@ -26,6 +26,7 @@
 - **Sub-millisecond dictionary engine.** Lattice Viterbi & N-best search over the Mozc OSS dictionary + SudachiDict vocabulary, converting in **~0.1 ms**.
 - **Ultra-fast on-device AI conversion (optional).** Native Rust [zenz](https://huggingface.co/Miwa-Keita/zenz-v3.1-xsmall) (GPT-2) inference with per-column **INT8 (Q8) quantized matmul**, AVX2+FMA / NEON kernels, prompt prefix KV caching, and a **reading-guarded neural generation hybrid** reranks candidates and recovers rare/proper nouns in **~3.4 ms** (`xsmall`) or **~12.4 ms** (`small`) on a background thread—typing never waits.
 - **Comfortable everyday typing.** Live conversion (with optional debounce), mid-sentence predictive suggestions, romaji typo correction (including long inputs and punctuation), mixed Japanese-English conversion (`korehabestdesu` → `これはベストです`, `pcha` → `PCは`), kana numbers (`さんぜんえん` → `三千円` / `3000円`), date/time & calculator candidates (excluded from learning history), bunsetsu resizing, and F6–F10 transliteration.
+- **Unicode symbols by reading.** Convert `やじるし` for arrows, `すうがくきごう` for math symbols, `つうかきごう` for currency signs, `おんぷ` for music symbols, or `まるつきすうじ` for circled numbers. Greek letter names such as `あるふぁ` offer both cases (`α` / `Α`).
 - **Customizable appearance.** Built-in themes (Default following system light/dark & accent, Light, Dark, Sakura, Matcha, Midnight, Lavender, Dracula, GTK Adwaita) plus a **User Theme** editor with custom colors, **background transparency**, and **named saved presets**.
 - **Private by default.** Everything runs locally; settings, learning history, and reports stay on your device. Password fields and private windows never learn (Windows, Android).
 
@@ -132,6 +133,8 @@ sudo install -Dm644 system.dict /usr/share/sweet-ime/system.dict
 ```
 </details>
 
+If the first letter sometimes bypasses the IME after focusing a field on Niri, run `fcitx5 -r --verbose default=4,sweetime=5` and reproduce the issue. The `First letter after input-context activation` line reports the IME mode, modifier flags, and whether Sweet IME handled the event, without logging the letter itself.
+
 ### macOS
 Extract `SweetIME-macOS.zip` and open **Install Sweet IME.command** (or copy `Sweet IME.app` to `~/Library/Input Methods`). Log out and back in, then add **Sweet IME** under **System Settings → Keyboard → Text Input → Edit → Japanese**.
 
@@ -171,6 +174,7 @@ Because the zenz model is licensed under CC BY-SA 4.0, it is downloaded separate
 | `Ctrl+F12` | Report last conversion (Windows) | — |
 
 Customize any binding on the **キー** page of Settings (`keymap.txt`).
+Left and right Shift, Ctrl, and Alt (Option on macOS) can be bound separately. A modifier binding runs when you release that key after pressing it by itself.
 
 Edit the romaji-to-kana table on the **ローマ字** page (`romaji.tsv`). Rows have an input, an output, and an optional next input (`tt` → `っ` + `t`). You can import and export tables in the Mozc / Google Japanese Input format.
 

@@ -280,6 +280,17 @@ struct Harness {
 }
 
 impl Harness {
+    fn key_up(&self, vk: u16) -> bool {
+        unsafe {
+            let wp = windows::Win32::Foundation::WPARAM(vk as usize);
+            let lp = windows::Win32::Foundation::LPARAM(0);
+            let offered = self.sink.OnTestKeyUp(&self.ctx, wp, lp).unwrap().as_bool();
+            let eaten = offered && self.sink.OnKeyUp(&self.ctx, wp, lp).unwrap().as_bool();
+            pump();
+            eaten
+        }
+    }
+
     fn key(&self, vk: u16) -> bool {
         unsafe {
             let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC);
@@ -487,7 +498,21 @@ fn main() -> Result<()> {
             action: Action::ImeToggle,
             when: When::Always,
         });
-        km.bindings.push(Binding { chord: Chord::key(0x1C), action: Action::Key(sweet_engine::Key::Space), when: When::Composing });
+        km.bindings.push(Binding {
+            chord: Chord::key(0x1C),
+            action: Action::Key(sweet_engine::Key::Space),
+            when: When::Composing,
+        });
+        km.bindings.push(Binding {
+            chord: Chord::key(0xA4),
+            action: Action::ImeOff,
+            when: When::Always,
+        });
+        km.bindings.push(Binding {
+            chord: Chord::key(0xA5),
+            action: Action::ImeOn,
+            when: When::Always,
+        });
         std::fs::create_dir_all(appdata.join("SweetIME")).unwrap();
         std::fs::write(appdata.join("SweetIME").join("keymap.txt"), km.to_text()).unwrap();
         sweet_engine::keymap::preserved_toggles(&km)
@@ -1016,6 +1041,54 @@ fn main() -> Result<()> {
 
         // 7. Hotkeys delivered as preserved keys.
         h.clear();
+        check(
+            "left Alt press passes through",
+            h.key(0xA4).to_string(),
+            "false",
+            &mut fails,
+        );
+        check(
+            "left Alt tap turns off",
+            h.key_up(0xA4).to_string(),
+            "true",
+            &mut fails,
+        );
+        check(
+            "left Alt turned the IME off",
+            h.key(0x41).to_string(),
+            "false",
+            &mut fails,
+        );
+        h.key(0xA5);
+        h.key(0x1B);
+        check(
+            "right Alt chord does not switch mode",
+            h.key_up(0xA5).to_string(),
+            "false",
+            &mut fails,
+        );
+        check(
+            "IME stays off after the chord",
+            h.key(0x41).to_string(),
+            "false",
+            &mut fails,
+        );
+        h.key(0xA5);
+        check(
+            "right Alt tap turns on",
+            h.key_up(0xA5).to_string(),
+            "true",
+            &mut fails,
+        );
+        check(
+            "right Alt turned the IME on",
+            h.key(0x41).to_string(),
+            "true",
+            &mut fails,
+        );
+        h.key(0x1B);
+        h.key(0x1B);
+
         let key_guid = |wanted| {
             let index = preserved.iter().position(|(chord, _)| *chord == wanted).unwrap();
             GUID::from_u128(0x7e1d3c2a_5b8f_4c1e_9a3d_2f6b8c4e1b00 + index as u128)

@@ -1,7 +1,7 @@
 //! "キー" page: edits `%APPDATA%\SweetIME\keymap.txt`.
 
 use eframe::egui::{self, Align, Layout, RichText, Vec2};
-use sweet_engine::keymap::{ACTIONS, Action, Binding, Chord, KEYS, WHENS, When, action_label, key_label, when_label};
+use sweet_engine::keymap::{ACTIONS, Action, Binding, Chord, KEYS, WHENS, When, action_label, is_modifier_key, key_label, when_label};
 use sweet_engine::{Keymap, paths};
 use sweet_ui::{card_frame, eframe};
 
@@ -140,12 +140,14 @@ fn editor(ui: &mut egui::Ui, i: usize, b: &mut Binding) -> bool {
             egui::Grid::new(("binding-editor", i)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label("キー");
                 ui.horizontal(|ui| {
-                    for (on, name) in [(&mut b.chord.ctrl, "Ctrl"), (&mut b.chord.shift, "Shift"), (&mut b.chord.alt, "Alt")] {
-                        if ui.add(egui::Button::new(name).selected(*on).min_size(Vec2::new(56.0, 30.0))).clicked() {
-                            *on = !*on;
+                    if !is_modifier_key(b.chord.vk) {
+                        for (on, name) in [(&mut b.chord.ctrl, "Ctrl"), (&mut b.chord.shift, "Shift"), (&mut b.chord.alt, "Alt")] {
+                            if ui.add(egui::Button::new(name).selected(*on).min_size(Vec2::new(56.0, 30.0))).clicked() {
+                                *on = !*on;
+                            }
                         }
+                        ui.label("+");
                     }
-                    ui.label("+");
                     egui::ComboBox::from_id_salt(("key", i))
                         .selected_text(key_label(b.chord.vk))
                         .width(140.0)
@@ -155,6 +157,10 @@ fn editor(ui: &mut egui::Ui, i: usize, b: &mut Binding) -> bool {
                                 ui.selectable_value(&mut b.chord.vk, *vk, *label);
                             }
                         });
+                    if is_modifier_key(b.chord.vk) {
+                        b.chord = Chord::key(b.chord.vk);
+                        ui.label(RichText::new("単独で離したとき").small().weak());
+                    }
                 });
                 ui.end_row();
                 ui.label("動作");

@@ -8,3 +8,8 @@
 きゅうりょうび	給料日	-1700
 # 歌詞 should win over 化+し for standalone かし.
 かし	歌詞	-700
+# Favor the colloquial adjective デカく and the temporal compound 補正後.
+でかく	デカく	-1600
+ほせいご	補正後	-4300
+# Established terms that split into more common short homophones.
+ふくじょし	副助詞	-4700

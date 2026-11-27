@@ -36,7 +36,7 @@ pub struct Segment {
     pub words: Vec<Word>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Conversion {
     pub segments: Vec<Segment>,
     pub cost: i32,

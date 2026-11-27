@@ -34,6 +34,12 @@ pub fn to_vk(sym: u32) -> Option<u16> {
         0xff56 | 0xff9b => 0x22,                           // Next
         0xff57 | 0xff9c => 0x23,                           // End
         0xffbe..=0xffc9 => (0x70 + (sym - 0xffbe)) as u16, // F1..F12
+        0xffe1 => 0xA0,                                    // Shift_L
+        0xffe2 => 0xA1,                                    // Shift_R
+        0xffe3 => 0xA2,                                    // Control_L
+        0xffe4 => 0xA3,                                    // Control_R
+        0xffe9 => 0xA4,                                    // Alt_L
+        0xffea | 0xfe03 => 0xA5,                           // Alt_R, ISO_Level3_Shift (AltGr)
         // Japanese keyboard keys.
         0xff21 | 0xff28 | 0xff29 | 0xff2a => 0x19, // Kanji, Zenkaku, Hankaku, Zenkaku_Hankaku
         0xff22 => 0x1D,                            // Muhenkan

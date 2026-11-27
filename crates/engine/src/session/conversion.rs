@@ -85,9 +85,9 @@ impl Session {
         cv.window && !segment.cloud.is_empty()
     }
 
-    /// Punctuation, dates, emoji and kaomoji for a segment reading.
+    /// Symbols, dates, emoji and kaomoji for a segment reading.
     fn special_candidates(&self, reading: &str) -> Vec<String> {
-        let mut v = special::punctuation_candidates(reading)
+        let mut v = special::symbol_candidates(reading)
             .iter()
             .map(|&symbol| symbol.to_owned())
             .collect::<Vec<_>>();

@@ -28,18 +28,43 @@ pub fn alt_down(lparam: isize) -> bool {
     lparam & (1 << 29) != 0 || down(VK_MENU.0)
 }
 
+/// TSF can report a generic VK even though the keyboard message identifies the side.
+pub fn modifier_vk(vk: u32, lparam: isize) -> Option<u16> {
+    match vk {
+        0x10 => Some(if (lparam >> 16) & 0xff == 0x36 {
+            0xA1
+        } else {
+            0xA0
+        }),
+        0x11 => Some(if lparam & (1 << 24) != 0 { 0xA3 } else { 0xA2 }),
+        0x12 => Some(if lparam & (1 << 24) != 0 { 0xA5 } else { 0xA4 }),
+        0xA0..=0xA5 => Some(vk as u16),
+        _ => None,
+    }
+}
+
+pub fn modifier_alone(vk: u16) -> bool {
+    [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C]
+        .into_iter()
+        .all(|other| other == vk || !down(other))
+}
+
+pub fn action_input(action: Action) -> Input {
+    match action {
+        Action::ImeToggle => Input::Toggle(Toggle::Toggle),
+        Action::ImeOn => Input::Toggle(Toggle::On),
+        Action::ImeOff => Input::Toggle(Toggle::Off),
+        Action::Key(key) => Input::Key(key),
+    }
+}
+
 /// Translates a key-down event. `composing`: whether a composition is in
 /// progress (selects state-specific bindings). Returns `None` for keys the
 /// IME does not handle.
 pub fn translate(keymap: &Keymap, vk: u32, lparam: isize, composing: bool) -> Option<Input> {
     let chord = Chord { vk: vk as u16, ctrl: down(VK_CONTROL.0), shift: down(VK_SHIFT.0), alt: alt_down(lparam) };
     if let Some(action) = keymap.lookup(chord, composing) {
-        return Some(match action {
-            Action::ImeToggle => Input::Toggle(Toggle::Toggle),
-            Action::ImeOn => Input::Toggle(Toggle::On),
-            Action::ImeOff => Input::Toggle(Toggle::Off),
-            Action::Key(k) => Input::Key(k),
-        });
+        return Some(action_input(action));
     }
     if chord.ctrl || chord.alt {
         return None;
@@ -68,6 +93,17 @@ pub fn translate(keymap: &Keymap, vk: u32, lparam: isize, composing: bool) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_modifier_events_preserve_the_physical_side() {
+        assert_eq!(modifier_vk(0x10, 0x2A << 16), Some(0xA0));
+        assert_eq!(modifier_vk(0x10, 0x36 << 16), Some(0xA1));
+        assert_eq!(modifier_vk(0x11, 0), Some(0xA2));
+        assert_eq!(modifier_vk(0x11, 1 << 24), Some(0xA3));
+        assert_eq!(modifier_vk(0x12, 0), Some(0xA4));
+        assert_eq!(modifier_vk(0x12, 1 << 24), Some(0xA5));
+        assert_eq!(modifier_vk(0xA5, 0), Some(0xA5));
+    }
 
     #[test]
     fn system_key_context_preserves_alt_on_backquote() {

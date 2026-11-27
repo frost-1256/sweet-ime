@@ -28,6 +28,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sweet_ime.h"
@@ -63,10 +64,16 @@ public:
     SweetState &operator=(const SweetState &) = delete;
 
     SweetContext *ctx() const { return ctx_; }
+    void resetKeys() {
+        sweet_reset_modifier_tap(ctx_);
+        firstLetter_ = true;
+    }
+    bool takeFirstLetter() { return std::exchange(firstLetter_, false); }
 
 private:
     SweetContext *ctx_;
     NotifyTarget target_;
+    bool firstLetter_ = true;
 };
 
 class SweetEngine : public fcitx::InputMethodEngineV2 {
@@ -84,19 +91,17 @@ public:
     ~SweetEngine() override { dispatcher_.detach(); }
 
     void keyEvent(const fcitx::InputMethodEntry &, fcitx::KeyEvent &event) override {
-        if (event.isRelease()) {
-            return;
-        }
         auto *ic = event.inputContext();
-        auto *ctx = state(ic)->ctx();
+        auto *input = state(ic);
+        auto *ctx = input->ctx();
         // Not normalized: normalize() drops Shift from Shift+letter, which
         // starts a temporary English word.
         const fcitx::Key key = event.rawKey();
         const auto states = key.states();
+        uint32_t mods = event.isRelease() ? SWEET_MOD_RELEASE : 0;
         if (states.test(fcitx::KeyState::Super)) {
-            return;
+            mods |= SWEET_MOD_SUPER;
         }
-        uint32_t mods = 0;
         if (states.test(fcitx::KeyState::Shift)) {
             mods |= SWEET_MOD_SHIFT;
         }
@@ -108,14 +113,23 @@ public:
         }
         const uint32_t sym = static_cast<uint32_t>(key.sym());
         const uint32_t unicode = fcitx::Key::keySymToUnicode(key.sym());
-        if (!sweet_is_active(ctx)) {
+        if (!event.isRelease() && !sweet_is_active(ctx)) {
             setLeftContext(ic, ctx);
         }
         const uint32_t r = sweet_process_key(ctx, sym, unicode, mods, allowCloud(ic));
+        if (!event.isRelease() &&
+            ((unicode >= 'a' && unicode <= 'z') || (unicode >= 'A' && unicode <= 'Z')) &&
+            input->takeFirstLetter()) {
+            SWEET_DEBUG() << "First letter after input-context activation: open=" << sweet_is_open(ctx)
+                          << " modifiers=" << mods << " consumed=" << !!(r & SWEET_RESULT_CONSUMED);
+        }
         if (!(r & SWEET_RESULT_CONSUMED)) {
             return;
         }
-        event.filterAndAccept();
+        // Modifier presses go to the client, so send the matching release too.
+        if (!event.isRelease()) {
+            event.filterAndAccept();
+        }
         updateUI(ic, ctx);
         if (r & SWEET_RESULT_MODE_CHANGED) {
             ic->updateUserInterface(fcitx::UserInterfaceComponent::StatusArea);
@@ -125,6 +139,7 @@ public:
 
     void activate(const fcitx::InputMethodEntry &, fcitx::InputContextEvent &event) override {
         auto *ic = event.inputContext();
+        state(ic)->resetKeys();
         ic->updateUserInterface(fcitx::UserInterfaceComponent::StatusArea);
     }
 
@@ -132,7 +147,9 @@ public:
         // Focus moved away or another input method was chosen: keep the
         // text, as Windows does.
         auto *ic = event.inputContext();
-        auto *ctx = state(ic)->ctx();
+        auto *input = state(ic);
+        input->resetKeys();
+        auto *ctx = input->ctx();
         if (sweet_is_active(ctx)) {
             sweet_commit_all(ctx);
             updateUI(ic, ctx);
@@ -141,7 +158,9 @@ public:
 
     void reset(const fcitx::InputMethodEntry &, fcitx::InputContextEvent &event) override {
         auto *ic = event.inputContext();
-        auto *ctx = state(ic)->ctx();
+        auto *input = state(ic);
+        input->resetKeys();
+        auto *ctx = input->ctx();
         if (sweet_is_active(ctx)) {
             sweet_commit_all(ctx);
             updateUI(ic, ctx);

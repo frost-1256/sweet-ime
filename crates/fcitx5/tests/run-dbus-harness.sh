@@ -16,6 +16,18 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/config/fcitx5" "$tmp/data"
+mkdir -p "$tmp/config/sweet-ime"
+cat > "$tmp/config/sweet-ime/keymap.txt" <<KEYMAP
+#! version 3
+Kanji ime_toggle
+LeftAlt ime_off
+RightAlt ime_on
+Enter commit
+Escape cancel
+Space convert
+Tab suggest
+F7 katakana
+KEYMAP
 cat > "$tmp/config/fcitx5/profile" <<PROFILE
 [Groups/0]
 Name=Default

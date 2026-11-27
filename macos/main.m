@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <InputMethodKit/InputMethodKit.h>
+#import <IOKit/hidsystem/IOLLEvent.h>
 #import <dispatch/dispatch.h>
 
 #include <stdlib.h>
@@ -73,6 +74,28 @@ static uint16_t VirtualKey(NSEvent *event) {
     }
 }
 
+static BOOL HandleModifier(SweetContext *context, NSEvent *event) {
+    uint16_t vk;
+    NSUInteger side;
+    NSUInteger family;
+    switch (event.keyCode) {
+        case kVK_Shift:        vk = 0xA0; side = NX_DEVICELSHIFTKEYMASK; family = NSEventModifierFlagShift; break;
+        case kVK_RightShift:   vk = 0xA1; side = NX_DEVICERSHIFTKEYMASK; family = NSEventModifierFlagShift; break;
+        case kVK_Control:      vk = 0xA2; side = NX_DEVICELCTLKEYMASK; family = NSEventModifierFlagControl; break;
+        case kVK_RightControl: vk = 0xA3; side = NX_DEVICERCTLKEYMASK; family = NSEventModifierFlagControl; break;
+        case kVK_Option:       vk = 0xA4; side = NX_DEVICELALTKEYMASK; family = NSEventModifierFlagOption; break;
+        case kVK_RightOption:  vk = 0xA5; side = NX_DEVICERALTKEYMASK; family = NSEventModifierFlagOption; break;
+        default: return sweet_macos_modifier(context, 0, true, false);
+    }
+    const NSUInteger modifiers = NSEventModifierFlagShift | NSEventModifierFlagControl |
+        NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
+    const NSUInteger sides = NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK |
+        NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK | NX_DEVICELALTKEYMASK | NX_DEVICERALTKEYMASK;
+    const NSUInteger flags = event.modifierFlags;
+    const BOOL alone = (flags & modifiers & ~family) == 0 && (flags & sides & ~side) == 0;
+    return sweet_macos_modifier(context, vk, (flags & side) != 0, alone);
+}
+
 @interface SweetInputController : IMKInputController
 - (void)selectCandidateRow:(NSUInteger)row;
 @end
@@ -98,7 +121,7 @@ static uint16_t VirtualKey(NSEvent *event) {
 }
 
 - (NSUInteger)recognizedEvents:(id)sender {
-    return NSEventMaskKeyDown;
+    return NSEventMaskKeyDown | NSEventMaskFlagsChanged;
 }
 
 - (void)activateServer:(id)sender {
@@ -128,11 +151,19 @@ static uint16_t VirtualKey(NSEvent *event) {
 }
 
 - (BOOL)handleEvent:(NSEvent *)event client:(id)sender {
-    if (!_context || event.type != NSEventTypeKeyDown) return NO;
+    if (!_context) return NO;
     if (IsSecureEventInputEnabled()) {
         [self discardComposition];
         return NO;
     }
+    if (event.type == NSEventTypeFlagsChanged) {
+        if (HandleModifier(_context, event)) {
+            [self publishToClient:sender];
+            [self scheduleLiveUpdate];
+        }
+        return NO;
+    }
+    if (event.type != NSEventTypeKeyDown) return NO;
     NSEventModifierFlags flags = event.modifierFlags;
     if (flags & NSEventModifierFlagCommand) return NO;
     uint8_t modifiers = ((flags & NSEventModifierFlagShift) ? 1 : 0)

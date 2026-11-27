@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
-use sweet_engine::keymap::{Action, Chord, Keymap};
+use sweet_engine::keymap::{Action, Chord, Keymap, ModifierTap, is_modifier_key};
 use sweet_engine::live::LiveConversionWorker;
 use sweet_engine::simeji;
 use sweet_engine::{Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
@@ -31,6 +31,8 @@ static LIVE: LiveConversionWorker = LiveConversionWorker::new();
 pub const MOD_SHIFT: u32 = 1;
 pub const MOD_CTRL: u32 = 2;
 pub const MOD_ALT: u32 = 4;
+pub const MOD_RELEASE: u32 = 8;
+pub const MOD_SUPER: u32 = 16;
 
 pub const RESULT_CONSUMED: u32 = 1;
 /// The IME was switched on or off.
@@ -125,6 +127,7 @@ struct Snapshot {
 pub struct SweetContext {
     session: Session,
     keymap: Keymap,
+    modifier_tap: ModifierTap,
     open: bool,
     stamp: [Option<SystemTime>; 3],
     live: Arc<LiveShared>,
@@ -149,6 +152,7 @@ impl SweetContext {
         Self {
             session: Session::new(),
             keymap: Keymap::default(),
+            modifier_tap: ModifierTap::default(),
             open: true,
             stamp: [None; 3],
             live: Arc::default(),
@@ -219,8 +223,34 @@ impl SweetContext {
     }
 
     fn process_key(&mut self, sym: u32, unicode: u32, mods: u32, allow_cloud: bool) -> u32 {
+        let vk = keysym::to_vk(sym).unwrap_or_default();
+        let release = mods & MOD_RELEASE != 0;
+        let mods = mods & !MOD_RELEASE;
+        let modifier = is_modifier_key(vk);
+        let own = match vk {
+            0xA0 | 0xA1 => MOD_SHIFT,
+            0xA2 | 0xA3 => MOD_CTRL,
+            0xA4 | 0xA5 => MOD_ALT,
+            _ => 0,
+        };
+        let alone = mods & !own == 0;
+        if release {
+            if !self.modifier_tap.release(vk) || !alone {
+                return 0;
+            }
+        } else {
+            self.modifier_tap.press(vk, alone);
+            if modifier || mods & MOD_SUPER != 0 {
+                return 0;
+            }
+        }
         self.reload_settings_if_changed();
-        let key = match self.translate(sym, unicode, mods) {
+        let input = if release {
+            self.translate(sym, 0, 0)
+        } else {
+            self.translate(sym, unicode, mods)
+        };
+        let key = match input {
             None => return 0,
             Some(Input::Toggle(t)) => {
                 let new = t.unwrap_or(!self.open);

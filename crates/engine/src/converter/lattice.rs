@@ -355,6 +355,22 @@ fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32
 }
 
 impl Converter {
+    /// Use punctuation's dictionary connections while preserving the typed glyph.
+    fn punctuation_cost(&self, literal: &str) -> Option<(u16, u16, i32)> {
+        let key = match literal {
+            "！" => "!",
+            "？" => "?",
+            "、" | "。" | "「" | "」" | "!" | "?" => literal,
+            _ => return None,
+        };
+        self.dict
+            .lookup(key)
+            .into_iter()
+            .filter(|entry| entry.surface == key)
+            .min_by_key(|entry| entry.cost)
+            .map(|entry| (entry.lid, entry.rid, i32::from(entry.cost)))
+    }
+
     fn build_lattice<'a>(
         &'a self,
         text: &'a str,
@@ -432,14 +448,19 @@ impl Converter {
                             .all(|ch| ch.is_ascii_digit() || ('０'..='９').contains(&ch))
                     })
                     .map_or(unk, |(_, arabic_id)| arabic_id);
+                let (lid, rid, wcost) = self.punctuation_cost(&text[pos..e]).unwrap_or((
+                    num_id,
+                    num_id,
+                    UNKNOWN_RUN_COST,
+                ));
                 push(
                     &mut lat,
                     Node {
                         start: pos,
                         end: e,
-                        lid: num_id,
-                        rid: num_id,
-                        wcost: UNKNOWN_RUN_COST,
+                        lid,
+                        rid,
+                        wcost,
                         surface: &text[pos..e],
                         best: i32::MAX,
                         origin: None,
@@ -688,7 +709,10 @@ impl Converter {
                     .map(|(i, _)| i)
                     .unwrap_or(rest.len());
                 let e = pos + run;
-                lat.push(pos, e, unk, unk, UNKNOWN_RUN_COST);
+                let (lid, rid, cost) =
+                    self.punctuation_cost(&text[pos..e])
+                        .unwrap_or((unk, unk, UNKNOWN_RUN_COST));
+                lat.push(pos, e, lid, rid, cost);
                 pos = e;
                 continue;
             }

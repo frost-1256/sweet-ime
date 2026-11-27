@@ -100,9 +100,11 @@ fn spelled_out(reading: &str) -> Vec<String> {
     out
 }
 
-/// Casual readings that are usually written as typed on their own.
-pub(super) fn casual_phrase(text: &str) -> Option<(&'static str, &'static str)> {
-    [
+/// Casual readings that are usually written in hiragana.
+pub(super) fn casual_phrases(
+    text: &str,
+) -> impl Iterator<Item = (usize, &'static str, &'static str)> {
+    let opening = [
         ("もうそろ", "そろそろ"),
         ("あーね", "ああ"),
         ("りょ", "ああ"),
@@ -118,6 +120,19 @@ pub(super) fn casual_phrase(text: &str) -> Option<(&'static str, &'static str)> 
                         .any(|head| tail.starts_with(head)))
         })
     })
+    .map(|(reading, reference)| (0, reading, reference));
+
+    let question = text.strip_suffix(['？', '?']).and_then(|body| {
+        ["ありか", "なしか", "まだか", "まじか", "ほんとか"]
+            .into_iter()
+            .find_map(|reading| {
+                let before = body.strip_suffix(reading)?;
+                (before.is_empty()
+                    || before.ends_with(['は', '、', '。', '！', '？', ',', '!', '?']))
+                .then_some((before.len(), reading, "どうか"))
+            })
+    });
+    opening.into_iter().chain(question)
 }
 
 impl Converter {
@@ -275,18 +290,24 @@ impl Converter {
         self.long_vowel_extras(text, &mut out);
         self.release_phrase_extra(text, &mut out);
         self.greeting_extra(text, &mut out);
-        self.casual_phrase_extra(text, &mut out);
+        for (start, reading, reference) in casual_phrases(text) {
+            self.casual_phrase_extra(start, reading, reference, &mut out);
+        }
         out
     }
 
-    fn casual_phrase_extra(&self, text: &str, out: &mut Vec<Extra>) {
-        let Some((reading, reference)) = casual_phrase(text) else {
-            return;
-        };
+    fn casual_phrase_extra(
+        &self,
+        start: usize,
+        reading: &str,
+        reference: &str,
+        out: &mut Vec<Extra>,
+    ) {
+        let end = start + reading.len();
         // A registered or learned spelling can override the default.
         if out.iter().any(|entry| {
-            entry.start == 0
-                && entry.end == reading.len()
+            entry.start < end
+                && start < entry.end
                 && matches!(entry.origin, Origin::Learned | Origin::User)
         }) {
             return;
@@ -301,8 +322,8 @@ impl Converter {
             return;
         };
         out.push(Extra {
-            start: 0,
-            end: reading.len(),
+            start,
+            end,
             lid: word.lid,
             rid: word.rid,
             cost: i32::from(word.cost).min(1500),
