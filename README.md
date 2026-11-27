@@ -235,6 +235,8 @@ shift_one_word = on    # auto-end Shift-started English words when Japanese foll
 
 ## Development
 
+See the [contribution guide](CONTRIBUTING.md) for reporting issues and submitting pull requests.
+
 <details>
 <summary>Building from source & running tests</summary>
 
