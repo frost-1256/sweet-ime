@@ -110,39 +110,77 @@ enum ActiveModel {
     Custom,
 }
 
-fn read_marker(data_dir: &Path) -> Option<ActiveModel> {
+fn file_fingerprint(path: &Path) -> Option<(u64, String)> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut buf = [0u8; 64 * 1024];
+    let mut read_total = 0usize;
+    let mut hasher = Sha256::new();
+    while read_total < buf.len() {
+        let n = f.read(&mut buf[read_total..]).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[read_total..read_total + n]);
+        read_total += n;
+    }
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Some((len, hex))
+}
+
+fn read_marker(data_dir: &Path, active_fp: &(u64, String)) -> Option<ActiveModel> {
     let text = std::fs::read_to_string(data_dir.join(ACTIVE_MARKER)).ok()?;
-    match text.trim() {
-        "xsmall" => Some(ActiveModel::Builtin(ModelKind::Xsmall)),
-        "small" => Some(ActiveModel::Builtin(ModelKind::Small)),
-        "custom" => Some(ActiveModel::Custom),
-        _ => None,
+    let mut parts = text.split_whitespace();
+    let kind = match parts.next()? {
+        "xsmall" => ActiveModel::Builtin(ModelKind::Xsmall),
+        "small" => ActiveModel::Builtin(ModelKind::Small),
+        "custom" => ActiveModel::Custom,
+        _ => return None,
+    };
+    let size: u64 = parts.next()?.parse().ok()?;
+    let hash = parts.next()?;
+    if parts.next().is_some() || size != active_fp.0 || hash != active_fp.1 {
+        return None;
+    }
+    Some(kind)
+}
+
+fn format_marker(model: ActiveModel, fp: &(u64, String)) -> String {
+    let label = match model {
+        ActiveModel::Builtin(ModelKind::Xsmall) => "xsmall",
+        ActiveModel::Builtin(ModelKind::Small) => "small",
+        ActiveModel::Custom => "custom",
+    };
+    format!("{label} {} {}", fp.0, fp.1)
+}
+
+fn write_marker_raw(data_dir: &Path, content: Option<&str>) -> std::io::Result<()> {
+    let path = data_dir.join(ACTIVE_MARKER);
+    match content {
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+        Some(text) => std::fs::write(&path, text),
     }
 }
 
-fn write_marker(data_dir: &Path, model: Option<ActiveModel>) -> std::io::Result<()> {
-    let path = data_dir.join(ACTIVE_MARKER);
-    let text = match model {
-        None => {
-            return match std::fs::remove_file(&path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-                _ => Ok(()),
-            };
-        }
-        Some(ActiveModel::Builtin(ModelKind::Xsmall)) => "xsmall",
-        Some(ActiveModel::Builtin(ModelKind::Small)) => "small",
-        Some(ActiveModel::Custom) => "custom",
-    };
-    std::fs::write(path, text)
-}
-
-/// Returns the identity and size of `zenz.swz`, using the marker file when
-/// present and falling back to the file size for older installs.
+/// Returns the identity and size of `zenz.swz`, using the marker file only
+/// when its recorded size and prefix hash match the current file, and falling
+/// back to the file size otherwise (older installs or external replacements).
 fn active_model(data_dir: &Path) -> Option<(ActiveModel, u64)> {
-    let sz = file_size(&data_dir.join("zenz.swz"))?;
-    let id = read_marker(data_dir)
-        .unwrap_or_else(|| classify_swz_size(sz).map_or(ActiveModel::Custom, ActiveModel::Builtin));
-    Some((id, sz))
+    let active = data_dir.join("zenz.swz");
+    let fp = file_fingerprint(&active)?;
+    let id = read_marker(data_dir, &fp).unwrap_or_else(|| {
+        classify_swz_size(fp.0).map_or(ActiveModel::Custom, ActiveModel::Builtin)
+    });
+    Some((id, fp.0))
 }
 
 fn inspect_models(data_dir: &Path) -> ModelInventory {
@@ -225,8 +263,9 @@ fn restore_backup(backup: Option<(PathBuf, bool)>, active: &Path, error: String)
     error
 }
 
-/// Renames `source` to `zenz.swz` with the previous model moved aside, then
-/// records `id` as the active model.
+/// Renames `source` to `zenz.swz` with the previous model moved aside,
+/// recording `id` bound to `source`'s fingerprint before the final rename so
+/// `zenz.swz` and `zenz-active.txt` stay consistent on failure or crash.
 fn swap_in(
     data_dir: &Path,
     source: &Path,
@@ -235,8 +274,21 @@ fn swap_in(
     apply_error: &str,
 ) -> Result<(), String> {
     let active = data_dir.join("zenz.swz");
+    let new_fp =
+        file_fingerprint(source).ok_or_else(|| format!("{apply_error}: ファイルを読めません"))?;
+    let old_marker = std::fs::read_to_string(data_dir.join(ACTIVE_MARKER)).ok();
     let backup = move_active_aside(data_dir, keep)?;
+    let new_marker = format_marker(id, &new_fp);
+    if let Err(e) = write_marker_raw(data_dir, Some(&new_marker)) {
+        let _ = write_marker_raw(data_dir, old_marker.as_deref());
+        return Err(restore_backup(
+            backup,
+            &active,
+            format!("モデル状態の保存に失敗しました: {e}"),
+        ));
+    }
     if let Err(e) = std::fs::rename(source, &active) {
+        let _ = write_marker_raw(data_dir, old_marker.as_deref());
         return Err(restore_backup(
             backup,
             &active,
@@ -246,8 +298,7 @@ fn swap_in(
     if let Some((temp, true)) = &backup {
         let _ = std::fs::remove_file(temp);
     }
-    write_marker(data_dir, Some(id))
-        .map_err(|e| format!("モデルは切り替えましたが、状態を保存できませんでした: {e}"))
+    Ok(())
 }
 
 /// Switches `zenz.swz` to `target`, preserving the previously active built-in
@@ -276,7 +327,7 @@ fn delete_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("削除できませんでした: {e}");
     if matches!(active_model(data_dir), Some((ActiveModel::Builtin(k), _)) if k == target) {
         safe_remove(&data_dir.join("zenz.swz")).map_err(fail)?;
-        write_marker(data_dir, None).map_err(fail)?;
+        write_marker_raw(data_dir, None).map_err(fail)?;
     }
     let stored = data_dir.join(target.stored_filename());
     if stored.exists() {
@@ -290,7 +341,7 @@ fn delete_custom_model(data_dir: &Path) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("削除できませんでした: {e}");
     if matches!(active_model(data_dir), Some((ActiveModel::Custom, _))) {
         safe_remove(&data_dir.join("zenz.swz")).map_err(fail)?;
-        write_marker(data_dir, None).map_err(fail)?;
+        write_marker_raw(data_dir, None).map_err(fail)?;
     }
     Ok(())
 }
@@ -413,8 +464,8 @@ fn validate_swz(path: &Path) -> Result<(), String> {
     }
     let vocab_ok = hdr["vocab"]
         .as_str()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .is_some_and(|v| v.as_object().is_some_and(|o| !o.is_empty()));
+        .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, u32>>(s).ok())
+        .is_some_and(|m| !m.is_empty() && m.values().all(|&id| u64::from(id) < v));
     if !vocab_ok || hdr["merges"].as_str().is_none() {
         return Err(bad("トークナイザーが壊れています"));
     }
@@ -631,7 +682,15 @@ fn start_import(src_path: &Path, data_dir: &Path, ctx: egui::Context) -> Result<
         .unwrap_or_else(|| "カスタムモデル".into());
     std::fs::create_dir_all(data_dir)
         .map_err(|e| format!("モデル保存フォルダを作成できませんでした: {e}"))?;
-    let staged = data_dir.join("zenz-custom-import.swz");
+    static IMPORT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = IMPORT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let staged = data_dir.join(format!(
+        "zenz-import-{}-{nanos}-{seq}.swz",
+        std::process::id()
+    ));
 
     match ext.as_str() {
         "swz" => {
@@ -1237,7 +1296,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn tiny_swz(path: &Path, truncate: bool) {
+    fn tiny_swz_with_vocab(path: &Path, vocab: &str, truncate: bool) {
         let (e, l, p, v) = (4u64, 1u64, 2u64, 2u64);
         let mut tensors = serde_json::Map::new();
         let mut at = 0u64;
@@ -1258,7 +1317,7 @@ mod tests {
         let n = at;
         let hdr = serde_json::json!({
             "n_embd": e, "n_head": 2, "n_layer": l, "n_positions": p, "vocab_size": v,
-            "eps": 1e-5, "tensors": tensors, "vocab": "{\"a\":0,\"b\":1}", "merges": "",
+            "eps": 1e-5, "tensors": tensors, "vocab": vocab, "merges": "",
         });
         let hb = serde_json::to_vec(&hdr).unwrap();
         let mut buf = b"SWZENZ01".to_vec();
@@ -1275,14 +1334,46 @@ mod tests {
     }
 
     #[test]
-    fn validate_swz_accepts_complete_and_rejects_truncated_files() {
+    fn validate_swz_accepts_complete_and_rejects_bad_files() {
         let dir = temp_dir("validate");
         let ok = dir.join("ok.swz");
         let short = dir.join("short.swz");
-        tiny_swz(&ok, false);
-        tiny_swz(&short, true);
+        let oob_vocab = dir.join("oob.swz");
+        tiny_swz_with_vocab(&ok, "{\"a\":0,\"b\":1}", false);
+        tiny_swz_with_vocab(&short, "{\"a\":0,\"b\":1}", true);
+        tiny_swz_with_vocab(&oob_vocab, "{\"a\":2,\"b\":1}", false);
         assert!(validate_swz(&ok).is_ok());
         assert!(validate_swz(&short).is_err());
+        assert!(validate_swz(&oob_vocab).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_marker_ignored_after_external_replacement_and_marker_failure_rolls_back() {
+        let dir = temp_dir("marker-safety");
+        write_sized(&dir.join("zenz.swz"), 98_000_000);
+        let staged = dir.join("staged.swz");
+        write_sized(&staged, 99_000_000);
+        activate_staged_custom(&dir, &staged).unwrap();
+        assert_eq!(inspect_models(&dir).custom_active, Some(99_000_000));
+
+        // Simulate external replacement (e.g. get-zenz.sh writing a built-in small).
+        write_sized(&dir.join("zenz.swz"), 380_000_000);
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.small, ModelSlot::Active(380_000_000));
+        assert_eq!(inv.custom_active, None);
+
+        // Simulate unwritable marker by replacing it with a directory; swap must roll back.
+        let marker = dir.join(ACTIVE_MARKER);
+        let _ = std::fs::remove_file(&marker);
+        std::fs::create_dir(&marker).unwrap();
+        assert!(activate_model(&dir, ModelKind::Xsmall).is_err());
+        assert_eq!(inspect_models(&dir).small, ModelSlot::Active(380_000_000));
+        assert_eq!(
+            inspect_models(&dir).xsmall,
+            ModelSlot::Downloaded(98_000_000)
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

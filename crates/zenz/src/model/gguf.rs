@@ -629,7 +629,18 @@ impl Model {
         let wte = push_aligned(&wte_vals);
         let wpe = push_aligned(&wpe_vals);
 
-        let mut layers = Vec::with_capacity(cfg.n_layer);
+        let max_layers = infos.len() / 12;
+        if cfg.n_layer > max_layers {
+            return Err(invalid(format!(
+                "gguf block_count {} exceeds available tensors ({})",
+                cfg.n_layer,
+                infos.len()
+            )));
+        }
+        let mut layers = Vec::new();
+        layers
+            .try_reserve_exact(cfg.n_layer)
+            .map_err(|_| invalid("gguf block_count too large"))?;
         for i in 0..cfg.n_layer {
             let specs: [(String, Vec<usize>, bool); 12] = [
                 (format!("blk.{i}.attn_norm.weight"), vec![e], false),
@@ -655,6 +666,11 @@ impl Model {
         let lnf_w = push_aligned(&read_tensor("output_norm.weight", &[e], false)?);
         let lnf_b = push_aligned(&read_tensor("output_norm.bias", &[e], false)?);
 
+        if infos.contains_key("output.bias") {
+            return Err(invalid(
+                "gguf models with output.bias are not supported by the SWZ format",
+            ));
+        }
         // Untied models carry a separate LM head with the same `{n_embd,
         // n_vocab}` layout as the token embedding; tied models omit it.
         let wte_t_vals = if infos.contains_key("output.weight") {
@@ -879,5 +895,26 @@ mod tests {
         buf.extend_from_slice(&3u32.to_be_bytes());
         let err = Model::load_gguf_bytes(&buf).err().unwrap();
         assert!(err.to_string().contains("big-endian"));
+    }
+
+    #[test]
+    fn rejects_output_bias_and_excessive_block_count() {
+        let mut specs = base_tensors();
+        specs.push(("output.bias", vec![V], vec![0.0; V]));
+        let buf = build_gguf(&specs, H as u32);
+        let err = Model::load_gguf_bytes(&buf).err().unwrap();
+        assert!(err.to_string().contains("output.bias"));
+
+        // Overwrite block_count with a huge value that exceeds available tensors.
+        let mut huge = build_gguf(&base_tensors(), H as u32);
+        let needle = b"gpt2.block_count";
+        let pos = huge
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap()
+            + needle.len()
+            + 4; // skip META_U32
+        huge[pos..pos + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Model::load_gguf_bytes(&huge).is_err());
     }
 }
