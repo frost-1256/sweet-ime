@@ -35,6 +35,8 @@ Work on `develop` and open PRs into `main`. Use short, imperative commit subject
 
 When a PR brings a contribution from `develop` into `main`, link the original PR in its description so release notes can credit the original contributor.
 
+Merge PRs from `develop` into `main` with a merge commit (`gh pr merge <n> --merge`), not a squash merge. A squash merge leaves the `develop` commits outside the history of `main`, so later PRs list those commits again and show unrelated authors as participants. After the merge, fast-forward `develop` to `main`.
+
 GitHub Actions tests Windows, Android, and Linux. Enable auto-merge per PR when requested to merge after checks. The protected `main` branch requires the six platform CI checks and CodeRabbit.
 
 A passing CodeRabbit check does not mean the review found nothing. CodeRabbit can post review comments after its check succeeds, and auto-merge does not wait for them. Before you merge a PR or enable auto-merge, wait until CodeRabbit has reviewed the latest pushed commit. Read its inline comments with `gh api repos/{owner}/{repo}/pulls/<n>/comments`. Fix each valid finding, or reply to say why you skipped it. Repeat this after every push to the PR. Never tag a release from a merge that has unaddressed review comments.
