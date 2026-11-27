@@ -933,7 +933,9 @@ final class KeyboardView extends View {
             default:
                 break;
         }
-        if (k.code == Native.KEY_SPACE && shift) {
+        // Japanese only: English spaces are already ASCII, and English Shift
+        // may come from automatic capitalization rather than the Shift key.
+        if (k.code == Native.KEY_SPACE && shift && !english) {
             shift = false;
             listener.onKey(Native.KEY_HALF_SPACE);
             invalidate();
