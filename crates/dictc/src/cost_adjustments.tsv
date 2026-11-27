@@ -13,3 +13,5 @@
 ほせいご	補正後	-4300
 # Established terms that split into more common short homophones.
 ふくじょし	副助詞	-4700
+# SudachiDict words get a flat cost, so a popular title loses to 地位+側.
+ちいかわ	ちいかわ	-2500
