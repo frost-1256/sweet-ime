@@ -16,10 +16,12 @@ Replace personal details and private input history in examples, logs, and screen
 
 ## Make a change
 
-1. Fork the repository and create a working branch from `develop`.
+Development is staged on `develop`. The usual PR target is `main`. Use `develop` as the target if a maintainer asks to stage the change there first.
+
+1. Fork the repository and create a working branch from the intended PR target.
 2. Keep the change focused. Put shared conversion logic in `crates/engine` and platform-specific logic in the corresponding frontend.
 3. Format the Rust code you changed with `rustfmt` and use a short, descriptive commit subject.
-4. Verify the behavior you changed and normally open your PR against `main`. Check that the PR diff contains only your intended changes.
+4. Verify the behavior you changed and open the PR. If you already worked on `develop` and the PR targets `main`, create a branch from `main` and cherry-pick your own commits if the diff includes unrelated changes.
 
 See [Development in the README](README.md#development) for Windows, Linux (fcitx5), macOS, and Android build instructions. Keep generated dictionaries, models, and build outputs out of Git.
 
