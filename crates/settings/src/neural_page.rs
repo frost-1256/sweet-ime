@@ -202,6 +202,102 @@ fn delete_custom_model(data_dir: &Path) -> Result<(), String> {
     safe_remove(&active).map_err(|e| format!("削除できませんでした: {e}"))
 }
 
+/// Activates a staged `.swz` file (from custom `.swz` or `.gguf` import) as
+/// `zenz.swz`, preserving any previously active built-in model (`xsmall`/`small`)
+/// and restoring the previous `zenz.swz` if the final rename fails.
+fn activate_staged_custom(data_dir: &Path, staged: &Path) -> Result<(), String> {
+    if !staged.exists() {
+        return Err("変換後のモデルファイルが見つかりません。".into());
+    }
+    let active = data_dir.join("zenz.swz");
+    let mut backup: Option<(PathBuf, bool)> = None;
+    if let Some(sz) = file_size(&active) {
+        match classify_swz_size(sz) {
+            Some(old) => {
+                let archive = data_dir.join(old.stored_filename());
+                safe_remove(&archive)
+                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
+                std::fs::rename(&active, &archive)
+                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
+                backup = Some((archive, false));
+            }
+            None => {
+                let temp = active.with_extension("swz.bak");
+                let _ = std::fs::remove_file(&temp);
+                std::fs::rename(&active, &temp)
+                    .map_err(|e| format!("既存モデルの退避に失敗しました: {e}"))?;
+                backup = Some((temp, true));
+            }
+        }
+    }
+    if let Err(e) = std::fs::rename(staged, &active) {
+        if let Some((path, _)) = backup {
+            let _ = std::fs::rename(&path, &active);
+        }
+        return Err(format!("モデルの適用に失敗しました: {e}"));
+    }
+    if let Some((temp, true)) = backup {
+        let _ = std::fs::remove_file(&temp);
+    }
+    Ok(())
+}
+
+fn read_magic(path: &Path) -> Result<[u8; 8], String> {
+    use std::io::Read;
+    let mut f =
+        std::fs::File::open(path).map_err(|e| format!("ファイルを開けませんでした: {e}"))?;
+    let mut buf = [0u8; 8];
+    f.read_exact(&mut buf)
+        .map_err(|e| format!("ファイルを読み込めませんでした: {e}"))?;
+    Ok(buf)
+}
+
+#[cfg(windows)]
+const PACK_BIN: &str = "sweet-zenz-pack.exe";
+#[cfg(not(windows))]
+const PACK_BIN: &str = "sweet-zenz-pack";
+
+fn pack_tool() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for candidate in [
+            dir.join("tools").join(PACK_BIN),
+            dir.join(PACK_BIN),
+            dir.join("../MacOS").join(PACK_BIN),
+            dir.join("../bin").join(PACK_BIN),
+            dir.join("../release").join(PACK_BIN),
+        ] {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    Some(PathBuf::from(PACK_BIN))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DownloadTarget {
+    Builtin(ModelKind),
+    Custom { label: String, staged: PathBuf },
+}
+
+impl DownloadTarget {
+    fn display_name(&self) -> &str {
+        match self {
+            Self::Builtin(kind) => kind.name(),
+            Self::Custom { label, .. } => label.as_str(),
+        }
+    }
+
+    fn builtin(&self) -> Option<ModelKind> {
+        match self {
+            Self::Builtin(kind) => Some(*kind),
+            Self::Custom { .. } => None,
+        }
+    }
+}
+
 fn applied_notice() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -213,9 +309,9 @@ fn applied_notice() -> &'static str {
     }
 }
 
-/// A running model download (`get-zenz.ps1` / `get-zenz.sh`).
+/// A running model download or custom model import/conversion.
 pub(super) struct Download {
-    target: ModelKind,
+    target: DownloadTarget,
     log: Vec<String>,
     lines: Receiver<DownloadEvent>,
     done: Option<bool>,
@@ -334,11 +430,129 @@ fn start_download(
         ctx.request_repaint();
     });
     Ok(Download {
-        target,
+        target: DownloadTarget::Builtin(target),
         log: Vec::new(),
         lines: rx,
         done: None,
     })
+}
+
+fn start_import(src_path: &Path, data_dir: &Path, ctx: egui::Context) -> Result<Download, String> {
+    if !src_path.is_file() {
+        return Err("指定されたファイルが見つかりません。".into());
+    }
+    let ext = src_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let label = src_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "カスタムモデル".into());
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| format!("モデル保存フォルダを作成できませんでした: {e}"))?;
+    let staged = data_dir.join("zenz-custom-import.swz");
+
+    match ext.as_str() {
+        "swz" => {
+            let magic = read_magic(src_path)?;
+            if &magic != b"SWZENZ01" {
+                return Err("有効な .swz モデルファイルではありません。".into());
+            }
+            if let (Ok(a), Ok(b)) = (
+                std::fs::canonicalize(src_path),
+                std::fs::canonicalize(data_dir.join("zenz.swz")),
+            ) && a == b
+            {
+                return Err("すでにこのモデルが使用中です。".into());
+            }
+            let src = src_path.to_path_buf();
+            let dst = staged.clone();
+            let (tx, rx) = channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(DownloadEvent::Output("モデルファイルをコピー中…".into()));
+                ctx.request_repaint();
+                match std::fs::copy(&src, &dst) {
+                    Ok(_) => {
+                        let _ = tx.send(DownloadEvent::Finished(true));
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&dst);
+                        let _ =
+                            tx.send(DownloadEvent::Output(format!("コピーに失敗しました: {e}")));
+                        let _ = tx.send(DownloadEvent::Finished(false));
+                    }
+                }
+                ctx.request_repaint();
+            });
+            Ok(Download {
+                target: DownloadTarget::Custom { label, staged },
+                log: Vec::new(),
+                lines: rx,
+                done: None,
+            })
+        }
+        "gguf" => {
+            use std::io::BufRead;
+            let magic = read_magic(src_path)?;
+            if &magic[..4] != b"GGUF" {
+                return Err("有効な .gguf モデルファイルではありません。".into());
+            }
+            let tool = pack_tool().ok_or_else(|| format!("{PACK_BIN} が見つかりません"))?;
+            let _ = std::fs::remove_file(&staged);
+            #[cfg(windows)]
+            let mut command = {
+                use std::os::windows::process::CommandExt;
+                let mut c = std::process::Command::new(&tool);
+                c.arg(src_path).arg(&staged).creation_flags(0x0800_0000);
+                c
+            };
+            #[cfg(not(windows))]
+            let mut command = {
+                let mut c = std::process::Command::new(&tool);
+                c.arg(src_path).arg(&staged);
+                c
+            };
+            let mut child = command
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("GGUF 変換ツール ({PACK_BIN}) を起動できません: {e}"))?;
+            let (tx, rx) = channel();
+            let _ = tx.send(DownloadEvent::Output("GGUF モデルを .swz へ変換中…".into()));
+            let out = child.stdout.take().unwrap();
+            let err = child.stderr.take().unwrap();
+            let tx2 = tx.clone();
+            let ctx2 = ctx.clone();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+                    let _ = tx2.send(DownloadEvent::Output(line));
+                    ctx2.request_repaint();
+                }
+            });
+            let staged_cleanup = staged.clone();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    let _ = tx.send(DownloadEvent::Output(line));
+                    ctx.request_repaint();
+                }
+                let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                if !ok {
+                    let _ = std::fs::remove_file(&staged_cleanup);
+                }
+                let _ = tx.send(DownloadEvent::Finished(ok));
+                ctx.request_repaint();
+            });
+            Ok(Download {
+                target: DownloadTarget::Custom { label, staged },
+                log: Vec::new(),
+                lines: rx,
+                done: None,
+            })
+        }
+        _ => Err(".swz または .gguf ファイルを選択してください。".into()),
+    }
 }
 
 fn badge(ui: &mut egui::Ui, text: &str, fill: Color32, ink: Color32) {
@@ -355,17 +569,33 @@ impl App {
     pub(super) fn poll_download(&mut self) {
         let finished = self.download.as_mut().and_then(Download::poll);
         if let Some(true) = finished {
-            let target = self.download.as_ref().unwrap().target;
-            self.download = None;
+            let target = self.download.take().unwrap().target;
             if let Some(dir) = paths::data_dir() {
-                match activate_model(&dir, target) {
-                    Ok(()) => {
-                        self.status = Some((
-                            format!("{} を導入しました。{}", target.name(), applied_notice()),
-                            true,
-                        ));
+                match target {
+                    DownloadTarget::Builtin(kind) => match activate_model(&dir, kind) {
+                        Ok(()) => {
+                            self.status = Some((
+                                format!("{} を導入しました。{}", kind.name(), applied_notice()),
+                                true,
+                            ));
+                        }
+                        Err(e) => self.status = Some((e, false)),
+                    },
+                    DownloadTarget::Custom { label, staged } => {
+                        match activate_staged_custom(&dir, &staged) {
+                            Ok(()) => {
+                                self.import_model_path.clear();
+                                self.status = Some((
+                                    format!("{label} をインポートしました。{}", applied_notice()),
+                                    true,
+                                ));
+                            }
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&staged);
+                                self.status = Some((e, false));
+                            }
+                        }
                     }
-                    Err(e) => self.status = Some((e, false)),
                 }
             }
         }
@@ -418,7 +648,7 @@ impl App {
             .download
             .as_ref()
             .filter(|d| d.is_busy())
-            .map(|d| d.target);
+            .and_then(|d| d.target.builtin());
         let accent = ui.visuals().selection.bg_fill;
         let subtle_fill = ui.visuals().widgets.inactive.weak_bg_fill;
         let subtle_ink = ui.visuals().text_color();
@@ -557,7 +787,7 @@ impl App {
                         if self
                             .download
                             .as_ref()
-                            .is_some_and(|d| d.target == kind && !d.is_busy())
+                            .is_some_and(|d| d.target.builtin() == Some(kind) && !d.is_busy())
                         {
                             self.download = None;
                         }
@@ -578,6 +808,65 @@ impl App {
             }
         }
 
+        // Accept drag-and-drop of `.swz` or `.gguf` files onto the AI page.
+        let dropped: Option<PathBuf> = ui.ctx().input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .find(|p| {
+                    p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                        e.eq_ignore_ascii_case("swz") || e.eq_ignore_ascii_case("gguf")
+                    })
+                })
+        });
+        if let Some(path) = dropped {
+            self.import_model_path = path.to_string_lossy().into_owned();
+        }
+
+        section_header(ui, "カスタムモデルのインポート");
+        card_frame(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(
+                    "ローカルの zenz モデルファイル（.swz または GPT-2 形式の .gguf）を読み込んで AI 変換に使います。ファイルをこのウィンドウへドラッグ＆ドロップしても指定できます。",
+                )
+                .small()
+                .weak(),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let field_w = (ui.available_width() - 180.0).max(160.0);
+                ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut self.import_model_path)
+                        .hint_text("モデルファイルのパス (.swz / .gguf)")
+                        .desired_width(field_w),
+                );
+                let trimmed = self.import_model_path.trim().trim_matches('"').to_string();
+                if ui
+                    .add_enabled(
+                        !busy && !trimmed.is_empty(),
+                        sweet_ui::accent_button(ui, "インポートして使う"),
+                    )
+                    .clicked()
+                {
+                    match data_dir.as_deref() {
+                        Some(dir) => match start_import(Path::new(&trimmed), dir, ui.ctx().clone()) {
+                            Ok(d) => self.download = Some(d),
+                            Err(e) => self.status = Some((e, false)),
+                        },
+                        None => {
+                            self.status = Some((
+                                "モデル保存フォルダを取得できませんでした。".into(),
+                                false,
+                            ));
+                        }
+                    }
+                }
+            });
+        });
+
         if let Some(d) = &self.download {
             let mut dismiss = false;
             card_frame(ui).show(ui, |ui| {
@@ -588,7 +877,7 @@ impl App {
                             ui.spinner();
                             ui.label(format!(
                                 "{} — {}",
-                                d.target.name(),
+                                d.target.display_name(),
                                 format_step(d.log.last().map(String::as_str))
                             ));
                         });
@@ -597,7 +886,7 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.colored_label(
                                 ui.visuals().error_fg_color,
-                                format!("{} のダウンロードに失敗しました:", d.target.name()),
+                                format!("{} の処理に失敗しました:", d.target.display_name()),
                             );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),

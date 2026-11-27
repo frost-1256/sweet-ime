@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::{Config, Layer, Model, R, Store};
 
-fn invalid(msg: impl Into<String>) -> io::Error {
+pub(super) fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 
@@ -78,7 +78,7 @@ fn load_tensors(path: &Path) -> io::Result<HashMap<String, (Vec<usize>, Vec<f32>
     Ok(out)
 }
 
-fn f16_to_f32(h: u16) -> f32 {
+pub(super) fn f16_to_f32(h: u16) -> f32 {
     let s = ((h >> 15) as u32) << 31;
     let e = ((h >> 10) & 0x1f) as i32;
     let m = (h & 0x3ff) as u32;
@@ -103,7 +103,7 @@ fn f16_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
-fn layer_from(r: &[R]) -> Layer {
+pub(super) fn layer_from(r: &[R]) -> Layer {
     Layer {
         ln1_w: r[0].clone(),
         ln1_b: r[1].clone(),

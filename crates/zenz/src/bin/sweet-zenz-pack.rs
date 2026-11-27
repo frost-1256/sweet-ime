@@ -1,15 +1,15 @@
 //! Converts a Hugging Face zenz model directory (config.json,
-//! model.safetensors, vocab.json, merges.txt) into the single mmap-able
-//! `.swz` file the IME loads.
+//! model.safetensors, vocab.json, merges.txt) or a GPT-2 `.gguf` file into the
+//! single mmap-able `.swz` file the IME loads.
 //!
-//!   sweet-zenz-pack <hf model dir> <out.swz>
+//!   sweet-zenz-pack <hf model dir | model.gguf> <out.swz>
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
-        eprintln!("usage: sweet-zenz-pack <hf model dir> <out.swz>");
+        eprintln!("usage: sweet-zenz-pack <hf model dir | model.gguf> <out.swz>");
         return ExitCode::from(2);
     }
     let (src, out) = (&args[1], &args[2]);
