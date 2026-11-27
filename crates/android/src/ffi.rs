@@ -326,7 +326,7 @@ pub extern "system" fn Java_io_github_sweetime_Native_userWords(
         use std::fmt::Write;
 
         let mut rows = String::new();
-        for word in UserDictionary::with_file(path).words() {
+        for word in UserDictionary::try_with_file(path).ok()?.words() {
             let _ = writeln!(rows, "{}\t{}", word.reading, word.surface);
         }
         Some(rows)
@@ -352,7 +352,9 @@ pub extern "system" fn Java_io_github_sweetime_Native_updateUserWord(
     let reading = to_string(&mut env, &reading);
     let surface = to_string(&mut env, &surface);
     let error = guard(Some("ユーザー辞書を更新できませんでした".into()), || {
-        let mut dict = UserDictionary::with_file(path);
+        let Ok(mut dict) = UserDictionary::try_with_file(path) else {
+            return Some("ユーザー辞書を読み込めませんでした".into());
+        };
         if old_reading.is_empty() && remove == 0 {
             return dict
                 .add(&reading, &surface, DEFAULT_POS, "")

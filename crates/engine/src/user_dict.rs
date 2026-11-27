@@ -82,6 +82,7 @@ pub enum AddError {
     /// Tabs and newlines cannot be stored.
     BadCharacter,
     Duplicate,
+    LoadFailed,
     SaveFailed,
 }
 
@@ -93,6 +94,7 @@ impl std::fmt::Display for AddError {
             AddError::BadReading => "読みはひらがなで入力してください",
             AddError::BadCharacter => "タブや改行は使えません",
             AddError::Duplicate => "同じ読みと単語がすでに登録されています",
+            AddError::LoadFailed => "ユーザー辞書を読み込めませんでした",
             AddError::SaveFailed => "ユーザー辞書を保存できませんでした",
         })
     }
@@ -148,6 +150,16 @@ impl UserDictionary {
         d
     }
 
+    /// Loads a dictionary for editing. A missing file is an empty dictionary.
+    pub fn try_with_file(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let mut d = Self {
+            path: Some(path.into()),
+            ..Self::default()
+        };
+        d.try_reload_if_changed()?;
+        Ok(d)
+    }
+
     pub fn len(&self) -> usize {
         self.words.len()
     }
@@ -167,24 +179,31 @@ impl UserDictionary {
 
     /// Re-reads the file if it changed (another process, or a hand edit).
     pub fn reload_if_changed(&mut self) {
+        let _ = self.try_reload_if_changed();
+    }
+
+    fn try_reload_if_changed(&mut self) -> io::Result<()> {
         let Some(path) = self.path.clone() else {
-            return;
+            return Ok(());
         };
-        let mtime = Self::file_mtime(&path);
+        let mtime = match std::fs::metadata(&path) {
+            Ok(metadata) => Some(metadata.modified()?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
         if mtime == self.mtime {
-            return;
+            return Ok(());
         }
         let text = if mtime.is_some() {
-            std::fs::read_to_string(&path).ok()
+            std::fs::read_to_string(&path)?
         } else {
-            Some(String::new())
+            String::new()
         };
-        if let Some(text) = text {
-            self.words.clear();
-            self.parse_into(&text);
-            self.rebuild_index();
-            self.mtime = mtime;
-        }
+        self.words.clear();
+        self.parse_into(&text);
+        self.rebuild_index();
+        self.mtime = mtime;
+        Ok(())
     }
 
     /// Parses TSV lines, skipping comments, malformed rows and duplicates.
@@ -256,7 +275,8 @@ impl UserDictionary {
         pos: &str,
         comment: &str,
     ) -> Result<(), AddError> {
-        self.reload_if_changed();
+        self.try_reload_if_changed()
+            .map_err(|_| AddError::LoadFailed)?;
         let word = UserWord {
             reading: normalize_reading(reading),
             surface: surface.trim().to_string(),
@@ -346,10 +366,17 @@ impl UserDictionary {
         let mut s =
             String::from("# Sweet IME user dictionary: reading\tword\tpart of speech\tcomment\n");
         for w in &self.words {
-            s.push_str(&format!(
-                "{}\t{}\t{}\t{}\n",
-                w.reading, w.surface, w.pos, w.comment
-            ));
+            // A full-width leading marker is normalized back on load.
+            if let Some(rest) = w.reading.strip_prefix('#') {
+                s.push('＃');
+                s.push_str(rest);
+            } else if let Some(rest) = w.reading.strip_prefix('!') {
+                s.push('！');
+                s.push_str(rest);
+            } else {
+                s.push_str(&w.reading);
+            }
+            s.push_str(&format!("\t{}\t{}\t{}\n", w.surface, w.pos, w.comment));
         }
         s
     }
@@ -455,5 +482,36 @@ mod tests {
         assert_eq!(pos_feature("さ変名詞"), Some("名詞,サ変接続,*,*,*,*,*"));
         assert_eq!(pos_feature("サジェストのみ"), None);
         assert_eq!(pos_feature("???"), Some("名詞,一般,*,*,*,*,*"));
+    }
+
+    #[test]
+    fn preserves_comment_markers_at_the_start_of_readings() {
+        let mut d = UserDictionary::new();
+        d.add("#", "番号", DEFAULT_POS, "").unwrap();
+        d.add("!test", "感嘆符", DEFAULT_POS, "").unwrap();
+        let mut reopened = UserDictionary::new();
+        assert_eq!(reopened.import(&d.export()).unwrap(), 2);
+        assert_eq!(reopened.words(), d.words());
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_unreadable_dictionary() {
+        let path = std::env::temp_dir().join(format!(
+            "sweet-ime-invalid-userdict-{}.tsv",
+            std::process::id()
+        ));
+        let bytes = [0xff, 0xfe, 0x00];
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            UserDictionary::try_with_file(&path).err().unwrap().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let mut d = UserDictionary::with_file(&path);
+        assert_eq!(
+            d.add("てすと", "テスト", DEFAULT_POS, ""),
+            Err(AddError::LoadFailed)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(&path).unwrap();
     }
 }
