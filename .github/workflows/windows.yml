@@ -460,8 +460,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require the tagged commit to be on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      # A pre-release tag (with a hyphen, such as v1.0.0-alpha.1) may also
+      # come from develop. Other releases must be on main.
+      - name: Require the tagged commit to be on main, or develop for a pre-release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            exit 0
+          fi
+          if [[ "$RELEASE_TAG" == *-* ]] && git merge-base --is-ancestor "$GITHUB_SHA" origin/develop; then
+            exit 0
+          fi
+          echo "::error::$RELEASE_TAG must point to a commit on main (or on develop for a pre-release tag)."
+          exit 1
 
       - uses: actions/download-artifact@v8
         with:

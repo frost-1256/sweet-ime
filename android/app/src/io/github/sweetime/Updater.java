@@ -107,7 +107,12 @@ final class Updater {
             long y = i < b.length ? b[i] : 0;
             if (x != y) return x > y;
         }
-        return false;
+        // A release replaces a pre-release of the same version (1.0.0-alpha.1 -> 1.0.0).
+        return !isPrerelease(latest) && isPrerelease(current);
+    }
+
+    private static boolean isPrerelease(String v) {
+        return v.split("\\+", 2)[0].contains("-");
     }
 
     // ---- Check ----
