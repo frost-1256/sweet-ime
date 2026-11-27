@@ -12,6 +12,7 @@
 
 <!-- List the tests or manual checks you ran and their results. Mention any checks you could not run and why. -->
 <!-- Include screenshots for UI changes and before-and-after measurements for performance or candidate ranking changes. -->
+<!-- Review AI-assisted changes yourself. For third-party material, verify the source and license and include any required attribution. -->
 
 ## Related issues
 

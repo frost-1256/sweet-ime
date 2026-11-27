@@ -23,6 +23,10 @@ Replace personal details and private input history in examples, logs, and screen
 
 See [Development in the README](README.md#development) for Windows, Linux (fcitx5), macOS, and Android build instructions. Keep generated dictionaries, models, and build outputs out of Git.
 
+### AI-assisted contributions
+
+You are welcome to use AI tools. Before opening a PR, review and test the resulting changes yourself. For any third-party code, images, or other material you include, verify the source and check that the license permits the proposed use. Keep any required attribution and license notices. If you cannot verify the origin or terms of material suggested by an AI tool, leave it out of the PR.
+
 ## Run tests
 
 Run the workspace tests serially.
