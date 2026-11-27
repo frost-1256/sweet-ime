@@ -213,6 +213,12 @@ public:
         lastConfigReload_ = Clock::now();
         if (snap_.visible) {
             measure();
+            sizeFromW_ = static_cast<double>(width_);
+            sizeFromH_ = static_cast<double>(height_);
+            sizeToW_ = static_cast<double>(width_);
+            sizeToH_ = static_cast<double>(height_);
+            sizeStart_ = lastConfigReload_ -
+                         std::chrono::milliseconds(static_cast<long long>(RESIZE_MS));
             if (snap_.cursor >= 0 && snap_.cursor < static_cast<int>(itemRects_.size())) {
                 slideFrom_ = itemRects_[snap_.cursor];
                 slideTo_ = itemRects_[snap_.cursor];
@@ -376,7 +382,11 @@ public:
             std::chrono::duration<double, std::milli>(now - fadeStart_).count();
         const double slideMs =
             std::chrono::duration<double, std::milli>(now - slideStart_).count();
-        return (theme_.window_fade && fadeMs < FADE_MS) || slideMs < SLIDE_MS || isResizing(now);
+        const bool pendingTargetSize =
+            width_ > 0 && height_ > 0 &&
+            (lastPresentedW_ != width_ || lastPresentedH_ != height_);
+        return (theme_.window_fade && fadeMs < FADE_MS) || slideMs < SLIDE_MS ||
+               isResizing(now) || pendingTargetSize;
     }
 
     int width() const {
@@ -422,6 +432,8 @@ public:
         const auto curSz = currentSize(now);
         const double drawW = surfW > 0 ? static_cast<double>(surfW) : curSz.first;
         const double drawH = surfH > 0 ? static_cast<double>(surfH) : curSz.second;
+        lastPresentedW_ = static_cast<int>(std::lround(drawW));
+        lastPresentedH_ = static_cast<int>(std::lround(drawH));
 
         const double cardX = SHADOW_PAD;
         const double cardY = SHADOW_PAD;
@@ -471,9 +483,41 @@ public:
         roundedRectPath(cr, cardX, cardY, cardW, cardH, CORNER_RADIUS);
         cairo_clip(cr);
 
-        const double padVClip = static_cast<double>(theme_.panel_padding);
-        const double contentPadClip = std::max(4.0, padVClip - 1.0);
-        const double innerWClip = std::max(0.0, cardW - 2.0 * contentPadClip);
+        PangoFontDescription *fontDesc = pango_font_description_from_string(prefs_.font.c_str());
+        PangoFontDescription *smallDesc = pango_font_description_copy(fontDesc);
+        if (pango_font_description_get_size(smallDesc) > 0) {
+            const int sz = pango_font_description_get_size(smallDesc);
+            const int smallSz = std::max(8 * PANGO_SCALE, static_cast<int>(sz * 0.78));
+            if (pango_font_description_get_size_is_absolute(smallDesc)) {
+                pango_font_description_set_absolute_size(smallDesc, smallSz);
+            } else {
+                pango_font_description_set_size(smallDesc, smallSz);
+            }
+        }
+
+        PangoLayout *layout = pango_cairo_create_layout(cr);
+        const double padV = static_cast<double>(theme_.panel_padding);
+        const double padH = padV + 4.0;
+        const double contentPad = std::max(4.0, padV - 1.0);
+        const double innerWClip = std::max(0.0, cardW - 2.0 * contentPad);
+
+        // Measure footer height up front so candidate rows can be clipped above it.
+        int footerW = 0, footerH = 0;
+        if (!snap_.aux_down.empty()) {
+            pango_layout_set_font_description(layout, smallDesc);
+            pango_layout_set_text(layout, snap_.aux_down.c_str(), -1);
+            pango_layout_get_pixel_size(layout, &footerW, &footerH);
+        }
+
+        // Reserve the footer band at the bottom of the animated card while drawing
+        // highlights and candidate rows so expanding/shrinking never overlaps it.
+        cairo_save(cr);
+        if (!snap_.aux_down.empty()) {
+            const double footerTop =
+                std::max(cardY, cardY + cardH - contentPad - footerH - 3.0);
+            cairo_rectangle(cr, cardX, cardY, cardW, std::max(0.0, footerTop - cardY));
+            cairo_clip(cr);
+        }
 
         // Hover highlight (when hovering a non-selected item).
         if (hoverIndex_ >= 0 && hoverIndex_ < static_cast<int>(itemRects_.size()) &&
@@ -510,22 +554,6 @@ public:
             cairo_fill(cr);
         }
 
-        PangoFontDescription *fontDesc = pango_font_description_from_string(prefs_.font.c_str());
-        PangoFontDescription *smallDesc = pango_font_description_copy(fontDesc);
-        if (pango_font_description_get_size(smallDesc) > 0) {
-            const int sz = pango_font_description_get_size(smallDesc);
-            const int smallSz = std::max(8 * PANGO_SCALE, static_cast<int>(sz * 0.78));
-            if (pango_font_description_get_size_is_absolute(smallDesc)) {
-                pango_font_description_set_absolute_size(smallDesc, smallSz);
-            } else {
-                pango_font_description_set_size(smallDesc, smallSz);
-            }
-        }
-
-        PangoLayout *layout = pango_cairo_create_layout(cr);
-        const double padV = static_cast<double>(theme_.panel_padding);
-        const double padH = padV + 4.0;
-        const double contentPad = std::max(4.0, padV - 1.0);
         double headerY = cardY + contentPad + 2.0;
 
         // Optional auxUp line (e.g. input-method notification banner).
@@ -577,16 +605,16 @@ public:
             pango_cairo_show_layout(cr, layout);
         }
 
+        cairo_restore(cr); // pop candidate-area clip above footer
+
         // Footer (aux_down).
         if (!snap_.aux_down.empty()) {
             pango_layout_set_font_description(layout, smallDesc);
             pango_layout_set_text(layout, snap_.aux_down.c_str(), -1);
-            int fw = 0, fh = 0;
-            pango_layout_get_pixel_size(layout, &fw, &fh);
             cairo_set_source_rgba(cr, theme_.sub[0] / 255.0, theme_.sub[1] / 255.0,
                                   theme_.sub[2] / 255.0, fade);
-            cairo_move_to(cr, cardX + cardW - contentPad - padH - fw,
-                          cardY + cardH - contentPad - fh - 1.0);
+            cairo_move_to(cr, cardX + cardW - contentPad - padH - footerW,
+                          cardY + cardH - contentPad - footerH - 1.0);
             pango_cairo_show_layout(cr, layout);
         }
 
@@ -751,6 +779,8 @@ private:
     std::vector<RectF> itemRects_;
     int width_ = 0;
     int height_ = 0;
+    int lastPresentedW_ = 0;
+    int lastPresentedH_ = 0;
     double sizeFromW_ = 0.0;
     double sizeFromH_ = 0.0;
     double sizeToW_ = 0.0;

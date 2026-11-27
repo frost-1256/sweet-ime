@@ -1325,8 +1325,17 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 // Look up the row and handler, then release the state borrow
                 // before calling out (the handler updates this window).
                 let hit = with_state(hwnd, |st| {
-                    let row = ((y / st.scale - st.rows_top()) / ROW_H).floor();
-                    if st.visible && row >= 0.0 && (row as usize) < st.page_len {
+                    let y_dip = y / st.scale;
+                    let cur_h = st
+                        .last_rect
+                        .map_or_else(|| st.animated_size().1, |(_, _, _, h)| h as f32 / st.scale);
+                    let rows_top = st.rows_top();
+                    let rows_bottom = (cur_h - st.padding() - FOOTER_H).max(rows_top);
+                    if !st.visible || y_dip < rows_top || y_dip >= rows_bottom {
+                        return None;
+                    }
+                    let row = ((y_dip - rows_top) / ROW_H).floor();
+                    if row >= 0.0 && (row as usize) < st.page_len {
                         st.on_click
                             .clone()
                             .map(|f| (f, st.page_start + row as usize))
@@ -1423,7 +1432,13 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     );
                 }
                 let animating = with_state(hwnd, |st| {
-                    (st.visible || st.fading_out.is_some()) && st.animating()
+                    let target_w = (st.size_to.0 * st.scale).round().max(1.0) as i32;
+                    let target_h = (st.size_to.1 * st.scale).round().max(1.0) as i32;
+                    let pending_size = st.visible
+                        && st
+                            .last_rect
+                            .is_some_and(|(_, _, w, h)| w != target_w || h != target_h);
+                    (st.visible || st.fading_out.is_some()) && (st.animating() || pending_size)
                 })
                 .unwrap_or(false);
                 let _ = InvalidateRect(Some(hwnd), None, false);
