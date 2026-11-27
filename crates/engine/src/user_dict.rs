@@ -82,6 +82,7 @@ pub enum AddError {
     /// Tabs and newlines cannot be stored.
     BadCharacter,
     Duplicate,
+    SaveFailed,
 }
 
 impl std::fmt::Display for AddError {
@@ -92,6 +93,7 @@ impl std::fmt::Display for AddError {
             AddError::BadReading => "読みはひらがなで入力してください",
             AddError::BadCharacter => "タブや改行は使えません",
             AddError::Duplicate => "同じ読みと単語がすでに登録されています",
+            AddError::SaveFailed => "ユーザー辞書を保存できませんでした",
         })
     }
 }
@@ -267,7 +269,11 @@ impl UserDictionary {
         }
         self.words.push(word);
         self.rebuild_index();
-        let _ = self.save();
+        if self.save().is_err() {
+            self.words.pop();
+            self.rebuild_index();
+            return Err(AddError::SaveFailed);
+        }
         Ok(())
     }
 
@@ -298,18 +304,26 @@ impl UserDictionary {
         let Some(slot) = self.words.get_mut(index) else {
             return Ok(());
         };
-        *slot = word;
+        let original = std::mem::replace(slot, word);
         self.rebuild_index();
-        let _ = self.save();
+        if self.save().is_err() {
+            self.words[index] = original;
+            self.rebuild_index();
+            return Err(AddError::SaveFailed);
+        }
         Ok(())
     }
 
     /// Removes the word at `index` and saves.
     pub fn remove(&mut self, index: usize) -> io::Result<()> {
         if index < self.words.len() {
-            self.words.remove(index);
+            let word = self.words.remove(index);
             self.rebuild_index();
-            self.save()?;
+            if let Err(error) = self.save() {
+                self.words.insert(index, word);
+                self.rebuild_index();
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -416,7 +430,6 @@ mod tests {
         let d2 = UserDictionary::with_file(&path);
         assert_eq!(d2.words()[0].reading, "すいーと");
         assert_eq!(d2.words()[0].pos, "固有名詞");
-
         let mut d3 = UserDictionary::with_file(&path);
         let n = d3
             .import("!Microsoft IME Dictionary Tool\nかおもじ\t(^^)\t顔文字\t\nたなか\t田中\t人名姓\nすいーと\tSweet\t名詞\t\n")
@@ -426,6 +439,11 @@ mod tests {
         let mut seen = Vec::new();
         d3.common_prefix("たなかさん", |l, w| seen.push((l, w.surface.clone())));
         assert_eq!(seen, vec![("たなか".len(), "田中".to_string())]);
+        d3.replace(0, "スイート", "Sweet IME", "固有名詞", "").unwrap();
+        assert_eq!(
+            UserDictionary::with_file(&path).words()[0].surface,
+            "Sweet IME"
+        );
         d3.remove(0).unwrap();
         assert_eq!(UserDictionary::with_file(&path).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);

@@ -146,8 +146,12 @@ pub fn ui(
                             for preset in Theme::BUILTINS {
                                 if ui.selectable_label(false, preset.label()).clicked() {
                                     let keep_alpha = user_theme.bg_alpha;
+                                    let keep_acrylic = user_theme.acrylic;
+                                    let keep_blur = user_theme.acrylic_blur;
                                     *user_theme = UserTheme::from_colors(preset.colors(sys_light));
                                     user_theme.bg_alpha = keep_alpha;
+                                    user_theme.acrylic = keep_acrylic;
+                                    user_theme.acrylic_blur = keep_blur;
                                     edited = true;
                                 }
                             }
@@ -157,6 +161,35 @@ pub fn ui(
                         edited = true;
                     }
                 });
+
+                #[cfg(windows)]
+                {
+                    edited |= ui
+                        .checkbox(&mut user_theme.acrylic, "アクリルエフェクトを使う")
+                        .on_hover_text(
+                            "Windows 11 22H2以降で、背景の不透明度が100%未満のときに適用されます。",
+                        )
+                        .changed();
+                }
+
+                #[cfg(windows)]
+                if user_theme.acrylic {
+                    use sweet_engine::theme::AcrylicBlur;
+
+                    let previous = user_theme.acrylic_blur;
+                    let choices = [
+                        (AcrylicBlur::Fine, "細かい"),
+                        (AcrylicBlur::Standard, "標準"),
+                        (AcrylicBlur::Coarse, "粗い"),
+                    ];
+                    ui.horizontal(|ui| {
+                        ui.label("ぼかしの粒度");
+                        for (blur, label) in choices {
+                            ui.selectable_value(&mut user_theme.acrylic_blur, blur, label);
+                        }
+                    });
+                    edited |= user_theme.acrylic_blur != previous;
+                }
 
                 egui::Grid::new("user_theme_sliders")
                     .num_columns(2)

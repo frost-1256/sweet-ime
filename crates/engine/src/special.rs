@@ -2,6 +2,10 @@
 //! 2026/11/22), emoji (えがお -> 😊), kaomoji (かお) and arithmetic
 //! (123・456= -> 0.2697…).
 
+pub(crate) fn bracket_candidate(reading: &str) -> Option<&'static str> {
+    (reading == "かっこ").then_some("()")
+}
+
 /// Local date and time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DateTime {

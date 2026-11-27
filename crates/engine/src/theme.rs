@@ -266,6 +266,24 @@ impl Theme {
 }
 
 /// User-customizable theme colors and background opacity, saved in `user_theme.txt`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AcrylicBlur {
+    Fine,
+    #[default]
+    Standard,
+    Coarse,
+}
+
+impl AcrylicBlur {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Fine => "fine",
+            Self::Standard => "standard",
+            Self::Coarse => "coarse",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UserTheme {
     pub bg: [u8; 3],
@@ -276,6 +294,8 @@ pub struct UserTheme {
     pub accent: [u8; 3],
     pub border: [u8; 3],
     pub bg_alpha: f32,
+    pub acrylic: bool,
+    pub acrylic_blur: AcrylicBlur,
     pub panel_padding: u8,
     pub dark: bool,
 }
@@ -291,6 +311,8 @@ impl Default for UserTheme {
             accent: [0x60, 0xa5, 0xfa],
             border: [0x3c, 0x42, 0x54],
             bg_alpha: 0.88,
+            acrylic: false,
+            acrylic_blur: AcrylicBlur::default(),
             panel_padding: DEFAULT_PANEL_PADDING,
             dark: true,
         }
@@ -327,6 +349,8 @@ impl UserTheme {
             accent: [accent.0, accent.1, accent.2],
             border: [c.border.0, c.border.1, c.border.2],
             bg_alpha: c.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
+            acrylic: false,
+            acrylic_blur: AcrylicBlur::default(),
             panel_padding: c.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
             dark: is_dark_rgb(bg),
         }
@@ -384,6 +408,18 @@ impl UserTheme {
                         t.panel_padding = p.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING);
                     }
                 }
+                "acrylic_blur" => {
+                    t.acrylic_blur = match v {
+                        "fine" => AcrylicBlur::Fine,
+                        "coarse" => AcrylicBlur::Coarse,
+                        _ => AcrylicBlur::Standard,
+                    };
+                }
+                "acrylic" => {
+                    if let Ok(enabled) = v.parse::<bool>() {
+                        t.acrylic = enabled;
+                    }
+                }
                 "dark" => match v {
                     "true" | "1" => t.dark = true,
                     "false" | "0" => t.dark = false,
@@ -397,7 +433,7 @@ impl UserTheme {
 
     pub fn to_text(&self) -> String {
         format!(
-            "bg = {}\ntext = {}\nsub = {}\nhover = {}\nhover_alpha = {:.2}\naccent = {}\nborder = {}\nbg_alpha = {:.2}\npanel_padding = {}\ndark = {}\n",
+            "bg = {}\ntext = {}\nsub = {}\nhover = {}\nhover_alpha = {:.2}\naccent = {}\nborder = {}\nbg_alpha = {:.2}\npanel_padding = {}\ndark = {}\nacrylic = {}\nacrylic_blur = {}\n",
             fmt_hex(self.bg),
             fmt_hex(self.text),
             fmt_hex(self.sub),
@@ -408,6 +444,8 @@ impl UserTheme {
             self.bg_alpha.clamp(MIN_BG_ALPHA, 1.0),
             self.panel_padding.clamp(MIN_PANEL_PADDING, MAX_PANEL_PADDING),
             self.dark,
+            self.acrylic,
+            self.acrylic_blur.id(),
         )
     }
 }
@@ -521,6 +559,8 @@ mod tests {
     fn user_theme_round_trips() {
         let mut ut = UserTheme::from_colors(Theme::Sakura.colors(true));
         ut.bg_alpha = 0.72;
+        ut.acrylic = true;
+        ut.acrylic_blur = AcrylicBlur::Coarse;
         ut.hover_alpha = 0.25;
         let parsed = UserTheme::parse(&ut.to_text());
         assert_eq!(parsed.bg, ut.bg);
@@ -531,6 +571,13 @@ mod tests {
         assert_eq!(parsed.border, ut.border);
         assert_eq!(parsed.dark, ut.dark);
         assert!((parsed.bg_alpha - 0.72).abs() < 0.01);
+        assert!(parsed.acrylic);
+        assert_eq!(parsed.acrylic_blur, AcrylicBlur::Coarse);
+        assert_eq!(
+            UserTheme::parse("acrylic = true").acrylic_blur,
+            AcrylicBlur::Standard
+        );
+        assert!(!UserTheme::parse("bg_alpha = 0.72").acrylic);
         assert!((parsed.hover_alpha - 0.25).abs() < 0.01);
         // Out-of-range alpha is clamped, and `#rrggbb` with trailing comment parses.
         let clamped = UserTheme::parse("bg = #112233 # comment\nbg_alpha = 0.05\n");

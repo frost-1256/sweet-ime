@@ -7,6 +7,7 @@
 #![cfg(windows)]
 #![allow(non_snake_case)]
 
+mod acrylic;
 mod candidate_window;
 mod display_attr;
 mod edit;

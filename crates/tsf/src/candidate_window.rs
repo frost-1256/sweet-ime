@@ -5,17 +5,18 @@
 //! theme and accent color), fades in and animates the selection highlight.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Once;
 use std::time::Instant;
 
-use sweet_engine::theme::Rgb;
+use sweet_engine::theme::{AcrylicBlur, Rgb};
 use sweet_engine::{CandidateList, ListKind};
 use windows::Win32::Foundation::{
     COLORREF, E_FAIL, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F,
-    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED,
+    D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
@@ -33,11 +34,13 @@ use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
-    DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+    DWMWA_BORDER_COLOR, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmExtendFrameIntoClientArea,
+    DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
     CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
     GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint, PAINTSTRUCT, SelectObject, ValidateRect,
@@ -45,19 +48,24 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
 };
+use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GA_ROOT,
-    GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
-    KillTimer, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, PostMessageW, RegisterClassExW, SW_HIDE,
-    SWP_NOACTIVATE, SWP_NOREDRAW, SWP_NOZORDER, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA, ULW_OPAQUE,
-    UpdateLayeredWindow, WM_APP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GWL_EXSTYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, GetWindowLongW,
+    HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE,
+    PostMessageW, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_NOREDRAW, SWP_NOZORDER,
+    SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowLongW,
+    SetWindowPos, ShowWindow, ULW_ALPHA, ULW_OPAQUE, UpdateLayeredWindow, WM_APP, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{Error, HSTRING, Interface, PCWSTR, Result, w};
 
+use crate::acrylic::{BlurComposition, BlurQueue};
+
 const CLASS_NAME: PCWSTR = w!("SweetImeCandidateWindow");
+const BACKDROP_CLASS: PCWSTR = w!("SweetImeCandidateBackdrop");
 const TIMER_ID: usize = 1;
 /// Delayed hide, so that a list that disappears for a keystroke or two
 /// while typing doesn't blink.
@@ -129,6 +137,7 @@ fn candidate_format(dwrite: &IDWriteFactory, family: &str) -> Result<IDWriteText
 struct Palette {
     bg: D2D1_COLOR_F,
     bg_alpha: f32,
+    acrylic: Option<(bool, AcrylicBlur)>,
     text: D2D1_COLOR_F,
     sub: D2D1_COLOR_F,
     hover: D2D1_COLOR_F,
@@ -214,7 +223,9 @@ fn windows_accent(dark: bool) -> Option<D2D1_COLOR_F> {
 }
 
 fn palette() -> Palette {
-    let c = crate::theme_colors();
+    let theme = crate::theme();
+    let custom = (theme == sweet_engine::Theme::Custom).then(sweet_engine::paths::load_user_theme);
+    let c = custom.map_or_else(|| theme.colors(system_light()), |theme| theme.colors());
     let col = |v: Rgb, a: f32| rgb(v.0, v.1, v.2, a);
     let accent = match c.accent {
         Some(v) => col(v, 1.0),
@@ -230,6 +241,9 @@ fn palette() -> Palette {
     Palette {
         bg: col(c.bg, 1.0),
         bg_alpha: c.bg_alpha.clamp(sweet_engine::theme::MIN_BG_ALPHA, 1.0),
+        acrylic: custom
+            .filter(|theme| theme.acrylic && c.bg_alpha < 1.0)
+            .map(|theme| (c.dark, theme.acrylic_blur)),
         text: col(c.text, 1.0),
         sub: col(c.sub, 1.0),
         hover: col(c.hover, c.hover_alpha),
@@ -240,10 +254,12 @@ fn palette() -> Palette {
 }
 
 struct State {
+    backdrop: Option<Backdrop>,
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
     target: Option<RenderBackend>,
     bitmap_popup: bool,
+    per_pixel_alpha: bool,
     format: IDWriteTextFormat,
     font_family: String,
     small: IDWriteTextFormat,
@@ -460,6 +476,7 @@ fn wide(s: &str) -> Vec<u16> {
 pub struct CandidateWindow {
     hwnd: HWND,
     owner: std::cell::Cell<isize>,
+    blur_queue: RefCell<Option<Rc<BlurQueue>>>,
 }
 
 fn register_class() {
@@ -475,7 +492,134 @@ fn register_class() {
             ..Default::default()
         };
         RegisterClassExW(&wc);
+        RegisterClassExW(&WNDCLASSEXW {
+            cbSize: wc.cbSize,
+            lpfnWndProc: Some(backdrop_proc),
+            hInstance: wc.hInstance,
+            lpszClassName: BACKDROP_CLASS,
+            ..Default::default()
+        });
     });
+}
+
+unsafe extern "system" fn backdrop_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+// DWM backdrops require a redirected window. Keep the material directly below
+// the layered candidate surface, which is also used in immersive hosts.
+struct Backdrop {
+    hwnd: HWND,
+    appearance: (bool, AcrylicBlur),
+    composition: Option<BlurComposition>,
+}
+
+impl Drop for Backdrop {
+    fn drop(&mut self) {
+        drop(self.composition.take());
+        unsafe {
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
+fn create_backdrop(owner: Option<HWND>, dark: bool, blur: AcrylicBlur) -> Result<Backdrop> {
+    unsafe {
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            BACKDROP_CLASS,
+            PCWSTR::null(),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            owner,
+            None,
+            Some(crate::dll_instance()),
+            None,
+        )?;
+        let margins = MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
+        };
+        let dark_mode = i32::from(dark);
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&raw const dark_mode).cast(),
+            4,
+        );
+        let corner = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            (&raw const corner).cast(),
+            4,
+        );
+        let mut backdrop = Backdrop {
+            hwnd,
+            appearance: (dark, blur),
+            composition: None,
+        };
+        DwmExtendFrameIntoClientArea(hwnd, &margins)?;
+        let deviation = match blur {
+            AcrylicBlur::Fine => 4.0,
+            AcrylicBlur::Standard => 24.0,
+            AcrylicBlur::Coarse => 48.0,
+        };
+        match crate::acrylic::custom_blur(hwnd, deviation) {
+            Ok(composition) => {
+                backdrop.composition = Some(composition);
+                return Ok(backdrop);
+            }
+            Err(error) => crate::debug_log!("custom acrylic blur: {error}"),
+        }
+        // DWMSBT_TRANSIENTWINDOW selects Desktop Acrylic on Windows 11.
+        let acrylic = 3i32;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            (&raw const acrylic).cast(),
+            4,
+        )?;
+        Ok(backdrop)
+    }
+}
+
+fn position_backdrop(hwnd: HWND, (x, y, w, h): (i32, i32, i32, i32)) {
+    if let Some(backdrop) = with_state(hwnd, |st| st.backdrop.as_ref().map(|b| b.hwnd)).flatten() {
+        unsafe {
+            if SetWindowPos(
+                backdrop,
+                Some(hwnd),
+                x,
+                y,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+            .is_err()
+            {
+                let _ = ShowWindow(backdrop, SW_HIDE);
+            }
+        }
+    }
+}
+
+fn destroy_backdrop(hwnd: HWND) {
+    drop(with_state(hwnd, |st| st.backdrop.take()));
 }
 
 fn root_owner(owner: HWND) -> HWND {
@@ -527,10 +671,12 @@ impl CandidateWindow {
                 &locale,
             )?;
             let state = State {
+                backdrop: None,
                 d2d,
                 dwrite,
                 target: None,
                 bitmap_popup,
+                per_pixel_alpha: false,
                 format,
                 font_family: String::new(),
                 small,
@@ -569,6 +715,7 @@ impl CandidateWindow {
             Ok(Self {
                 hwnd,
                 owner: std::cell::Cell::new(owner.map_or(0, |h| h.0 as isize)),
+                blur_queue: RefCell::new(None),
             })
         }
     }
@@ -581,6 +728,11 @@ impl CandidateWindow {
             self.owner.set(owner.0 as isize);
             unsafe {
                 SetWindowLongPtrW(self.hwnd, GWLP_HWNDPARENT, owner.0 as _);
+                if let Some(backdrop) =
+                    with_state(self.hwnd, |st| st.backdrop.as_ref().map(|b| b.hwnd)).flatten()
+                {
+                    SetWindowLongPtrW(backdrop, GWLP_HWNDPARENT, owner.0 as _);
+                }
             }
         }
     }
@@ -742,18 +894,56 @@ impl CandidateWindow {
             let h_px = (cur_h * st.scale).round().max(1.0) as i32;
             let rect = compute_window_rect(anchor, w_px, h_px, text_x);
             st.last_rect = Some(rect);
-            (rect, was_visible, fade, st.bitmap_popup, st.pal.bg_alpha)
+            (rect, was_visible, fade, st.bitmap_popup, st.pal)
         });
-        let Some(((x, y, w, h), was_visible, fade, bitmap_popup, bg_alpha)) = geom else {
+        let Some(((x, y, w, h), was_visible, fade, bitmap_popup, pal)) = geom else {
             return;
         };
+        if !was_visible
+            && with_state(self.hwnd, |st| st.backdrop.as_ref().map(|b| b.appearance))
+                != Some(pal.acrylic)
+        {
+            destroy_backdrop(self.hwnd);
+            if let Some((dark, blur)) = pal.acrylic {
+                match BlurQueue::acquire() {
+                    Ok(queue) => {
+                        self.blur_queue.replace(queue);
+                    }
+                    Err(error) => {
+                        crate::debug_log!("initialize acrylic dispatcher queue: {error}")
+                    }
+                }
+                let owner = HWND(self.owner.get() as _);
+                let backdrop =
+                    create_backdrop((!owner.is_invalid()).then_some(owner), dark, blur).ok();
+                with_state(self.hwnd, |st| st.backdrop = backdrop);
+            }
+        }
+        let (per_pixel_alpha, changed) = with_state(self.hwnd, |st| {
+            let per_pixel_alpha = st.backdrop.is_some();
+            let changed = st.per_pixel_alpha != per_pixel_alpha;
+            if changed {
+                st.per_pixel_alpha = per_pixel_alpha;
+                st.rainbow_border = None;
+                st.target = None;
+            }
+            (per_pixel_alpha, changed)
+        })
+        .unwrap_or_default();
         unsafe {
+            if changed && !bitmap_popup {
+                // Switching between SetLayeredWindowAttributes and
+                // UpdateLayeredWindow requires resetting WS_EX_LAYERED.
+                let style = GetWindowLongW(self.hwnd, GWL_EXSTYLE);
+                SetWindowLongW(self.hwnd, GWL_EXSTYLE, style & !(WS_EX_LAYERED.0 as i32));
+                SetWindowLongW(self.hwnd, GWL_EXSTYLE, style);
+            }
             let _ = KillTimer(Some(self.hwnd), HIDE_TIMER_ID);
-            if !was_visible && !bitmap_popup {
+            if !was_visible && !bitmap_popup && !per_pixel_alpha {
                 let alpha = if fade {
                     0
                 } else {
-                    (255.0 * bg_alpha).round() as u8
+                    (255.0 * pal.bg_alpha).round() as u8
                 };
                 let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
             }
@@ -766,6 +956,7 @@ impl CandidateWindow {
                 h,
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
+            position_backdrop(self.hwnd, (x, y, w, h));
             SetTimer(Some(self.hwnd), TIMER_ID, 8, None);
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
@@ -861,22 +1052,28 @@ fn hide_now(hwnd: HWND) {
 }
 
 fn finish_hide(hwnd: HWND) {
-    with_state(hwnd, |st| {
+    let backdrop = with_state(hwnd, |st| {
         st.visible = false;
         st.input = None;
         st.fading_out = None;
         st.last_rect = None;
         st.hidden_at = Some(Instant::now());
-    });
+        st.backdrop.as_ref().map(|b| b.hwnd)
+    })
+    .flatten();
     unsafe {
         let _ = KillTimer(Some(hwnd), TIMER_ID);
         let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
+        if let Some(backdrop) = backdrop {
+            let _ = ShowWindow(backdrop, SW_HIDE);
+        }
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
 }
 
 impl Drop for CandidateWindow {
     fn drop(&mut self) {
+        destroy_backdrop(self.hwnd);
         STATES.with(|s| s.borrow_mut().retain(|(h, _)| *h != self.hwnd.0 as isize));
         unsafe {
             let _ = DestroyWindow(self.hwnd);
@@ -1051,18 +1248,22 @@ impl LayeredBitmap {
         }
     }
 
-    fn present(&self, hwnd: HWND, alpha: u8) -> Result<()> {
+    fn present(&self, hwnd: HWND, alpha: u8, per_pixel_alpha: bool) -> Result<()> {
         let size = SIZE {
             cx: self.size.width as i32,
             cy: self.size.height as i32,
         };
         unsafe {
-            if alpha < 255 {
+            if per_pixel_alpha || alpha < 255 {
                 let blend = BLENDFUNCTION {
                     BlendOp: AC_SRC_OVER as u8,
                     BlendFlags: 0,
                     SourceConstantAlpha: alpha,
-                    AlphaFormat: 0,
+                    AlphaFormat: if per_pixel_alpha {
+                        AC_SRC_ALPHA as u8
+                    } else {
+                        0
+                    },
                 };
                 UpdateLayeredWindow(
                     hwnd,
@@ -1125,9 +1326,13 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
                 },
                 ..Default::default()
             };
-            st.target = Some(if st.bitmap_popup {
+            st.target = Some(if st.bitmap_popup || st.per_pixel_alpha {
                 props.r#type = D2D1_RENDER_TARGET_TYPE_SOFTWARE;
-                props.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
+                props.pixelFormat.alphaMode = if st.per_pixel_alpha {
+                    D2D1_ALPHA_MODE_PREMULTIPLIED
+                } else {
+                    D2D1_ALPHA_MODE_IGNORE
+                };
                 let bitmap = LayeredBitmap::new(size)?;
                 let target = st.d2d.CreateDCRenderTarget(&props)?;
                 target.BindDC(bitmap.dc, &rc)?;
@@ -1154,7 +1359,11 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         let dpi = 96.0 * st.scale;
         rt.SetDpi(dpi, dpi);
         rt.BeginDraw();
-        rt.Clear(Some(&st.pal.bg));
+        let mut background = st.pal.bg;
+        if st.per_pixel_alpha {
+            background.a = st.pal.bg_alpha;
+        }
+        rt.Clear(Some(&background));
         let brush = rt.CreateSolidColorBrush(&st.pal.text, None)?;
         let sub = rt.CreateSolidColorBrush(&st.pal.sub, None)?;
         let hover = rt.CreateSolidColorBrush(&st.pal.hover, None)?;
@@ -1284,9 +1493,14 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             st.rainbow_border = None;
             return Err(e);
         }
-        let alpha = (255.0 * st.pal.bg_alpha * st.fade_factor()).round() as u8;
+        let opacity = if st.per_pixel_alpha {
+            1.0
+        } else {
+            st.pal.bg_alpha
+        };
+        let alpha = (255.0 * opacity * st.fade_factor()).round() as u8;
         if let Some(RenderBackend::Bitmap(_, bitmap)) = &st.target {
-            bitmap.present(hwnd, alpha)?;
+            bitmap.present(hwnd, alpha, st.per_pixel_alpha)?;
         } else {
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
         }
@@ -1430,6 +1644,7 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                         h,
                         SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW,
                     );
+                    position_backdrop(hwnd, (x, y, w, h));
                 }
                 let animating = with_state(hwnd, |st| {
                     let target_w = (st.size_to.0 * st.scale).round().max(1.0) as i32;
@@ -1460,7 +1675,7 @@ mod tests {
 
     #[test]
     fn bitmap_popup_draws_candidate_text_and_presents_it() {
-        use windows::Win32::Graphics::Gdi::GetPixel;
+        use windows::Win32::Graphics::Gdi::{DIBSECTION, GetObjectW, GetPixel};
 
         let popup = CandidateWindow::new(None, true).unwrap();
         let candidates = CandidateList {
@@ -1491,6 +1706,32 @@ mod tests {
                     color != background && color != COLORREF(u32::MAX)
                 })
             }));
+
+            state.pal.bg_alpha = 0.55;
+            state.per_pixel_alpha = true;
+            state.target = None;
+            render(popup.hwnd, state).unwrap();
+            let Some(RenderBackend::Bitmap(_, bitmap)) = &state.target else {
+                panic!("expected a premultiplied bitmap render target");
+            };
+            let mut section = DIBSECTION::default();
+            unsafe {
+                let size = std::mem::size_of::<DIBSECTION>();
+                assert_eq!(
+                    GetObjectW(
+                        bitmap.bitmap.into(),
+                        size as i32,
+                        Some((&raw mut section).cast())
+                    ),
+                    size as i32
+                );
+                let pixels = std::slice::from_raw_parts(
+                    section.dsBm.bmBits.cast::<u8>(),
+                    section.dsBm.bmWidthBytes as usize * bitmap.size.height as usize,
+                );
+                assert_eq!(pixels[3], 140);
+                assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255));
+            }
         })
         .unwrap();
     }
