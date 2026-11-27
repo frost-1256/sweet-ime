@@ -85,7 +85,8 @@ jobs:
                 and=true; tst=true
                 ;;
               android/*)
-                and=true
+                # A skipped matrix job does not publish the branch's required checks.
+                and=true; lnx=true
                 ;;
               crates/fcitx5/*)
                 lnx=true; tst=true

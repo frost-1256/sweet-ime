@@ -352,7 +352,19 @@ public final class SettingsActivity extends Activity {
         for (String row : words.split("\n")) {
             String[] fields = row.split("\t", 2);
             if (fields.length != 2) continue;
-            Button entry = tonalButton(fields[1] + "\n" + fields[0]);
+            LinearLayout entry = new LinearLayout(this);
+            entry.setOrientation(LinearLayout.HORIZONTAL);
+            entry.setGravity(Gravity.CENTER_VERTICAL);
+            entry.setPadding(dp(8), dp(10), dp(8), dp(10));
+            entry.setBackground(ripple());
+            entry.setFocusable(true);
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            labels.setPadding(0, 0, dp(8), 0);
+            labels.addView(text(fields[1], 16, theme.text));
+            labels.addView(text(fields[0], 13, theme.subText));
+            entry.addView(labels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            entry.addView(icon(Icons.RIGHT, theme.subText, 20), new LinearLayout.LayoutParams(dp(24), dp(24)));
             entry.setOnClickListener(v -> editUserWord(list, path, fields[0], fields[1]));
             list.addView(entry);
         }
