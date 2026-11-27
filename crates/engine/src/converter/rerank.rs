@@ -455,8 +455,8 @@ impl RerankState {
                     st.running.swap_remove(pos);
                 }
                 if let Some(choice) = self.2 {
-                    let (t, l, _) = self.1;
-                    st.cache.retain(|((ct, cl, _), _)| !(ct == t && cl == l));
+                    // Other snapshots with the same text and context stay cached.
+                    st.cache.retain(|(k, _)| k != self.1);
                     st.cache.push((self.1.clone(), choice));
                     if st.cache.len() > RERANK_CACHE {
                         st.cache.remove(0);
@@ -528,9 +528,7 @@ impl RerankState {
                     st.gen_running.swap_remove(pos);
                 }
                 if let Some(outcome) = self.2.take() {
-                    let (t, l, _, _) = self.1;
-                    st.gen_cache
-                        .retain(|((ct, cl, _, _), _)| !(ct == t && cl == l));
+                    st.gen_cache.retain(|(k, _)| k != self.1);
                     st.gen_cache.push((self.1.clone(), outcome));
                     if st.gen_cache.len() > RERANK_CACHE {
                         st.gen_cache.remove(0);
