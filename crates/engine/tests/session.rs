@@ -22,19 +22,42 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
-fn kakko_offers_ascii_parentheses_when_typing_and_converting() {
+fn punctuation_readings_offer_symbols_when_typing_and_converting() {
     let Some(c) = converter() else { return };
-    for convert in [false, true] {
-        let mut s = if convert { plain() } else { Session::new() };
-        type_str(&mut s, &c, "かっこ");
-        if convert {
-            assert!(s.handle(&c, Key::Space));
-            assert!(s.handle(&c, Key::Space));
+    for (reading, symbols) in [
+        ("なかぐろ", &["・", "･"][..]),
+        ("なかてん", &["・", "･"]),
+        ("てん", &["・", "･"]),
+        ("さんてんりーだー", &["…"]),
+        ("さんてん", &["…"]),
+        ("てんてんてん", &["…"]),
+        ("かっこ", &["()", "（）", "「」"]),
+        ("おどりじ", &["々"]),
+        ("くりかえし", &["々"]),
+        ("おなじ", &["々"]),
+        ("のま", &["々"]),
+    ] {
+        for convert in [false, true] {
+            let mut s = if convert { plain() } else { Session::new() };
+            type_str(&mut s, &c, reading);
+            if convert {
+                assert!(s.handle(&c, Key::Space));
+                assert!(s.handle(&c, Key::Space));
+            }
+            let list = s
+                .candidates()
+                .unwrap_or_else(|| panic!("{reading} did not offer any candidates"));
+            for symbol in symbols {
+                assert!(
+                    list.items.iter().any(|item| item == symbol),
+                    "{reading} -> {symbol} missing from {:?}",
+                    list.items
+                );
+            }
+            let index = list.items.iter().position(|item| item == symbols[0]).unwrap();
+            assert!(s.select_candidate(&c, index));
+            assert_eq!(s.take_commit(), symbols[0]);
         }
-        let list = s.candidates().unwrap();
-        let index = list.items.iter().position(|item| item == "()").unwrap();
-        assert!(s.select_candidate(&c, index));
-        assert_eq!(s.take_commit(), "()");
     }
 }
 

@@ -553,6 +553,16 @@ mod tests {
         assert_eq!(c.key(KEY_KANA_VARIANT), None);
         let state = c.key(KEY_ENTER).unwrap();
         assert_eq!(state.split(FIELD).next(), Some(fields[1]));
+
+        c.session.options.suggestions = true;
+        c.set_left_context("シオン");
+        for kana in "なかぐろ".chars() {
+            c.key(kana as i32).unwrap();
+        }
+        let state = c.snapshot();
+        let items = state.split(FIELD).nth(6).unwrap();
+        let halfwidth_dot = items.split(ITEM).position(|item| item == "･").unwrap();
+        assert_eq!(c.select(halfwidth_dot).split(FIELD).next(), Some("･"));
     }
 
     #[test]

@@ -245,13 +245,17 @@ impl Session {
             }
         }
         if suggest {
-            if let Some(brackets) = special::bracket_candidate(&settled) {
-                c.suggestions.push(brackets.to_owned());
-            }
             let shown = c
                 .live
                 .as_ref()
                 .map_or(settled.as_str(), |live| live.surface.as_str());
+            c.suggestions.extend(
+                special::punctuation_candidates(&settled)
+                    .iter()
+                    .copied()
+                    .filter(|&symbol| symbol != shown)
+                    .map(str::to_owned),
+            );
             if let Some(fix) = correction.filter(|fix| fix.surface != shown) {
                 c.suggestions.push(fix.surface.clone());
                 c.typo_suggestion = Some(fix);
