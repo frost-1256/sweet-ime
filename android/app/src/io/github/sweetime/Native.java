@@ -14,6 +14,7 @@ final class Native {
     static final int KEY_ESCAPE = -6;
     static final int KEY_EXPAND = -7;
     static final int KEY_KANA_VARIANT = -8;
+    static final int KEY_HALF_SPACE = -9;
     /** Added to a letter typed with Shift. */
     static final int SHIFTED = 0x40000000;
 

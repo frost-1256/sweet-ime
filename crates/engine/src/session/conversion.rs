@@ -85,11 +85,11 @@ impl Session {
         cv.window && !segment.cloud.is_empty()
     }
 
-    /// Brackets, dates, emoji and kaomoji for a segment reading.
+    /// Punctuation, dates, emoji and kaomoji for a segment reading.
     fn special_candidates(&self, reading: &str) -> Vec<String> {
-        let mut v = special::bracket_candidate(reading)
-            .map(str::to_owned)
-            .into_iter()
+        let mut v = special::punctuation_candidates(reading)
+            .iter()
+            .map(|&symbol| symbol.to_owned())
             .collect::<Vec<_>>();
         if self.options.dates {
             v.extend(special::date_candidates(reading, special::DateTime::now()));

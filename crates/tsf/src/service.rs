@@ -330,6 +330,7 @@ impl TextService_Impl {
             sweet_engine::Key::Char(_)
                 | sweet_engine::Key::ShiftedLetter(_)
                 | sweet_engine::Key::Space
+                | sweet_engine::Key::HalfSpace
         )
     }
 

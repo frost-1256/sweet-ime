@@ -480,6 +480,15 @@ impl App {
             setting_divider(ui);
             setting_row(
                 ui,
+                "常に半角スペースを入力",
+                "空白を入力するときに半角にします。読みの入力中は Space で変換します。",
+                |ui| {
+                    changed |= toggle(ui, &mut self.opts.halfwidth_space).changed();
+                },
+            );
+            setting_divider(ui);
+            setting_row(
+                ui,
                 "常に予測変換を表示する",
                 "1 文字目の入力中や続きの候補が少ないときも、予測変換ウィンドウを常に表示します。",
                 |ui| {

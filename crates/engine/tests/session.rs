@@ -22,20 +22,69 @@ fn type_str(s: &mut Session, c: &Converter, text: &str) {
 }
 
 #[test]
-fn kakko_offers_ascii_parentheses_when_typing_and_converting() {
+fn punctuation_readings_offer_symbols_when_typing_and_converting() {
     let Some(c) = converter() else { return };
-    for convert in [false, true] {
-        let mut s = if convert { plain() } else { Session::new() };
-        type_str(&mut s, &c, "かっこ");
-        if convert {
-            assert!(s.handle(&c, Key::Space));
-            assert!(s.handle(&c, Key::Space));
+    for (reading, symbols) in [
+        ("なかぐろ", &["・", "･"][..]),
+        ("なかてん", &["・", "･"]),
+        ("てん", &["・", "･"]),
+        ("さんてんりーだー", &["…"]),
+        ("さんてん", &["…"]),
+        ("てんてんてん", &["…"]),
+        ("かっこ", &["()", "（）", "「」"]),
+        ("おどりじ", &["々"]),
+        ("くりかえし", &["々"]),
+        ("おなじ", &["々"]),
+        ("のま", &["々"]),
+    ] {
+        for convert in [false, true] {
+            let mut s = if convert { plain() } else { Session::new() };
+            type_str(&mut s, &c, reading);
+            if convert {
+                assert!(s.handle(&c, Key::Space));
+                assert!(s.handle(&c, Key::Space));
+            }
+            let list = s
+                .candidates()
+                .unwrap_or_else(|| panic!("{reading} did not offer any candidates"));
+            for symbol in symbols {
+                assert!(
+                    list.items.iter().any(|item| item == symbol),
+                    "{reading} -> {symbol} missing from {:?}",
+                    list.items
+                );
+            }
+            let index = list.items.iter().position(|item| item == symbols[0]).unwrap();
+            assert!(s.select_candidate(&c, index));
+            assert_eq!(s.take_commit(), symbols[0]);
         }
-        let list = s.candidates().unwrap();
-        let index = list.items.iter().position(|item| item == "()").unwrap();
-        assert!(s.select_candidate(&c, index));
-        assert_eq!(s.take_commit(), "()");
     }
+}
+
+#[test]
+fn halfwidth_space_option_changes_inserted_spaces_without_disabling_conversion() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    s.options.halfwidth_space = false;
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.take_commit(), "\u{3000}");
+    assert!(s.handle(&c, Key::HalfSpace));
+    assert_eq!(s.take_commit(), " ");
+
+    type_str(&mut s, &c, "nihonn");
+    assert!(s.handle(&c, Key::HalfSpace));
+    assert_eq!(s.take_commit(), "にほん ");
+
+    s.options.halfwidth_space = true;
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.take_commit(), " ");
+    type_str(&mut s, &c, "nihongo");
+    assert!(s.handle(&c, Key::Space));
+    assert_eq!(s.preedit().text, "日本語");
+    assert_eq!(s.take_commit(), "");
+    assert!(s.handle(&c, Key::HalfSpace));
+    assert_eq!(s.take_commit(), "日本語 ");
+    assert!(!s.is_active());
 }
 
 #[test]

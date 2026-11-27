@@ -375,6 +375,9 @@ final class KeyboardView extends View {
     /** Shift for the next letter (English at the start of a sentence). */
     void setAutoShift(boolean on) {
         if (capsLock) return;
+        // Japanese: only the Shift key changes shift; a selection update
+        // must not clear it before Shift+Space or Shift+letter.
+        if (!on && !english) return;
         if (shift != on) {
             shift = on;
             invalidate();
@@ -396,6 +399,14 @@ final class KeyboardView extends View {
     }
 
     /** Back to the letters (after typing a symbol). */
+    /** Drops a pending one-shot Shift (a new editor); Caps Lock stays. */
+    void clearShift() {
+        if (!capsLock && shift) {
+            shift = false;
+            invalidate();
+        }
+    }
+
     void showLetters() {
         if (page != 0) {
             page = 0;
@@ -932,6 +943,14 @@ final class KeyboardView extends View {
                 return;
             default:
                 break;
+        }
+        // Japanese only: English spaces are already ASCII, and English Shift
+        // may come from automatic capitalization rather than the Shift key.
+        if (k.code == Native.KEY_SPACE && shift && !english) {
+            shift = false;
+            listener.onKey(Native.KEY_HALF_SPACE);
+            invalidate();
+            return;
         }
         if (k.isLetter() && upper()) {
             int upperCode = Character.toUpperCase(k.code);

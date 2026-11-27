@@ -495,6 +495,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (ctx != 0) Native.reloadOptions(ctx);
         if (keyboard != null) {
             keyboard.setEnglish(english);
+            // A Shift tapped in the previous editor must not carry over.
+            if (!restarting) keyboard.clearShift();
             keyboard.showLetters();
         }
         updateKeys();
@@ -773,6 +775,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 } else {
                     sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER);
                 }
+                break;
+            case Native.KEY_HALF_SPACE:
+                ic.commitText(" ", 1);
+                lastSpace = 0;
                 break;
             case Native.KEY_SPACE: {
                 // English: a second space right after a word ends the
