@@ -16,10 +16,14 @@ pub fn setup(ctx: &egui::Context) {
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = Vec2::new(10.0, 10.0);
         s.spacing.button_padding = Vec2::new(14.0, 6.0);
-        s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
-        s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
-        s.text_styles.insert(egui::TextStyle::Heading, egui::FontId::proportional(26.0));
-        s.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
+        s.text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+        s.text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+        s.text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(26.0));
+        s.text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
     });
 }
 
@@ -35,7 +39,9 @@ fn install_fonts(ctx: &egui::Context) {
             // Japanese fonts have a tall ascent; nudge glyphs down so text
             // is centred in buttons.
             data.tweak.y_offset_factor = 0.12;
-            fonts.font_data.insert(name.clone(), std::sync::Arc::new(data));
+            fonts
+                .font_data
+                .insert(name.clone(), std::sync::Arc::new(data));
             loaded.push(name);
         }
     }
@@ -71,7 +77,12 @@ fn system_fonts() -> Vec<(String, String, u32)> {
 #[cfg(not(any(windows, target_os = "macos")))]
 fn system_fonts() -> Vec<(String, String, u32)> {
     let out = std::process::Command::new("fc-match")
-        .args(["-s", "-f", "%{file}\t%{index}\t%{lang}\n", "sans-serif:lang=ja"])
+        .args([
+            "-s",
+            "-f",
+            "%{file}\t%{index}\t%{lang}\n",
+            "sans-serif:lang=ja",
+        ])
         .output();
     let Ok(out) = out else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout)
@@ -79,7 +90,9 @@ fn system_fonts() -> Vec<(String, String, u32)> {
         .filter_map(|line| {
             let mut f = line.split('\t');
             let (file, index, langs) = (f.next()?, f.next()?, f.next()?);
-            let outline = [".ttf", ".otf", ".ttc"].iter().any(|ext| file.to_ascii_lowercase().ends_with(ext));
+            let outline = [".ttf", ".otf", ".ttc"]
+                .iter()
+                .any(|ext| file.to_ascii_lowercase().ends_with(ext));
             let japanese = langs.split('|').any(|l| l == "ja");
             // The upper bits select a named instance of a variable font.
             let index = index.trim().parse::<u32>().ok()? & 0xffff;
@@ -105,11 +118,20 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     if *on {
         painter.rect_filled(rect, radius, accent);
     } else {
-        painter.rect_stroke(rect, radius, Stroke::new(1.0, off_stroke), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, off_stroke),
+            egui::StrokeKind::Inside,
+        );
     }
     let knob_r = if *on { 6.0 } else { 5.0 } + if response.hovered() { 1.0 } else { 0.0 };
     let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
-    let knob = if *on { contrasting_ink(accent) } else { off_stroke };
+    let knob = if *on {
+        contrasting_ink(accent)
+    } else {
+        off_stroke
+    };
     painter.circle_filled(egui::pos2(x, rect.center().y), knob_r, knob);
     response
 }
@@ -158,9 +180,30 @@ pub fn card_group(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// One row inside a [`card_group`]: title and description on the left,
-/// `control` on the right.
-pub fn setting_row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
+/// `control` on the right, vertically centered against the full row height.
+pub fn setting_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    desc: &str,
+    control: impl FnOnce(&mut egui::Ui),
+) {
     setting_row_inner(ui, title, desc, control);
+}
+
+/// One row inside a [`card_group`] with custom left-hand content (such as
+/// title + badges + multi-line description) and a vertically centered right
+/// `control`.
+pub fn setting_row_custom(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    left: impl FnOnce(&mut egui::Ui),
+    control: impl FnOnce(&mut egui::Ui),
+) {
+    Frame::new()
+        .inner_margin(Margin::symmetric(0, 12))
+        .show(ui, |ui| {
+            balanced_row(ui, id_salt, 44.0, left, control);
+        });
 }
 
 /// A subtle horizontal hairline between two [`setting_row`] items in a [`card_group`].
@@ -175,41 +218,117 @@ pub fn setting_divider(ui: &mut egui::Ui) {
     );
 }
 
+/// Lays out a row with `left` content and a right-aligned `control`, keeping
+/// top/bottom padding symmetrical and vertically centering the shorter side
+/// against the full row height.
+fn balanced_row(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    estimated_height: f32,
+    left: impl FnOnce(&mut egui::Ui),
+    control: impl FnOnce(&mut egui::Ui),
+) -> (egui::Rect, egui::Rect, egui::Rect) {
+    let row_id = ui.make_persistent_id(id_salt);
+    let interact_h = ui.spacing().interact_size.y;
+    let (cached_row_h, cached_left_h, cached_ctrl_h) = ui
+        .data(|d| d.get_temp::<(f32, f32, f32)>(row_id))
+        .unwrap_or((estimated_height, estimated_height, interact_h));
+    let mut text_rect = egui::Rect::NOTHING;
+    let mut control_rect = egui::Rect::NOTHING;
+    let mut left_content_h = 0.0f32;
+    let mut ctrl_content_h = 0.0f32;
+    let row_size = Vec2::new(ui.available_width(), cached_row_h);
+    let ctrl_pad = ((cached_row_h - cached_ctrl_h).max(0.0) * 0.5).floor();
+    let left_pad = ((cached_row_h - cached_left_h).max(0.0) * 0.5).floor();
+    let outer = ui.allocate_ui_with_layout(
+        row_size,
+        egui::Layout::right_to_left(egui::Align::Min),
+        |ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::ZERO,
+                egui::Layout::top_down(egui::Align::RIGHT),
+                |ui| {
+                    let prev_y = ui.spacing().item_spacing.y;
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if ctrl_pad > 0.0 {
+                        ui.add_space(ctrl_pad);
+                    }
+                    let inner = ui.allocate_ui_with_layout(
+                        Vec2::ZERO,
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = prev_y;
+                            control(ui);
+                        },
+                    );
+                    control_rect = inner.response.rect;
+                    ctrl_content_h = control_rect.height();
+                },
+            );
+            ui.add_space(12.0);
+            let text_width = ui.available_width().max(0.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(text_width, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.set_max_width(text_width);
+                    let prev_y = ui.spacing().item_spacing.y;
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if left_pad > 0.0 {
+                        ui.add_space(left_pad);
+                    }
+                    let inner = ui.scope(|ui| {
+                        ui.spacing_mut().item_spacing.y = prev_y;
+                        ui.set_max_width(text_width);
+                        left(ui);
+                    });
+                    text_rect = inner.response.rect;
+                    left_content_h = text_rect.height();
+                },
+            );
+        },
+    );
+    let actual_row_h = left_content_h.max(ctrl_content_h).max(interact_h);
+    if (actual_row_h - cached_row_h).abs() > 0.5
+        || (left_content_h - cached_left_h).abs() > 0.5
+        || (ctrl_content_h - cached_ctrl_h).abs() > 0.5
+    {
+        ui.data_mut(|d| d.insert_temp(row_id, (actual_row_h, left_content_h, ctrl_content_h)));
+        ui.ctx().request_repaint();
+    }
+    (text_rect, control_rect, outer.response.rect)
+}
+
 fn setting_row_inner(
     ui: &mut egui::Ui,
     title: &str,
     desc: &str,
     control: impl FnOnce(&mut egui::Ui),
-) -> egui::Rect {
-    let mut text_rect = egui::Rect::NOTHING;
+) -> (egui::Rect, egui::Rect, egui::Rect) {
+    let est = if desc.is_empty() { 24.0 } else { 44.0 };
+    let mut rects = (
+        egui::Rect::NOTHING,
+        egui::Rect::NOTHING,
+        egui::Rect::NOTHING,
+    );
     Frame::new()
         .inner_margin(Margin::symmetric(0, 12))
         .show(ui, |ui| {
-            let row_size = Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
-            ui.allocate_ui_with_layout(
-                row_size,
-                egui::Layout::right_to_left(egui::Align::Center),
+            rects = balanced_row(
+                ui,
+                ("setting_row", title),
+                est,
                 |ui| {
-                    control(ui);
-                    ui.add_space(12.0);
-                    let text_width = ui.available_width().max(0.0);
-                    let text = ui.allocate_ui_with_layout(
-                        Vec2::new(text_width, 0.0),
-                        egui::Layout::top_down(egui::Align::LEFT),
-                        |ui| {
-                            ui.set_max_width(text_width);
-                            ui.spacing_mut().item_spacing.y = 3.0;
-                            ui.label(RichText::new(title).size(15.5));
-                            if !desc.is_empty() {
-                                ui.label(RichText::new(desc).small().weak());
-                            }
-                        },
-                    );
-                    text_rect = text.response.rect;
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.label(RichText::new(title).size(15.5));
+                    if !desc.is_empty() {
+                        ui.label(RichText::new(desc).small().weak());
+                    }
                 },
+                control,
             );
         });
-    text_rect
+    rects
 }
 
 fn card_inner(
@@ -218,30 +337,23 @@ fn card_inner(
     desc: &str,
     control: impl FnOnce(&mut egui::Ui),
 ) -> (egui::Rect, egui::Rect) {
+    let est = if desc.is_empty() { 24.0 } else { 44.0 };
     let mut text_rect = egui::Rect::NOTHING;
     let frame_response = card_frame(ui).show(ui, |ui| {
-        let row_size = Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
-        ui.allocate_ui_with_layout(
-            row_size,
-            egui::Layout::right_to_left(egui::Align::Min),
+        let (t, _, _) = balanced_row(
+            ui,
+            ("card", title),
+            est,
             |ui| {
-                control(ui);
-                ui.add_space(6.0);
-                let text_width = ui.available_width().max(0.0);
-                let text = ui.allocate_ui_with_layout(
-                    Vec2::new(text_width, 0.0),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.set_max_width(text_width);
-                        ui.label(RichText::new(title).size(15.5));
-                        if !desc.is_empty() {
-                            ui.label(RichText::new(desc).small().weak());
-                        }
-                    },
-                );
-                text_rect = text.response.rect;
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(RichText::new(title).size(15.5));
+                if !desc.is_empty() {
+                    ui.label(RichText::new(desc).small().weak());
+                }
             },
+            control,
         );
+        text_rect = t;
     });
     (text_rect, frame_response.response.rect)
 }
@@ -333,16 +445,12 @@ mod tests {
         let mut card_rect = egui::Rect::NOTHING;
         let mut output = ctx.run_ui(input, |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
-                let (t_rect, c_rect) = card_inner(
-                    ui,
-                    "候補のフォント",
-                    "説明テキスト",
-                    |ui| {
+                let (t_rect, c_rect) =
+                    card_inner(ui, "候補のフォント", "説明テキスト", |ui| {
                         let (rect, _) =
                             ui.allocate_exact_size(Vec2::new(220.0, 28.0), egui::Sense::hover());
                         control_rect = rect;
-                    },
-                );
+                    });
                 text_rect = t_rect;
                 card_rect = c_rect;
             });
@@ -352,6 +460,58 @@ mod tests {
             text_rect.left() >= card_rect.left(),
             "text_rect={text_rect:?} overflowed left of card_rect={card_rect:?}"
         );
+        assert!(
+            text_rect.right() <= control_rect.left(),
+            "text_rect={text_rect:?} overlapped control_rect={control_rect:?}"
+        );
+    }
+
+    #[test]
+    fn setting_row_centers_control_vertically_with_symmetrical_top_bottom_padding() {
+        let ctx = egui::Context::default();
+        let mut text_rect = egui::Rect::NOTHING;
+        let mut control_rect = egui::Rect::NOTHING;
+        let mut row_rect = egui::Rect::NOTHING;
+        // Run two frames so cached row height settles.
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(620.0, 400.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    card_group(ui, |ui| {
+                        let (t, c, r) = setting_row_inner(
+                            ui,
+                            "英単語の判定",
+                            "文の途中でもローマ字にならない英単語を変換します。",
+                            |ui| {
+                                let mut on = true;
+                                toggle(ui, &mut on);
+                            },
+                        );
+                        text_rect = t;
+                        control_rect = c;
+                        row_rect = r;
+                    });
+                });
+            });
+            output.textures_delta.clear();
+        }
+        // No mysterious extra space above the text: text starts at the top of the row.
+        assert!(
+            (text_rect.top() - row_rect.top()).abs() <= 1.0,
+            "unexpected top gap: text_rect={text_rect:?}, row_rect={row_rect:?}"
+        );
+        // Right-hand toggle is vertically centered against the full row height.
+        assert!(
+            (control_rect.center().y - row_rect.center().y).abs() <= 1.5,
+            "control not centered: control_rect={control_rect:?}, row_rect={row_rect:?}"
+        );
+        // No horizontal overlap.
         assert!(
             text_rect.right() <= control_rect.left(),
             "text_rect={text_rect:?} overlapped control_rect={control_rect:?}"
