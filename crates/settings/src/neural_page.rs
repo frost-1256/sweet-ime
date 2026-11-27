@@ -16,15 +16,26 @@ use super::App;
 pub(super) enum ModelKind {
     Xsmall,
     Small,
+    /// sweet-zenz v1 small: zenz v3.1 small fine-tuned for Sweet IME (alpha).
+    SweetSmall,
 }
 
 impl ModelKind {
-    const ALL: [Self; 2] = [Self::Xsmall, Self::Small];
+    const ALL: [Self; 3] = [Self::Xsmall, Self::Small, Self::SweetSmall];
 
     const fn repo(self) -> &'static str {
         match self {
             Self::Xsmall => "Miwa-Keita/zenz-v3.1-xsmall",
             Self::Small => "Miwa-Keita/zenz-v3.1-small",
+            Self::SweetSmall => "haruuuuu-1256/sweet-zenz-v1-small-gguf",
+        }
+    }
+
+    /// The `.gguf` file to download instead of the safetensors model.
+    const fn gguf_file(self) -> Option<&'static str> {
+        match self {
+            Self::Xsmall | Self::Small => None,
+            Self::SweetSmall => Some("ggml-model-Q8_0.gguf"),
         }
     }
 
@@ -32,6 +43,7 @@ impl ModelKind {
         match self {
             Self::Xsmall => "zenz v3.1 xsmall",
             Self::Small => "zenz v3.1 small",
+            Self::SweetSmall => "sweet-zenz v1 small",
         }
     }
 
@@ -39,6 +51,7 @@ impl ModelKind {
         match self {
             Self::Xsmall => "zenz-xsmall.swz",
             Self::Small => "zenz-small.swz",
+            Self::SweetSmall => "sweet-zenz-small.swz",
         }
     }
 
@@ -46,11 +59,27 @@ impl ModelKind {
         match self {
             Self::Xsmall => "軽量・高速（約 100 MB・平均 約 3.4 ms）— ライブ変換におすすめ",
             Self::Small => "高精度（約 380 MB・平均 約 12.4 ms）— 長文や固有名詞に強い",
+            Self::SweetSmall => {
+                "small を Sweet IME 向けに追加学習（約 380 MB・small と同程度の速さ）— 同音異義語、VRChat・技術用語、ネットの言葉に強い"
+            }
         }
     }
 
     const fn recommended(self) -> bool {
         matches!(self, Self::Xsmall)
+    }
+
+    const fn alpha(self) -> bool {
+        matches!(self, Self::SweetSmall)
+    }
+
+    /// The model's name in `zenz-active.txt`.
+    const fn marker_label(self) -> &'static str {
+        match self {
+            Self::Xsmall => "xsmall",
+            Self::Small => "small",
+            Self::SweetSmall => "sweet-small",
+        }
     }
 
     fn url(self) -> String {
@@ -69,25 +98,44 @@ enum ModelSlot {
 struct ModelInventory {
     xsmall: ModelSlot,
     small: ModelSlot,
+    sweet_small: ModelSlot,
     custom_active: Option<u64>,
 }
 
 impl ModelInventory {
+    const EMPTY: Self = Self {
+        xsmall: ModelSlot::NotInstalled,
+        small: ModelSlot::NotInstalled,
+        sweet_small: ModelSlot::NotInstalled,
+        custom_active: None,
+    };
+
     fn slot(&self, kind: ModelKind) -> ModelSlot {
         match kind {
             ModelKind::Xsmall => self.xsmall,
             ModelKind::Small => self.small,
+            ModelKind::SweetSmall => self.sweet_small,
+        }
+    }
+
+    fn slot_mut(&mut self, kind: ModelKind) -> &mut ModelSlot {
+        match kind {
+            ModelKind::Xsmall => &mut self.xsmall,
+            ModelKind::Small => &mut self.small,
+            ModelKind::SweetSmall => &mut self.sweet_small,
         }
     }
 
     fn has_active(&self) -> bool {
-        matches!(self.xsmall, ModelSlot::Active(_))
-            || matches!(self.small, ModelSlot::Active(_))
+        ModelKind::ALL
+            .into_iter()
+            .any(|kind| matches!(self.slot(kind), ModelSlot::Active(_)))
             || self.custom_active.is_some()
     }
 }
 
 /// Identifies a packed `.swz` file by its size (xsmall is ~98 MB, small is ~380 MB).
+/// sweet-zenz v1 small is the size of small, so only the marker identifies it.
 fn classify_swz_size(bytes: u64) -> Option<ModelKind> {
     match bytes {
         80_000_000..=160_000_000 => Some(ModelKind::Xsmall),
@@ -137,11 +185,15 @@ fn file_fingerprint(path: &Path) -> Option<(u64, String)> {
 fn read_marker(data_dir: &Path, active_fp: &(u64, String)) -> Option<ActiveModel> {
     let text = std::fs::read_to_string(data_dir.join(ACTIVE_MARKER)).ok()?;
     let mut parts = text.split_whitespace();
-    let kind = match parts.next()? {
-        "xsmall" => ActiveModel::Builtin(ModelKind::Xsmall),
-        "small" => ActiveModel::Builtin(ModelKind::Small),
-        "custom" => ActiveModel::Custom,
-        _ => return None,
+    let label = parts.next()?;
+    let kind = if label == "custom" {
+        ActiveModel::Custom
+    } else {
+        ActiveModel::Builtin(
+            ModelKind::ALL
+                .into_iter()
+                .find(|kind| kind.marker_label() == label)?,
+        )
     };
     let size: u64 = parts.next()?.parse().ok()?;
     let hash = parts.next()?;
@@ -153,8 +205,7 @@ fn read_marker(data_dir: &Path, active_fp: &(u64, String)) -> Option<ActiveModel
 
 fn format_marker(model: ActiveModel, fp: &(u64, String)) -> String {
     let label = match model {
-        ActiveModel::Builtin(ModelKind::Xsmall) => "xsmall",
-        ActiveModel::Builtin(ModelKind::Small) => "small",
+        ActiveModel::Builtin(kind) => kind.marker_label(),
         ActiveModel::Custom => "custom",
     };
     format!("{label} {} {}", fp.0, fp.1)
@@ -184,26 +235,18 @@ fn active_model(data_dir: &Path) -> Option<(ActiveModel, u64)> {
 }
 
 fn inspect_models(data_dir: &Path) -> ModelInventory {
-    let mut inv = ModelInventory {
-        xsmall: ModelSlot::NotInstalled,
-        small: ModelSlot::NotInstalled,
-        custom_active: None,
-    };
+    let mut inv = ModelInventory::EMPTY;
     match active_model(data_dir) {
-        Some((ActiveModel::Builtin(ModelKind::Xsmall), sz)) => inv.xsmall = ModelSlot::Active(sz),
-        Some((ActiveModel::Builtin(ModelKind::Small), sz)) => inv.small = ModelSlot::Active(sz),
+        Some((ActiveModel::Builtin(kind), sz)) => *inv.slot_mut(kind) = ModelSlot::Active(sz),
         Some((ActiveModel::Custom, sz)) => inv.custom_active = Some(sz),
         None => {}
     }
-    if inv.xsmall == ModelSlot::NotInstalled
-        && let Some(sz) = file_size(&data_dir.join(ModelKind::Xsmall.stored_filename()))
-    {
-        inv.xsmall = ModelSlot::Downloaded(sz);
-    }
-    if inv.small == ModelSlot::NotInstalled
-        && let Some(sz) = file_size(&data_dir.join(ModelKind::Small.stored_filename()))
-    {
-        inv.small = ModelSlot::Downloaded(sz);
+    for kind in ModelKind::ALL {
+        if inv.slot(kind) == ModelSlot::NotInstalled
+            && let Some(sz) = file_size(&data_dir.join(kind.stored_filename()))
+        {
+            *inv.slot_mut(kind) = ModelSlot::Downloaded(sz);
+        }
     }
     inv
 }
@@ -626,12 +669,18 @@ fn start_download(
             .arg("-Out")
             .arg(out_path)
             .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        if let Some(file) = target.gguf_file() {
+            c.args(["-File", file]);
+        }
         c
     };
     #[cfg(not(windows))]
     let mut command = {
         let mut c = std::process::Command::new("sh");
         c.arg(&script).arg(target.repo()).arg(out_path);
+        if let Some(file) = target.gguf_file() {
+            c.arg(file);
+        }
         c
     };
     let mut child = command
@@ -856,11 +905,7 @@ impl App {
         let inv = data_dir
             .as_deref()
             .map(inspect_models)
-            .unwrap_or(ModelInventory {
-                xsmall: ModelSlot::NotInstalled,
-                small: ModelSlot::NotInstalled,
-                custom_active: None,
-            });
+            .unwrap_or(ModelInventory::EMPTY);
 
         let mut changed = false;
         card_group(ui, |ui| {
@@ -933,6 +978,10 @@ impl App {
                             }
                             if kind.recommended() {
                                 badge(ui, "おすすめ", subtle_fill, subtle_ink);
+                            }
+                            if kind.alpha() {
+                                let warn = ui.visuals().warn_fg_color;
+                                badge(ui, "アルファ版", warn, contrasting_ink(warn));
                             }
                         });
                         ui.label(RichText::new(kind.summary()).small().weak());
@@ -1175,7 +1224,7 @@ impl App {
         ui.add_space(4.0);
         ui.label(
             RichText::new(
-                "zenz モデル（作者: Miwa Keita、ライセンス: CC BY-SA 4.0）は Sweet IME には同梱されず、Hugging Face からダウンロードして変換します。複数モデルを導入しておくと再ダウンロードなしで切り替えられます。",
+                "zenz モデル（作者: Miwa Keita、ライセンス: CC BY-SA 4.0）と、zenz v3.1 small を追加学習した sweet-zenz モデル（ライセンス: CC BY-SA 4.0）は Sweet IME には同梱されず、Hugging Face からダウンロードして変換します。sweet-zenz はアルファ版で、今後の更新で変換結果が変わることがあります。複数モデルを導入しておくと再ダウンロードなしで切り替えられます。",
             )
             .small()
             .weak(),
@@ -1184,6 +1233,8 @@ impl App {
             ui.hyperlink_to("xsmall モデルページ", ModelKind::Xsmall.url());
             ui.label(RichText::new("·").weak());
             ui.hyperlink_to("small モデルページ", ModelKind::Small.url());
+            ui.label(RichText::new("·").weak());
+            ui.hyperlink_to("sweet-zenz モデルページ", ModelKind::SweetSmall.url());
             if let Some(dir) = &data_dir {
                 ui.label(RichText::new("·").weak());
                 if ui.small_button("モデルフォルダを開く").clicked() {
@@ -1255,6 +1306,35 @@ mod tests {
         let inv = inspect_models(&dir);
         assert_eq!(inv.xsmall, ModelSlot::NotInstalled);
         assert!(!inv.has_active());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweet_zenz_and_small_switch_although_they_have_the_same_size() {
+        let dir = temp_dir("sweet-small");
+        let write = |path: &Path, byte: u8| {
+            use std::io::Write;
+            let mut f = std::fs::File::create(path).unwrap();
+            f.write_all(&[byte; 4096]).unwrap();
+            f.set_len(380_000_000).unwrap();
+        };
+        // An older install: small is active without a marker.
+        write(&dir.join("zenz.swz"), 1);
+        write(&dir.join(ModelKind::SweetSmall.stored_filename()), 2);
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.small, ModelSlot::Active(380_000_000));
+        assert_eq!(inv.sweet_small, ModelSlot::Downloaded(380_000_000));
+
+        activate_model(&dir, ModelKind::SweetSmall).unwrap();
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.sweet_small, ModelSlot::Active(380_000_000));
+        assert_eq!(inv.small, ModelSlot::Downloaded(380_000_000));
+
+        activate_model(&dir, ModelKind::Small).unwrap();
+        let inv = inspect_models(&dir);
+        assert_eq!(inv.small, ModelSlot::Active(380_000_000));
+        assert_eq!(inv.sweet_small, ModelSlot::Downloaded(380_000_000));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

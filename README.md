@@ -150,8 +150,9 @@ Install `SweetIME-Android.apk`, open **Sweet IME** to enable the keyboard, and s
 
 ### AI Conversion Model (Optional)
 Because the zenz model is licensed under CC BY-SA 4.0, it is downloaded separately on demand:
-- **Windows / Linux / macOS**: Open **設定 → AI 変換** and click download (`zenz-v3.1-xsmall` or `small`). On Linux, restart fcitx5 (`fcitx5 -r`) afterward so the running process loads the new model; on macOS, log out and back in.
-- **Android**: Open **AI 変換** in the app (~100 MB for `xsmall`, ~380 MB for `small`).
+- **Windows / Linux / macOS**: Open **設定 → AI 変換** and click download (`zenz-v3.1-xsmall`, `small`, or `sweet-zenz-v1-small`). On Linux, restart fcitx5 (`fcitx5 -r`) afterward so the running process loads the new model; on macOS, log out and back in.
+- **Android**: Open **AI 変換** in the app (~100 MB for `xsmall`, ~380 MB for `small` and `sweet-zenz-v1-small`).
+- **sweet-zenz v1 small (alpha)**: [`zenz-v3.1-small` fine-tuned](https://huggingface.co/haruuuuu-1256/sweet-zenz-v1-small-gguf) for homophones and for VRChat, technical, and internet terms. It is downloaded as `ggml-model-Q8_0.gguf` and converted on the device. Its results may change in later releases.
 
 ---
 
@@ -292,3 +293,4 @@ cargo test --locked --workspace --all-targets -- --test-threads=1
 - **System dictionary (`system.dict`):** Derived from Mozc OSS (including IPAdic and Okinawa dictionary) and [SudachiDict](https://github.com/WorksApplications/SudachiDict) (Apache-2.0, see [assets/licenses/sudachidict.txt](assets/licenses/sudachidict.txt)).
 - **English word list:** Derived from SCOWL / ESDB by Kevin Atkinson ([assets/licenses/english-words.txt](assets/licenses/english-words.txt)).
 - **zenz model (optional, not bundled):** By Miwa Keita, licensed under CC BY-SA 4.0.
+- **sweet-zenz model (optional, not bundled):** Fine-tuned from `zenz-v3.1-small`, licensed under CC BY-SA 4.0. See its [model card](https://huggingface.co/haruuuuu-1256/sweet-zenz-v1-small-gguf) for the training data and its licenses.

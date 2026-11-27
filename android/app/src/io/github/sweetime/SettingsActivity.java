@@ -642,7 +642,7 @@ public final class SettingsActivity extends Activity {
             {"プログラム", "MIT License"},
             {"変換辞書", "Mozc OSS 辞書(IPAdic・沖縄辞書を含む)と SudachiDict (Works Applications Co., Ltd.、Apache License 2.0) から作成。"},
             {"英単語リスト", "SCOWL / ESDB(Kevin Atkinson)から作成。"},
-            {"AI モデル(別途ダウンロード)", "zenz(作者: Miwa Keita)、CC BY-SA 4.0。アプリには含まれていません。"},
+            {"AI モデル(別途ダウンロード)", "zenz(作者: Miwa Keita)と、zenz を追加学習した sweet-zenz。どちらも CC BY-SA 4.0。アプリには含まれていません。"},
         }) {
             TextView h = text(l[0], 15, theme.text);
             h.setPadding(0, dp(8), 0, 0);
@@ -1146,10 +1146,16 @@ public final class SettingsActivity extends Activity {
 
     // ---- AI conversion ----
 
-    /** zenz models offered for download: Hugging Face id and label. */
+    /**
+     * zenz models offered for download: Hugging Face id, label, the .gguf file
+     * to convert (empty for the safetensors model), and the name to show.
+     */
     private static final String[][] MODELS = {
-        {"Miwa-Keita/zenz-v3.1-xsmall", "xsmall(約 100 MB・速い)"},
-        {"Miwa-Keita/zenz-v3.1-small", "small(約 380 MB・高精度・遅い)"},
+        {"Miwa-Keita/zenz-v3.1-xsmall", "xsmall(約 100 MB・速い)", "", "Miwa-Keita/zenz-v3.1-xsmall"},
+        {"Miwa-Keita/zenz-v3.1-small", "small(約 380 MB・高精度・遅い)", "", "Miwa-Keita/zenz-v3.1-small"},
+        {"haruuuuu-1256/sweet-zenz-v1-small-gguf",
+                "sweet-zenz v1 small【アルファ版】(約 380 MB・small を追加学習・同音異義語や VRChat・技術用語に強い)",
+                "ggml-model-Q8_0.gguf", "haruuuuu-1256/sweet-zenz-v1-small (アルファ版)"},
     };
     private TextView aiStatus;
     private Button aiDownload;
@@ -1191,7 +1197,7 @@ public final class SettingsActivity extends Activity {
         }
         model.addView(group);
         aiDownload = button("モデルをダウンロード");
-        aiDownload.setOnClickListener(v -> startDownload(MODELS[aiModel][0]));
+        aiDownload.setOnClickListener(v -> startDownload(MODELS[aiModel]));
         LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) aiDownload.getLayoutParams();
         lp.topMargin = dp(8);
         model.addView(aiDownload);
@@ -1204,7 +1210,8 @@ public final class SettingsActivity extends Activity {
             updateAi(null);
         });
         model.addView(aiRemove);
-        model.addView(text("zenz モデル(作者: Miwa Keita、ライセンス: CC BY-SA 4.0)を Hugging Face から"
+        model.addView(text("zenz モデル(作者: Miwa Keita、ライセンス: CC BY-SA 4.0)、または zenz を追加学習した"
+                + " sweet-zenz モデル(アルファ版、ライセンス: CC BY-SA 4.0)を Hugging Face から"
                 + "ダウンロードして、この端末の中で変換します。モデルはアプリに含まれていません。"
                 + "変換が正確になる代わりに、電池と処理時間を使います。", 13, theme.subText));
         updateAi(null);
@@ -1227,8 +1234,10 @@ public final class SettingsActivity extends Activity {
         aiRemove.setVisibility(f.exists() && !downloading ? View.VISIBLE : View.GONE);
     }
 
-    /** Downloads `model` from Hugging Face and converts it on a background thread. */
-    private void startDownload(String model) {
+    /** Downloads `spec` (a MODELS row) from Hugging Face and converts it on a background thread. */
+    private void startDownload(String[] spec) {
+        String model = spec[0];
+        String gguf = spec[2];
         if (downloading) return;
         downloading = true;
         updateAi("ダウンロードを準備しています…");
@@ -1237,12 +1246,17 @@ public final class SettingsActivity extends Activity {
             String error = null;
             try {
                 if (!dir.exists() && !dir.mkdirs()) throw new IOException("mkdir " + dir);
-                for (String name : new String[] {"config.json", "vocab.json", "merges.txt", "model.safetensors"}) {
+                String[] names = gguf.isEmpty()
+                        ? new String[] {"config.json", "vocab.json", "merges.txt", "model.safetensors"}
+                        : new String[] {gguf};
+                for (String name : names) {
                     download("https://huggingface.co/" + model + "/resolve/main/" + name, new File(dir, name), name);
                 }
                 runOnUiThread(() -> updateAi("モデルを変換しています…"));
-                error = Native.packZenz(dir.getAbsolutePath(), zenzFile().getAbsolutePath());
-                if (error == null) Files.write(zenzNameFile().toPath(), model.getBytes(StandardCharsets.UTF_8));
+                // A .gguf file is converted directly; otherwise the whole directory.
+                File source = gguf.isEmpty() ? dir : new File(dir, gguf);
+                error = Native.packZenz(source.getAbsolutePath(), zenzFile().getAbsolutePath());
+                if (error == null) Files.write(zenzNameFile().toPath(), spec[3].getBytes(StandardCharsets.UTF_8));
             } catch (java.net.UnknownHostException e) {
                 error = "サーバーに接続できません。インターネット接続と、このアプリのネットワークアクセスが"
                         + "許可されているかを確認してください。";

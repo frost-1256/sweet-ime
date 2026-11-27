@@ -67,7 +67,10 @@ final class Native {
     /** Shows a refined live conversion; null when nothing changed. */
     static native String applyLive(long ctx, String reading, String surface);
 
-    /** Converts a downloaded Hugging Face zenz model; null on success, else the error. */
+    /**
+     * Converts a downloaded Hugging Face zenz model (its directory, or a .gguf
+     * file); null on success, else the error.
+     */
     static native String packZenz(String hfDir, String out);
 
     /** Whether conversion uses the zenz model now (loads or drops it as needed). */

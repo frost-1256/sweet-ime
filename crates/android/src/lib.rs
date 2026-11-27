@@ -96,7 +96,7 @@ pub fn refresh_converter() {
 }
 
 /// Converts `hf_dir` (config.json, model.safetensors, vocab.json,
-/// merges.txt from Hugging Face) into the model file the IME loads, then
+/// merges.txt from Hugging Face) or a GPT-2 `.gguf` file into the model file the IME loads, then
 /// checks that it loads. Returns an error message on failure.
 pub fn pack_zenz(hf_dir: &Path, out: &Path) -> Result<(), String> {
     let tmp = out.with_extension("swz.new");

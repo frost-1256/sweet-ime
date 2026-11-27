@@ -10,10 +10,15 @@
 .PARAMETER Model
   Hugging Face repository. zenz-v3.1-xsmall (~100 MB, fastest) or
   zenz-v3.1-small (~380 MB, more accurate, ~4x slower).
+
+.PARAMETER File
+  A GPT-2 .gguf file in that repository to convert instead of the
+  safetensors model, such as ggml-model-Q8_0.gguf.
 #>
 param(
     [string]$Model = 'Miwa-Keita/zenz-v3.1-xsmall',
-    [string]$Out = "$env:LOCALAPPDATA\SweetIME\zenz.swz"
+    [string]$Out = "$env:LOCALAPPDATA\SweetIME\zenz.swz",
+    [string]$File = ''
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -24,18 +29,26 @@ $tool = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $tool) { throw 'sweet-zenz-pack.exe not found' }
 
-Write-Host "The zenz model is licensed under CC BY-SA 4.0:"
+Write-Host "The model is licensed under CC BY-SA 4.0:"
 Write-Host "  https://huggingface.co/$Model"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("sweet-zenz-" + [Guid]::NewGuid())
 New-Item -ItemType Directory $tmp | Out-Null
 try {
-    foreach ($f in 'config.json', 'vocab.json', 'merges.txt', 'model.safetensors') {
+    if ($File) {
+        if ($File -notmatch '^[\w.-]+\.gguf$') { throw "not a .gguf file name: $File" }
+        $files = @($File)
+        $source = Join-Path $tmp $File
+    } else {
+        $files = @('config.json', 'vocab.json', 'merges.txt', 'model.safetensors')
+        $source = $tmp
+    }
+    foreach ($f in $files) {
         Write-Host "downloading $f"
         Invoke-WebRequest "https://huggingface.co/$Model/resolve/main/$f" -OutFile (Join-Path $tmp $f)
     }
     New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
     $staging = "$Out.new"
-    & $tool $tmp $staging
+    & $tool $source $staging
     if ($LASTEXITCODE) { throw 'conversion failed' }
     if (Test-Path $Out) {
         # The IME may have the old file mapped; move it aside.
