@@ -256,7 +256,8 @@ fn balanced_row(
                     if ctrl_pad > 0.0 {
                         ui.add_space(ctrl_pad);
                     }
-                    let inner_max = ui.available_rect_before_wrap();
+                    let mut inner_max = ui.available_rect_before_wrap();
+                    inner_max.max.y = inner_max.min.y;
                     let inner = ui.scope_builder(
                         egui::UiBuilder::new()
                             .max_rect(inner_max)

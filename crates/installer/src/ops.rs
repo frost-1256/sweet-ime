@@ -126,10 +126,16 @@ fn delete_later(p: &Path) {
 }
 
 pub fn copy_files(files: &[Entry], target: &Path) -> Result<()> {
-    // Reclaim leftovers from earlier updates first to maximize free disk space.
+    // Reclaim leftovers from earlier updates first to maximize free disk space,
+    // excluding any core DLLs present in the incoming payload.
     remove_old_files(target);
+    let incoming_cores: Vec<&str> = files
+        .iter()
+        .filter_map(|f| Path::new(&f.name).file_name().and_then(|n| n.to_str()))
+        .filter(|n| n.to_ascii_lowercase().starts_with("sweet_tsf_core-"))
+        .collect();
     for arch in ["x64", "x86"] {
-        remove_old_cores(&target.join(arch));
+        remove_old_cores(&target.join(arch), &incoming_cores);
     }
     // core.txt last: running applications switch to the core it names, so
     // that core must already be in place.
@@ -140,22 +146,26 @@ pub fn copy_files(files: &[Entry], target: &Path) -> Result<()> {
     // Leftovers from earlier updates that are no longer in use.
     remove_old_files(target);
     for arch in ["x64", "x86"] {
-        remove_old_cores(&target.join(arch));
+        remove_old_cores(&target.join(arch), &[]);
     }
     Ok(())
 }
 
-/// Deletes the TSF cores that `core.txt` no longer names. Applications that
-/// have not switched to the new core yet keep theirs loaded, so those go at
-/// the next restart.
-fn remove_old_cores(dir: &Path) {
+/// Deletes the TSF cores that `core.txt` no longer names (and are not in
+/// `keep`). Applications that have not switched to the new core yet keep
+/// theirs loaded, so those go at the next restart.
+fn remove_old_cores(dir: &Path, keep: &[&str]) {
     let Ok(current) = std::fs::read_to_string(dir.join("core.txt")) else { return };
     let current = current.trim();
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let lower = name.to_ascii_lowercase();
-        if lower.starts_with("sweet_tsf_core-") && lower.ends_with(".dll") && !name.eq_ignore_ascii_case(current) {
+        if lower.starts_with("sweet_tsf_core-")
+            && lower.ends_with(".dll")
+            && !name.eq_ignore_ascii_case(current)
+            && !keep.iter().any(|k| name.eq_ignore_ascii_case(k))
+        {
             delete_later(&e.path());
         }
     }
