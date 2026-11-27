@@ -85,8 +85,7 @@ jobs:
                 and=true; tst=true
                 ;;
               android/*)
-                # A skipped matrix job does not publish the branch's required checks.
-                and=true; lnx=true
+                and=true
                 ;;
               crates/fcitx5/*)
                 lnx=true; tst=true
@@ -340,7 +339,7 @@ jobs:
   linux:
     name: Test fcitx5 (${{ matrix.arch }})
     needs: changes
-    if: needs.changes.outputs.linux == 'true'
+    # Always expand the matrix so both required checks run for every PR.
     strategy:
       fail-fast: false
       matrix:
