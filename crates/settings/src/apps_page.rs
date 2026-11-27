@@ -110,7 +110,10 @@ impl AppsPage {
                         .desired_width(220.0),
                 );
                 mode_combo(ui, "new_mode", &mut self.mode);
-                if ui.add_enabled(!self.exe.trim().is_empty(), egui::Button::new("追加")).clicked() {
+                if ui
+                    .add_enabled(!self.exe.trim().is_empty(), sweet_ui::accent_button(ui, "追加"))
+                    .clicked()
+                {
                     let exe = self.exe.clone();
                     if self.add(&exe, self.mode) {
                         self.exe.clear();

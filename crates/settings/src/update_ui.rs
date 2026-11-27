@@ -24,7 +24,7 @@ fn notes(ui: &mut egui::Ui, r: &Release, height: f32) {
 fn actions(ui: &mut egui::Ui, u: &mut Updater, r: &Release) {
     ui.horizontal(|ui| {
         #[cfg(any(windows, target_os = "macos"))]
-        if ui.add(sweet_ui::primary_button("更新する")).clicked() {
+        if ui.add(sweet_ui::primary_button(ui, "更新する")).clicked() {
             u.install(ui.ctx());
         }
         #[cfg(not(any(windows, target_os = "macos")))]
@@ -205,7 +205,7 @@ impl eframe::App for Prompt {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             #[cfg(windows)]
-                            if ui.add(sweet_ui::primary_button("更新する")).clicked() {
+                            if ui.add(sweet_ui::primary_button(ui, "更新する")).clicked() {
                                 u.install(&ctx);
                             }
                             if ui.add(egui::Button::new("あとで").min_size(Vec2::new(90.0, 34.0))).clicked() {

@@ -68,19 +68,46 @@ pub fn ui(
 
     // Separate User Theme card.
     card_frame(ui).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("ユーザーテーマ").size(15.5));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let card_w = ui.available_width();
+        ui.set_width(card_w);
+        ui.allocate_ui_with_layout(
+            vec2(card_w, ui.spacing().interact_size.y),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
                 let selected = *current == Theme::Custom;
                 if selected {
-                    ui.label(RichText::new("使用中").small().weak());
-                } else if ui.button("ユーザーテーマを使う").clicked() {
+                    let accent = ui.visuals().selection.bg_fill;
+                    egui::Frame::new()
+                        .fill(accent)
+                        .corner_radius(CornerRadius::same(10))
+                        .inner_margin(egui::Margin::symmetric(8, 2))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("使用中")
+                                    .size(11.5)
+                                    .strong()
+                                    .color(sweet_ui::contrasting_ink(accent)),
+                            );
+                        });
+                } else if ui
+                    .add(sweet_ui::accent_button(ui, "ユーザーテーマを使う"))
+                    .clicked()
+                {
                     *current = Theme::Custom;
                     change.theme_selected = true;
                 }
-            });
-        });
+                ui.add_space(12.0);
+                let title_w = ui.available_width().max(0.0);
+                ui.allocate_ui_with_layout(
+                    vec2(title_w, 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.set_max_width(title_w);
+                        ui.label(RichText::new("ユーザーテーマ").size(15.5));
+                    },
+                );
+            },
+        );
         ui.label(
             RichText::new(
                 "既存テーマとは別に、色や背景の透過度を自由に設定して保存できます。",
@@ -88,7 +115,7 @@ pub fn ui(
             .small()
             .weak(),
         );
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
         let mut edited = false;
         ui.horizontal_top(|ui| {
@@ -215,14 +242,15 @@ pub fn ui(
                     );
                 } else {
                     ui.horizontal(|ui| {
+                        let field_w = (ui.available_width() - 90.0).clamp(240.0, 360.0);
                         ui.add(
                             egui::TextEdit::singleline(save_name)
                                 .hint_text("テーマ名を入力")
-                                .desired_width(170.0),
+                                .desired_width(field_w),
                         );
                         let clean_name = sanitize_theme_name(save_name);
                         if ui
-                            .add_enabled(!clean_name.is_empty(), egui::Button::new("保存"))
+                            .add_enabled(!clean_name.is_empty(), sweet_ui::accent_button(ui, "保存"))
                             .clicked()
                         {
                             if let Some(existing) =
@@ -263,11 +291,15 @@ pub fn ui(
                             *save_name = saved.name.clone();
                             edited = true;
                         }
-                        ui.horizontal(|ui| {
-                            if ui.small_button("削除").clicked() {
-                                remove_idx = Some(i);
-                            }
-                        });
+                        if ui
+                            .add_sized(
+                                [TILE.x, 24.0],
+                                egui::Button::new(RichText::new("削除").small()),
+                            )
+                            .clicked()
+                        {
+                            remove_idx = Some(i);
+                        }
                     });
                 }
             });
@@ -293,7 +325,13 @@ fn color_field(ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3]) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        ui.add_sized([74.0, 22.0], egui::Label::new(label));
+        ui.allocate_ui_with_layout(
+            vec2(72.0, 22.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
         changed = ui.color_edit_button_srgb(rgb).changed();
         let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
         ui.label(RichText::new(hex).small().weak().monospace());

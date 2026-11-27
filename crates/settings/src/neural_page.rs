@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
 use sweet_engine::paths;
-use sweet_ui::eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Vec2};
+use sweet_ui::eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText};
 use sweet_ui::{
-    card_frame, card_group, contrasting_ink, section_header, setting_divider, setting_row, toggle,
+    card_frame, card_group, contrasting_ink, section_header, setting_divider, setting_row,
+    setting_row_custom, toggle,
 };
 
 use super::App;
@@ -431,161 +432,105 @@ impl App {
                 }
                 let slot = inv.slot(kind);
                 let is_downloading = downloading_kind == Some(kind);
-                Frame::new()
-                    .inner_margin(Margin::symmetric(0, 12))
-                    .show(ui, |ui| {
-                        let row_size =
-                            Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
-                        ui.allocate_ui_with_layout(
-                            row_size,
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if is_downloading {
-                                    ui.label(RichText::new("ダウンロード中…").small().weak());
-                                    ui.spinner();
-                                } else {
-                                    match slot {
-                                        ModelSlot::Active(_) => {
-                                            if ui
-                                                .add_enabled(!busy, egui::Button::new("削除"))
-                                                .clicked()
-                                            {
-                                                action = Some(ModelAction::Delete(kind));
-                                            }
-                                        }
-                                        ModelSlot::Downloaded(_) => {
-                                            if ui
-                                                .add_enabled(!busy, egui::Button::new("削除"))
-                                                .clicked()
-                                            {
-                                                action = Some(ModelAction::Delete(kind));
-                                            }
-                                            let use_btn = egui::Button::new(
-                                                RichText::new("このモデルを使う")
-                                                    .color(contrasting_ink(accent)),
-                                            )
-                                            .fill(accent);
-                                            if ui.add_enabled(!busy, use_btn).clicked() {
-                                                action = Some(ModelAction::Activate(kind));
-                                            }
-                                        }
-                                        ModelSlot::NotInstalled => {
-                                            if ui
-                                                .add_enabled(
-                                                    !busy,
-                                                    egui::Button::new("ダウンロードして使う"),
-                                                )
-                                                .clicked()
-                                            {
-                                                action = Some(ModelAction::Download(kind));
-                                            }
-                                        }
+                setting_row_custom(
+                    ui,
+                    ("neural_model", kind.repo()),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label(RichText::new(kind.name()).size(15.5).strong());
+                            match slot {
+                                ModelSlot::Active(_) => {
+                                    badge(ui, "使用中", accent, contrasting_ink(accent));
+                                }
+                                ModelSlot::Downloaded(_) => {
+                                    badge(ui, "ダウンロード済み", subtle_fill, subtle_ink);
+                                }
+                                ModelSlot::NotInstalled => {
+                                    ui.label(RichText::new("未導入").small().weak());
+                                }
+                            }
+                            if kind.recommended() {
+                                badge(ui, "おすすめ", subtle_fill, subtle_ink);
+                            }
+                        });
+                        ui.label(RichText::new(kind.summary()).small().weak());
+                        if let ModelSlot::Active(sz) | ModelSlot::Downloaded(sz) = slot {
+                            ui.label(
+                                RichText::new(format!("ディスク使用量: {}", human_size(sz)))
+                                    .small()
+                                    .weak(),
+                            );
+                        }
+                    },
+                    |ui| {
+                        if is_downloading {
+                            ui.label(RichText::new("ダウンロード中…").small().weak());
+                            ui.spinner();
+                        } else {
+                            match slot {
+                                ModelSlot::Active(_) => {
+                                    if ui.add_enabled(!busy, egui::Button::new("削除")).clicked()
+                                    {
+                                        action = Some(ModelAction::Delete(kind));
                                     }
                                 }
-                                ui.add_space(12.0);
-                                let text_width = ui.available_width().max(0.0);
-                                ui.allocate_ui_with_layout(
-                                    Vec2::new(text_width, 0.0),
-                                    egui::Layout::top_down(egui::Align::LEFT),
-                                    |ui| {
-                                        ui.set_max_width(text_width);
-                                        ui.spacing_mut().item_spacing.y = 4.0;
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 6.0;
-                                            ui.label(
-                                                RichText::new(kind.name()).size(15.5).strong(),
-                                            );
-                                            match slot {
-                                                ModelSlot::Active(_) => {
-                                                    badge(
-                                                        ui,
-                                                        "使用中",
-                                                        accent,
-                                                        contrasting_ink(accent),
-                                                    );
-                                                }
-                                                ModelSlot::Downloaded(_) => {
-                                                    badge(
-                                                        ui,
-                                                        "ダウンロード済み",
-                                                        subtle_fill,
-                                                        subtle_ink,
-                                                    );
-                                                }
-                                                ModelSlot::NotInstalled => {
-                                                    ui.label(
-                                                        RichText::new("未導入").small().weak(),
-                                                    );
-                                                }
-                                            }
-                                            if kind.recommended() {
-                                                badge(ui, "おすすめ", subtle_fill, subtle_ink);
-                                            }
-                                        });
-                                        ui.label(RichText::new(kind.summary()).small().weak());
-                                        if let ModelSlot::Active(sz) | ModelSlot::Downloaded(sz) =
-                                            slot
-                                        {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "ディスク使用量: {}",
-                                                    human_size(sz)
-                                                ))
-                                                .small()
-                                                .weak(),
-                                            );
-                                        }
-                                    },
-                                );
-                            },
-                        );
-                    });
+                                ModelSlot::Downloaded(_) => {
+                                    if ui.add_enabled(!busy, egui::Button::new("削除")).clicked()
+                                    {
+                                        action = Some(ModelAction::Delete(kind));
+                                    }
+                                    let use_btn = sweet_ui::accent_button(ui, "このモデルを使う");
+                                    if ui.add_enabled(!busy, use_btn).clicked() {
+                                        action = Some(ModelAction::Activate(kind));
+                                    }
+                                }
+                                ModelSlot::NotInstalled => {
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            sweet_ui::accent_button(ui, "ダウンロードして使う"),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(ModelAction::Download(kind));
+                                    }
+                                }
+                            }
+                        }
+                    },
+                );
             }
 
             if let Some(sz) = inv.custom_active {
                 setting_divider(ui);
-                Frame::new()
-                    .inner_margin(Margin::symmetric(0, 12))
-                    .show(ui, |ui| {
-                        let row_size =
-                            Vec2::new(ui.available_width(), ui.spacing().interact_size.y);
-                        ui.allocate_ui_with_layout(
-                            row_size,
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.add_enabled(!busy, egui::Button::new("削除")).clicked() {
-                                    action = Some(ModelAction::DeleteCustom);
-                                }
-                                ui.add_space(12.0);
-                                let text_width = ui.available_width().max(0.0);
-                                ui.allocate_ui_with_layout(
-                                    Vec2::new(text_width, 0.0),
-                                    egui::Layout::top_down(egui::Align::LEFT),
-                                    |ui| {
-                                        ui.set_max_width(text_width);
-                                        ui.spacing_mut().item_spacing.y = 4.0;
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 6.0;
-                                            ui.label(
-                                                RichText::new("カスタムモデル (zenz.swz)")
-                                                    .size(15.5)
-                                                    .strong(),
-                                            );
-                                            badge(ui, "使用中", accent, contrasting_ink(accent));
-                                        });
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "ディスク使用量: {}",
-                                                human_size(sz)
-                                            ))
-                                            .small()
-                                            .weak(),
-                                        );
-                                    },
-                                );
-                            },
+                setting_row_custom(
+                    ui,
+                    "neural_custom_model",
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label(
+                                RichText::new("カスタムモデル (zenz.swz)")
+                                    .size(15.5)
+                                    .strong(),
+                            );
+                            badge(ui, "使用中", accent, contrasting_ink(accent));
+                        });
+                        ui.label(
+                            RichText::new(format!("ディスク使用量: {}", human_size(sz)))
+                                .small()
+                                .weak(),
                         );
-                    });
+                    },
+                    |ui| {
+                        if ui.add_enabled(!busy, egui::Button::new("削除")).clicked() {
+                            action = Some(ModelAction::DeleteCustom);
+                        }
+                    },
+                );
             }
         });
 

@@ -83,7 +83,7 @@ impl RomajiPage {
         ui.add_space(4.0);
         let mut changed = false;
         ui.horizontal(|ui| {
-            if ui.add(sweet_ui::primary_button("行を追加")).clicked() {
+            if ui.add(sweet_ui::primary_button(ui, "行を追加")).clicked() {
                 self.rules.insert(0, Rule::default());
                 self.filter.clear();
             }

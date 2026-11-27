@@ -111,7 +111,7 @@ impl DictPage {
                 } else {
                     "登録"
                 };
-                if ui.add(sweet_ui::primary_button(label)).clicked() {
+                if ui.add(sweet_ui::primary_button(ui, label)).clicked() {
                     let r = match self.editing {
                         Some(i) => {
                             dict.replace(i, &self.reading, &self.surface, &self.pos, &self.comment)
