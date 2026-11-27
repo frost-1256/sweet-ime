@@ -235,6 +235,8 @@ shift_one_word = on    # Shift 英字入力を 1 単語で日本語へ戻す
 
 ## 開発・ビルド
 
+報告や PR の作り方は [貢献ガイド](CONTRIBUTING.ja.md)を参照してください。
+
 <details>
 <summary>ソースからのビルドとテスト</summary>
 
