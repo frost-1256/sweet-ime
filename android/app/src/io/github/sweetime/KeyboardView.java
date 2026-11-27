@@ -399,6 +399,14 @@ final class KeyboardView extends View {
     }
 
     /** Back to the letters (after typing a symbol). */
+    /** Drops a pending one-shot Shift (a new editor); Caps Lock stays. */
+    void clearShift() {
+        if (!capsLock && shift) {
+            shift = false;
+            invalidate();
+        }
+    }
+
     void showLetters() {
         if (page != 0) {
             page = 0;
