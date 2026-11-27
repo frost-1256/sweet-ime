@@ -215,10 +215,11 @@ pub fn ui(
                     );
                 } else {
                     ui.horizontal(|ui| {
+                        let field_w = (ui.available_width() - 90.0).clamp(240.0, 360.0);
                         ui.add(
                             egui::TextEdit::singleline(save_name)
                                 .hint_text("テーマ名を入力")
-                                .desired_width(170.0),
+                                .desired_width(field_w),
                         );
                         let clean_name = sanitize_theme_name(save_name);
                         if ui
