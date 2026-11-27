@@ -14,11 +14,12 @@ use windows::Win32::Foundation::{
     COLORREF, E_FAIL, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_GRADIENT_STOP,
-    D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F,
+    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_WRAP,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_WRAP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PRESENT_OPTIONS_IMMEDIATELY,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
@@ -46,12 +47,13 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    GA_ROOT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
-    MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    PostMessageW, SetTimer, SetWindowLongPtrW, GWLP_HWNDPARENT, WM_APP, SetWindowPos, ShowWindow, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER,
-    ULW_ALPHA, ULW_OPAQUE, UpdateLayeredWindow, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GA_ROOT,
+    GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW,
+    KillTimer, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, PostMessageW, RegisterClassExW, SW_HIDE,
+    SWP_NOACTIVATE, SWP_NOREDRAW, SWP_NOZORDER, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA, ULW_OPAQUE,
+    UpdateLayeredWindow, WM_APP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows_core::{Error, HSTRING, Interface, PCWSTR, Result, w};
 
@@ -83,6 +85,7 @@ const MIN_W: f32 = 140.0;
 const FADE_MS: f32 = 90.0;
 const FADE_OUT_MS: f32 = 90.0;
 const SLIDE_MS: f32 = 70.0;
+const RESIZE_MS: f32 = 110.0;
 
 fn candidate_format(dwrite: &IDWriteFactory, family: &str) -> Result<IDWriteTextFormat> {
     let locale = w!("ja-jp");
@@ -134,7 +137,12 @@ struct Palette {
 }
 
 fn rgb(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a }
+    D2D1_COLOR_F {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a,
+    }
 }
 
 pub(crate) fn read_dword(path: PCWSTR, name: PCWSTR) -> Option<u32> {
@@ -182,12 +190,21 @@ fn windows_accent(dark: bool) -> Option<D2D1_COLOR_F> {
     };
     if status.is_ok() && size >= 20 {
         let offset = if dark { 4 } else { 16 };
-        return Some(rgb(palette[offset], palette[offset + 1], palette[offset + 2], 1.0));
+        return Some(rgb(
+            palette[offset],
+            palette[offset + 1],
+            palette[offset + 2],
+            1.0,
+        ));
     }
 
     // Fallback to DWM AccentColor (stored as 0xAABBGGRR).
     let v = read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor"))?;
-    let (r, g, b) = ((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8);
+    let (r, g, b) = (
+        (v & 0xff) as u8,
+        ((v >> 8) & 0xff) as u8,
+        ((v >> 16) & 0xff) as u8,
+    );
     Some(if dark {
         let l = |c: u8| c + ((255 - c) as f32 * 0.45) as u8;
         rgb(l(r), l(g), l(b), 1.0)
@@ -248,6 +265,14 @@ struct State {
     /// Animated highlight row (fractional) and animation start.
     anim_from: f32,
     anim_start: Instant,
+    /// Animated window size (logical DIPs) and animation start.
+    size_from: (f32, f32),
+    size_to: (f32, f32),
+    size_anim_start: Instant,
+    /// Horizontal offset from anchor.left to window left (physical px).
+    last_text_x: f32,
+    /// Last window rect applied via SetWindowPos (x, y, w, h in physical px).
+    last_rect: Option<(i32, i32, i32, i32)>,
     shown_at: Instant,
     hidden_at: Option<Instant>,
     fading_out: Option<(Instant, f32)>,
@@ -287,9 +312,8 @@ pub fn post_live(hwnd: isize, reading: String, surface: String) {
 
 pub fn post_result(hwnd: isize, result: BackgroundResult) {
     let mut m = LIVE_MAILBOX.lock().unwrap_or_else(|e| e.into_inner());
-    let same_kind = |item: &BackgroundResult| {
-        std::mem::discriminant(item) == std::mem::discriminant(&result)
-    };
+    let same_kind =
+        |item: &BackgroundResult| std::mem::discriminant(item) == std::mem::discriminant(&result);
     if m.iter().any(|(h, item)| {
         *h == hwnd && matches!((item, &result), (BackgroundResult::Simeji(old), BackgroundResult::Simeji(new)) if old.id > new.id)
     }) {
@@ -297,7 +321,14 @@ pub fn post_result(hwnd: isize, result: BackgroundResult) {
     }
     m.retain(|(h, item)| *h != hwnd || !same_kind(item));
     unsafe {
-        if PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_LIVE, WPARAM(0), LPARAM(0)).is_ok() {
+        if PostMessageW(
+            Some(HWND(hwnd as *mut _)),
+            WM_APP_LIVE,
+            WPARAM(0),
+            LPARAM(0),
+        )
+        .is_ok()
+        {
             m.push((hwnd, result));
         }
     }
@@ -317,6 +348,31 @@ impl State {
 
     fn rows_top(&self) -> f32 {
         self.padding() + if self.input.is_some() { INPUT_H } else { 0.0 }
+    }
+
+    fn target_height(&self) -> f32 {
+        let padding = self.padding();
+        self.rows_top()
+            + padding
+            + if self.page_len > 0 {
+                ROW_H * self.page_len as f32 + FOOTER_H
+            } else {
+                0.0
+            }
+    }
+
+    fn animated_size(&self) -> (f32, f32) {
+        interpolate_size(
+            self.size_from,
+            self.size_to,
+            self.size_anim_start.elapsed().as_secs_f32() * 1000.0,
+        )
+    }
+
+    fn is_resizing(&self) -> bool {
+        let dx = (self.size_to.0 - self.size_from.0).abs();
+        let dy = (self.size_to.1 - self.size_from.1).abs();
+        (dx > 0.5 || dy > 0.5) && self.size_anim_start.elapsed().as_secs_f32() * 1000.0 < RESIZE_MS
     }
 
     fn highlight_row(&self) -> f32 {
@@ -343,9 +399,44 @@ impl State {
         if self.fading_out.is_some() {
             return true;
         }
-        self.anim_start.elapsed().as_secs_f32() * 1000.0 < SLIDE_MS
+        self.is_resizing()
+            || self.anim_start.elapsed().as_secs_f32() * 1000.0 < SLIDE_MS
             || (self.fade_enabled && self.shown_at.elapsed().as_secs_f32() * 1000.0 < FADE_MS)
     }
+}
+
+fn interpolate_size(from: (f32, f32), to: (f32, f32), elapsed_ms: f32) -> (f32, f32) {
+    let t = (elapsed_ms / RESIZE_MS).clamp(0.0, 1.0);
+    let e = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+    (from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e)
+}
+
+unsafe fn compute_window_rect(anchor: RECT, w: i32, h: i32, text_x: f32) -> (i32, i32, i32, i32) {
+    // Align candidate text with the composition text.
+    let mut x = anchor.left - text_x as i32;
+    let mut y = anchor.bottom + 4;
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let mon = unsafe {
+        MonitorFromPoint(
+            POINT {
+                x: anchor.left,
+                y: anchor.bottom,
+            },
+            MONITOR_DEFAULTTONEAREST,
+        )
+    };
+    if unsafe { GetMonitorInfoW(mon, &mut mi).as_bool() } {
+        let wa = mi.rcWork;
+        if y + h > wa.bottom {
+            y = anchor.top - h - 4;
+        }
+        x = x.clamp(wa.left, (wa.right - w).max(wa.left));
+        y = y.max(wa.top);
+    }
+    (x, y, w, h)
 }
 
 thread_local! {
@@ -356,7 +447,9 @@ thread_local! {
 fn with_state<R>(hwnd: HWND, f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATES.with(|s| {
         let mut s = s.borrow_mut();
-        s.iter_mut().find(|(h, _)| *h == hwnd.0 as isize).map(|(_, st)| f(st))
+        s.iter_mut()
+            .find(|(h, _)| *h == hwnd.0 as isize)
+            .map(|(_, st)| f(st))
     })
 }
 
@@ -387,11 +480,7 @@ fn register_class() {
 
 fn root_owner(owner: HWND) -> HWND {
     let root = unsafe { GetAncestor(owner, GA_ROOT) };
-    if root.is_invalid() {
-        owner
-    } else {
-        root
-    }
+    if root.is_invalid() { owner } else { root }
 }
 
 impl CandidateWindow {
@@ -429,8 +518,13 @@ impl CandidateWindow {
             let locale = HSTRING::from("ja-jp");
             let format = candidate_format(&dwrite, "")?;
             let small = dwrite.CreateTextFormat(
-                &HSTRING::from("Segoe UI Variable Text"), None, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0, &locale,
+                &HSTRING::from("Segoe UI Variable Text"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                12.0,
+                &locale,
             )?;
             let state = State {
                 d2d,
@@ -456,6 +550,11 @@ impl CandidateWindow {
                 width: MIN_W,
                 anim_from: 0.0,
                 anim_start: Instant::now(),
+                size_from: (MIN_W, 0.0),
+                size_to: (MIN_W, 0.0),
+                size_anim_start: Instant::now(),
+                last_text_x: 0.0,
+                last_rect: None,
                 shown_at: Instant::now(),
                 hidden_at: None,
                 fading_out: None,
@@ -467,7 +566,10 @@ impl CandidateWindow {
             };
             STATES.with(|s| s.borrow_mut().push((hwnd.0 as isize, Box::new(state))));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 1);
-            Ok(Self { hwnd, owner: std::cell::Cell::new(owner.map_or(0, |h| h.0 as isize)) })
+            Ok(Self {
+                hwnd,
+                owner: std::cell::Cell::new(owner.map_or(0, |h| h.0 as isize)),
+            })
         }
     }
 
@@ -515,6 +617,11 @@ impl CandidateWindow {
                     )
                 });
             let was_visible = st.visible;
+            let prev_size = if was_visible {
+                st.animated_size()
+            } else {
+                (0.0, 0.0)
+            };
             if !was_visible || st.gaming_mode != gaming_mode {
                 if gaming_mode {
                     SetTimer(Some(hwnd), RAINBOW_TIMER_ID, RAINBOW_FRAME_MS, None);
@@ -593,11 +700,15 @@ impl CandidateWindow {
                 st.pal = palette();
                 fade = window_fade
                     && !was_fading_out
-                    && st.hidden_at.is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
+                    && st
+                        .hidden_at
+                        .is_none_or(|t| t.elapsed().as_millis() > REFADE_AFTER_MS);
                 st.shown_at = if fade {
                     Instant::now()
                 } else {
-                    Instant::now().checked_sub(std::time::Duration::from_secs(1)).unwrap_or_else(Instant::now)
+                    Instant::now()
+                        .checked_sub(std::time::Duration::from_secs(1))
+                        .unwrap_or_else(Instant::now)
                 };
                 let border = st.pal.border;
                 let _ = DwmSetWindowAttribute(
@@ -608,48 +719,53 @@ impl CandidateWindow {
                 );
             }
             let padding = st.padding();
-            let height = st.rows_top()
-                + padding
-                + if st.page_len > 0 {
-                    ROW_H * st.page_len as f32 + FOOTER_H
-                } else {
-                    0.0
-                };
+            let target_size = (st.window_width(), st.target_height());
+            if !was_visible {
+                st.size_from = target_size;
+                st.size_to = target_size;
+                st.size_anim_start = Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now);
+            } else if (target_size.0 - st.size_to.0).abs() > 0.5
+                || (target_size.1 - st.size_to.1).abs() > 0.5
+            {
+                st.size_from = prev_size;
+                st.size_to = target_size;
+                st.size_anim_start = Instant::now();
+            }
+            let (cur_w, cur_h) = st.animated_size();
             let text_offset = if st.page_len > 0 { INDEX_W } else { INPUT_PAD };
+            let text_x = (padding + text_offset) * st.scale;
+            st.last_text_x = text_x;
             st.visible = true;
-            (
-                (st.window_width() * st.scale) as i32,
-                (height * st.scale) as i32,
-                (padding + text_offset) * st.scale,
-                was_visible,
-                fade,
-                st.bitmap_popup,
-                st.pal.bg_alpha,
-            )
+            let w_px = (cur_w * st.scale).round().max(1.0) as i32;
+            let h_px = (cur_h * st.scale).round().max(1.0) as i32;
+            let rect = compute_window_rect(anchor, w_px, h_px, text_x);
+            st.last_rect = Some(rect);
+            (rect, was_visible, fade, st.bitmap_popup, st.pal.bg_alpha)
         });
-        let Some((w, h, text_x, was_visible, fade, bitmap_popup, bg_alpha)) = geom else {
+        let Some(((x, y, w, h), was_visible, fade, bitmap_popup, bg_alpha)) = geom else {
             return;
         };
         unsafe {
             let _ = KillTimer(Some(self.hwnd), HIDE_TIMER_ID);
-            // Align candidate text with the composition text.
-            let mut x = anchor.left - text_x as i32;
-            let mut y = anchor.bottom + 4;
-            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            let mon = MonitorFromPoint(POINT { x: anchor.left, y: anchor.bottom }, MONITOR_DEFAULTTONEAREST);
-            if GetMonitorInfoW(mon, &mut mi).as_bool() {
-                let wa = mi.rcWork;
-                if y + h > wa.bottom {
-                    y = anchor.top - h - 4;
-                }
-                x = x.clamp(wa.left, (wa.right - w).max(wa.left));
-                y = y.max(wa.top);
-            }
             if !was_visible && !bitmap_popup {
-                let alpha = if fade { 0 } else { (255.0 * bg_alpha).round() as u8 };
+                let alpha = if fade {
+                    0
+                } else {
+                    (255.0 * bg_alpha).round() as u8
+                };
                 let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
             }
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                x,
+                y,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
             SetTimer(Some(self.hwnd), TIMER_ID, 8, None);
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
@@ -749,6 +865,7 @@ fn finish_hide(hwnd: HWND) {
         st.visible = false;
         st.input = None;
         st.fading_out = None;
+        st.last_rect = None;
         st.hidden_at = Some(Instant::now());
     });
     unsafe {
@@ -865,7 +982,12 @@ fn draw_rainbow_border(
                 None::<&ID2D1StrokeStyle>,
             );
         }
-        rt.DrawRoundedRectangle(&border, &brushes.glint, edge_width, None::<&ID2D1StrokeStyle>);
+        rt.DrawRoundedRectangle(
+            &border,
+            &brushes.glint,
+            edge_width,
+            None::<&ID2D1StrokeStyle>,
+        );
     }
 }
 
@@ -984,7 +1106,10 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
     unsafe {
         let mut rc = RECT::default();
         windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc)?;
-        let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
+        let size = D2D_SIZE_U {
+            width: (rc.right - rc.left) as u32,
+            height: (rc.bottom - rc.top) as u32,
+        };
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
@@ -994,7 +1119,10 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         }
         if st.target.is_none() {
             let mut props = D2D1_RENDER_TARGET_PROPERTIES {
-                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_UNKNOWN },
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_UNKNOWN,
+                },
                 ..Default::default()
             };
             st.target = Some(if st.bitmap_popup {
@@ -1032,7 +1160,8 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
         let hover = rt.CreateSolidColorBrush(&st.pal.hover, None)?;
         let accent = rt.CreateSolidColorBrush(&st.pal.accent, None)?;
         let pad = st.padding();
-        let width = st.window_width();
+        let width = size.width as f32 / st.scale;
+        let height = size.height as f32 / st.scale;
         let rows_top = st.rows_top();
 
         if let Some((layout, metrics)) = &st.input {
@@ -1043,6 +1172,20 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             rt.DrawTextLayout(origin, layout, &sub, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
 
+        // Clip candidate rows above the footer so shrinking smoothly never overlaps it.
+        let rows_bottom = (height - pad - FOOTER_H).max(rows_top);
+        if st.page_len > 0 {
+            rt.PushAxisAlignedClip(
+                &D2D_RECT_F {
+                    left: pad,
+                    top: rows_top,
+                    right: (width - pad).max(pad),
+                    bottom: rows_bottom,
+                },
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
+
         // Selection pill + accent bar (animated).
         if st.page_len > 0 && !st.suggest {
             let top = rows_top + st.highlight_row() * ROW_H;
@@ -1050,7 +1193,7 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
                 rect: D2D_RECT_F {
                     left: pad,
                     top: top + 2.0,
-                    right: width - pad,
+                    right: (width - pad).max(pad),
                     bottom: top + ROW_H - 2.0,
                 },
                 radiusX: 4.0,
@@ -1084,7 +1227,10 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             {
                 let mut m = DWRITE_TEXT_METRICS::default();
                 let _ = l.GetMetrics(&mut m);
-                let origin = windows_numerics::Vector2 { X: pad + 12.0, Y: y + (ROW_H - m.height) / 2.0 };
+                let origin = windows_numerics::Vector2 {
+                    X: pad + 12.0,
+                    Y: y + (ROW_H - m.height) / 2.0,
+                };
                 rt.DrawTextLayout(origin, &l, &sub, Default::default());
             }
             if let Some((layout, height)) = row {
@@ -1100,6 +1246,9 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
                 );
             }
         }
+        if st.page_len > 0 {
+            rt.PopAxisAlignedClip();
+        }
         // Footer: position / total.
         let footer = wide(&if st.suggest {
             "Tab".to_string()
@@ -1107,13 +1256,15 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
             format!("{} / {}", st.selected + 1, st.total)
         });
         if st.page_len > 0
-            && let Ok(l) = st.dwrite.CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H)
+            && let Ok(l) = st
+                .dwrite
+                .CreateTextLayout(&footer, &st.small, 500.0, FOOTER_H)
         {
             let mut m = DWRITE_TEXT_METRICS::default();
             let _ = l.GetMetrics(&mut m);
-            let y = rows_top + st.page_len as f32 * ROW_H;
+            let y = rows_bottom;
             let origin = windows_numerics::Vector2 {
-                X: width - pad - 10.0 - m.width,
+                X: (width - pad - 10.0 - m.width).max(pad),
                 Y: y + (FOOTER_H - m.height) / 2.0 - 2.0,
             };
             rt.DrawTextLayout(origin, &l, &sub, Default::default());
@@ -1148,7 +1299,8 @@ const WM_APP_LIVE: u32 = WM_APP + 2;
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // A panic must not unwind into the host application (that aborts it).
-    std::panic::catch_unwind(|| unsafe { wndproc_inner(hwnd, msg, wparam, lparam) }).unwrap_or(LRESULT(0))
+    std::panic::catch_unwind(|| unsafe { wndproc_inner(hwnd, msg, wparam, lparam) })
+        .unwrap_or(LRESULT(0))
 }
 
 unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -1173,9 +1325,20 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 // Look up the row and handler, then release the state borrow
                 // before calling out (the handler updates this window).
                 let hit = with_state(hwnd, |st| {
-                    let row = ((y / st.scale - st.rows_top()) / ROW_H).floor();
-                    if st.visible && row >= 0.0 && (row as usize) < st.page_len {
-                        st.on_click.clone().map(|f| (f, st.page_start + row as usize))
+                    let y_dip = y / st.scale;
+                    let cur_h = st
+                        .last_rect
+                        .map_or_else(|| st.animated_size().1, |(_, _, _, h)| h as f32 / st.scale);
+                    let rows_top = st.rows_top();
+                    let rows_bottom = (cur_h - st.padding() - FOOTER_H).max(rows_top);
+                    if !st.visible || y_dip < rows_top || y_dip >= rows_bottom {
+                        return None;
+                    }
+                    let row = ((y_dip - rows_top) / ROW_H).floor();
+                    if row >= 0.0 && (row as usize) < st.page_len {
+                        st.on_click
+                            .clone()
+                            .map(|f| (f, st.page_start + row as usize))
                     } else {
                         None
                     }
@@ -1189,7 +1352,9 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             WM_APP_LIVE => {
                 let item = {
                     let mut m = LIVE_MAILBOX.lock().unwrap_or_else(|e| e.into_inner());
-                    m.iter().position(|(h, _)| *h == hwnd.0 as isize).map(|i| m.remove(i))
+                    m.iter()
+                        .position(|(h, _)| *h == hwnd.0 as isize)
+                        .map(|i| m.remove(i))
                 };
                 let handler = with_state(hwnd, |st| st.on_live.clone()).flatten();
                 if let (Some((_, result)), Some(f)) = (item, handler) {
@@ -1229,16 +1394,51 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             }
             WM_TIMER if wparam.0 == TIMER_ID => {
                 let fade_done = with_state(hwnd, |st| {
-                    st.fading_out
-                        .is_some_and(|(start, _)| start.elapsed().as_secs_f32() * 1000.0 >= FADE_OUT_MS)
+                    st.fading_out.is_some_and(|(start, _)| {
+                        start.elapsed().as_secs_f32() * 1000.0 >= FADE_OUT_MS
+                    })
                 })
                 .unwrap_or(false);
                 if fade_done {
                     finish_hide(hwnd);
                     return LRESULT(0);
                 }
+                let resize_rect = with_state(hwnd, |st| {
+                    if !st.visible {
+                        return None;
+                    }
+                    let anchor = st.last_anchor?;
+                    let (cur_w, cur_h) = st.animated_size();
+                    let w_px = (cur_w * st.scale).round().max(1.0) as i32;
+                    let h_px = (cur_h * st.scale).round().max(1.0) as i32;
+                    let rect = compute_window_rect(anchor, w_px, h_px, st.last_text_x);
+                    if st.last_rect != Some(rect) {
+                        st.last_rect = Some(rect);
+                        Some(rect)
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+                if let Some((x, y, w, h)) = resize_rect {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        x,
+                        y,
+                        w,
+                        h,
+                        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW,
+                    );
+                }
                 let animating = with_state(hwnd, |st| {
-                    (st.visible || st.fading_out.is_some()) && st.animating()
+                    let target_w = (st.size_to.0 * st.scale).round().max(1.0) as i32;
+                    let target_h = (st.size_to.1 * st.scale).round().max(1.0) as i32;
+                    let pending_size = st.visible
+                        && st
+                            .last_rect
+                            .is_some_and(|(_, _, w, h)| w != target_w || h != target_h);
+                    (st.visible || st.fading_out.is_some()) && (st.animating() || pending_size)
                 })
                 .unwrap_or(false);
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1309,5 +1509,59 @@ mod tests {
             assert_eq!(family("Arial"), "Arial");
             assert_eq!(family("Sweet IME nonexistent test font"), family(""));
         }
+    }
+
+    #[test]
+    fn resize_animation_interpolates_width_and_height_smoothly() {
+        let start = (140.0, 80.0);
+        let end = (260.0, 200.0);
+        assert_eq!(interpolate_size(start, end, 0.0), start);
+        let mid = interpolate_size(start, end, RESIZE_MS * 0.5);
+        // ease-out cubic at t = 0.5 is 1 - 0.5^3 = 0.875.
+        assert!((mid.0 - (140.0 + 120.0 * 0.875)).abs() < 1e-3);
+        assert!((mid.1 - (80.0 + 120.0 * 0.875)).abs() < 1e-3);
+        assert_eq!(interpolate_size(start, end, RESIZE_MS), end);
+        assert_eq!(interpolate_size(start, end, RESIZE_MS * 2.0), end);
+
+        let popup = CandidateWindow::new(None, true).unwrap();
+        let anchor = RECT {
+            left: 80,
+            top: 80,
+            right: 120,
+            bottom: 100,
+        };
+        let short_list = CandidateList {
+            items: vec!["あ".into()],
+            selected: 0,
+            page_size: 9,
+            kind: ListKind::Conversion,
+        };
+        popup.show(Some(&short_list), None, anchor, false, false, "");
+        // First show starts directly at target size without animating from zero.
+        let initial_to = with_state(popup.hwnd, |st| {
+            assert!(!st.is_resizing());
+            assert_eq!(st.size_from, st.size_to);
+            st.size_to
+        })
+        .unwrap();
+
+        let tall_list = CandidateList {
+            items: vec![
+                "とても長い変換候補のテキスト".into(),
+                "二つ目の候補".into(),
+                "三つ目の候補".into(),
+            ],
+            selected: 0,
+            page_size: 9,
+            kind: ListKind::Conversion,
+        };
+        popup.show(Some(&tall_list), None, anchor, false, false, "");
+        with_state(popup.hwnd, |st| {
+            assert_eq!(st.size_from, initial_to);
+            assert!(st.size_to.0 > initial_to.0);
+            assert!(st.size_to.1 > initial_to.1);
+            assert!(st.is_resizing());
+        })
+        .unwrap();
     }
 }
