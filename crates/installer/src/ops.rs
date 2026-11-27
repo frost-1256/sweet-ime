@@ -56,18 +56,63 @@ fn timestamp() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
 }
 
-/// Writes `data` to `dst`. A file in use (a loaded DLL, a mapped
-/// dictionary) cannot be overwritten but can be renamed, so move it aside.
+/// Returns true when `path` already exists with the exact bytes of `data`.
+fn file_matches(path: &Path, data: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() != data.len() as u64 {
+        return false;
+    }
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 64 * 1024];
+    let mut offset = 0;
+    while offset < data.len() {
+        let Ok(n) = f.read(&mut buf) else {
+            return false;
+        };
+        if n == 0 {
+            return false;
+        }
+        if offset + n > data.len() || buf[..n] != data[offset..offset + n] {
+            return false;
+        }
+        offset += n;
+    }
+    true
+}
+
+/// Writes `data` to `dst`. Skips rewriting when `dst` already has identical
+/// bytes (saving disk space for unchanged large files like `system.dict`).
+/// Always moves any existing file aside before writing so a failed write (such
+/// as disk full) restores the previous file instead of leaving a 0-byte file.
 fn replace_file(dst: &Path, data: &[u8]) -> Result<()> {
     if let Some(d) = dst.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
-    if dst.exists() && std::fs::remove_file(dst).is_err() {
+    if file_matches(dst, data) {
+        return Ok(());
+    }
+    let mut backup = None;
+    if dst.exists() {
         let old = dst.with_extension(format!("{}.old", timestamp()));
         std::fs::rename(dst, &old).map_err(|e| format!("{}: {e}", dst.display()))?;
+        backup = Some(old);
+    }
+    if let Err(e) = std::fs::write(dst, data) {
+        let _ = std::fs::remove_file(dst);
+        if let Some(old) = backup {
+            let _ = std::fs::rename(&old, dst);
+        }
+        return Err(format!("{}: {e}", dst.display()));
+    }
+    if let Some(old) = backup {
         delete_later(&old);
     }
-    std::fs::write(dst, data).map_err(|e| format!("{}: {e}", dst.display()))
+    Ok(())
 }
 
 /// Deletes now, or at the next restart if the file is in use.
@@ -81,6 +126,11 @@ fn delete_later(p: &Path) {
 }
 
 pub fn copy_files(files: &[Entry], target: &Path) -> Result<()> {
+    // Reclaim leftovers from earlier updates first to maximize free disk space.
+    remove_old_files(target);
+    for arch in ["x64", "x86"] {
+        remove_old_cores(&target.join(arch));
+    }
     // core.txt last: running applications switch to the core it names, so
     // that core must already be in place.
     let is_core_txt = |f: &&Entry| Path::new(&f.name).file_name().is_some_and(|n| n == "core.txt");

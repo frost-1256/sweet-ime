@@ -274,7 +274,27 @@ fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32
         && (after.starts_with("のよみ")
             || after.starts_with("をけんさく")
             || after.starts_with("をかく")
-            || after.starts_with("をおぼ"))
+            || after.starts_with("をおぼ")
+            || before.contains("ひらがな")
+            || before.contains("かたかな")
+            || before.contains("ろーまじ")
+            || before.contains("かなに")
+            || before.contains("かなを")
+            || before.contains("かなと"))
+    {
+        1500
+    } else if surface == "感じ"
+        && reading == "かんじ"
+        && (before.ends_with("いい")
+            || before.ends_with("よい")
+            || before.ends_with("こんな")
+            || before.ends_with("そんな")
+            || before.ends_with("あんな")
+            || before.ends_with("どんな")
+            || before.ends_with("おなじ")
+            || before.ends_with("へんな")
+            || before.ends_with("いやな")
+            || before.ends_with("すてきな"))
     {
         1200
     } else if surface == "ジム"

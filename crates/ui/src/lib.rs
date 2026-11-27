@@ -228,7 +228,7 @@ fn balanced_row(
     left: impl FnOnce(&mut egui::Ui),
     control: impl FnOnce(&mut egui::Ui),
 ) -> (egui::Rect, egui::Rect, egui::Rect) {
-    let row_id = ui.make_persistent_id(id_salt);
+    let row_id = ui.make_persistent_id((id_salt, ui.next_auto_id()));
     let interact_h = ui.spacing().interact_size.y;
     let (cached_row_h, cached_left_h, cached_ctrl_h) = ui
         .data(|d| d.get_temp::<(f32, f32, f32)>(row_id))
@@ -237,25 +237,30 @@ fn balanced_row(
     let mut control_rect = egui::Rect::NOTHING;
     let mut left_content_h = 0.0f32;
     let mut ctrl_content_h = 0.0f32;
-    let row_size = Vec2::new(ui.available_width(), cached_row_h);
+    let row_w = ui.available_width();
+    let row_size = Vec2::new(row_w, cached_row_h);
     let ctrl_pad = ((cached_row_h - cached_ctrl_h).max(0.0) * 0.5).floor();
     let left_pad = ((cached_row_h - cached_left_h).max(0.0) * 0.5).floor();
     let outer = ui.allocate_ui_with_layout(
         row_size,
         egui::Layout::right_to_left(egui::Align::Min),
         |ui| {
-            ui.allocate_ui_with_layout(
-                Vec2::ZERO,
-                egui::Layout::top_down(egui::Align::RIGHT),
+            let max_ctrl_rect = ui.available_rect_before_wrap();
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(max_ctrl_rect)
+                    .layout(egui::Layout::top_down(egui::Align::RIGHT)),
                 |ui| {
                     let prev_y = ui.spacing().item_spacing.y;
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if ctrl_pad > 0.0 {
                         ui.add_space(ctrl_pad);
                     }
-                    let inner = ui.allocate_ui_with_layout(
-                        Vec2::ZERO,
-                        egui::Layout::right_to_left(egui::Align::Center),
+                    let inner_max = ui.available_rect_before_wrap();
+                    let inner = ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(inner_max)
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
                         |ui| {
                             ui.spacing_mut().item_spacing.y = prev_y;
                             control(ui);

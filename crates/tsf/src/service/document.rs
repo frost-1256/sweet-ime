@@ -50,6 +50,9 @@ fn read_left_context(ec: u32, range: &ITfRange) -> Option<String> {
         let mut buf = [0u16; 64];
         let mut n = 0u32;
         r.GetText(ec, 0, &mut buf, &mut n).ok()?;
+        if n == 0 {
+            return None;
+        }
         Some(String::from_utf16_lossy(&buf[..n as usize]))
     }
 }

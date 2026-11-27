@@ -410,6 +410,9 @@ impl sweet_engine::Reranker for ZenzReranker {
         let (repetition_weight, effective_mix) = match repeated {
             Some((_, count, _)) if count >= 3 => (3.2, self.mix.min(0.12)),
             Some(_) => (2.7, self.mix.min(0.12)),
+            // When preceding left context is available, the lattice is blind to
+            // it while zenz sees it directly, so let zenz carry more weight.
+            None if !left_context.is_empty() => (2.7, self.mix.min(0.28)),
             None => (2.7, self.mix),
         };
         (0..eligible.len())
