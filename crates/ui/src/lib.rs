@@ -377,11 +377,15 @@ pub fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(26.0).strong());
 }
 
-/// A primary (accent-filled) button.
-pub fn primary_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.to_owned()).color(Color32::WHITE))
-        .fill(Color32::from_rgb(0, 95, 184))
-        .min_size(Vec2::new(120.0, 34.0))
+/// A compact accent-filled button matching the active theme's accent color.
+pub fn accent_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
+    let accent = ui.visuals().selection.bg_fill;
+    egui::Button::new(RichText::new(text.to_owned()).color(contrasting_ink(accent))).fill(accent)
+}
+
+/// A primary (accent-filled) button matching the active theme's accent color.
+pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
+    accent_button(ui, text).min_size(Vec2::new(120.0, 34.0))
 }
 
 #[cfg(test)]

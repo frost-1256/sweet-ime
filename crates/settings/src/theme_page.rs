@@ -89,7 +89,10 @@ pub fn ui(
                                     .color(sweet_ui::contrasting_ink(accent)),
                             );
                         });
-                } else if ui.button("ユーザーテーマを使う").clicked() {
+                } else if ui
+                    .add(sweet_ui::accent_button(ui, "ユーザーテーマを使う"))
+                    .clicked()
+                {
                     *current = Theme::Custom;
                     change.theme_selected = true;
                 }
@@ -247,7 +250,7 @@ pub fn ui(
                         );
                         let clean_name = sanitize_theme_name(save_name);
                         if ui
-                            .add_enabled(!clean_name.is_empty(), egui::Button::new("保存"))
+                            .add_enabled(!clean_name.is_empty(), sweet_ui::accent_button(ui, "保存"))
                             .clicked()
                         {
                             if let Some(existing) =

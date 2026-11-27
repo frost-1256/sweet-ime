@@ -277,7 +277,7 @@ impl eframe::App for Setup {
                             (false, true) => "更新",
                             (false, false) => "インストール",
                         };
-                        if ui.add(sweet_ui::primary_button(label)).clicked() {
+                        if ui.add(sweet_ui::primary_button(ui, label)).clicked() {
                             self.start(&ctx);
                         }
                         if ui.add(egui::Button::new("キャンセル").min_size(Vec2::new(100.0, 34.0))).clicked() {
@@ -288,7 +288,7 @@ impl eframe::App for Setup {
                         ui.add_enabled(false, egui::Button::new("お待ちください…").min_size(Vec2::new(120.0, 34.0)));
                     }
                     Page::Finished(r) => {
-                        if ui.add(sweet_ui::primary_button("閉じる")).clicked() {
+                        if ui.add(sweet_ui::primary_button(ui, "閉じる")).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         if !self.uninstall

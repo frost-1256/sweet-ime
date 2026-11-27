@@ -35,7 +35,7 @@ impl KeysPage {
         ui.add_space(4.0);
         let mut changed = false;
         ui.horizontal(|ui| {
-            if ui.add(sweet_ui::primary_button("割り当てを追加")).clicked() {
+            if ui.add(sweet_ui::primary_button(ui, "割り当てを追加")).clicked() {
                 self.map.bindings.insert(
                     0,
                     Binding {

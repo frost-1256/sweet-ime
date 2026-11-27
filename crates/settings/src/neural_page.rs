@@ -481,11 +481,7 @@ impl App {
                                     {
                                         action = Some(ModelAction::Delete(kind));
                                     }
-                                    let use_btn = egui::Button::new(
-                                        RichText::new("このモデルを使う")
-                                            .color(contrasting_ink(accent)),
-                                    )
-                                    .fill(accent);
+                                    let use_btn = sweet_ui::accent_button(ui, "このモデルを使う");
                                     if ui.add_enabled(!busy, use_btn).clicked() {
                                         action = Some(ModelAction::Activate(kind));
                                     }
@@ -494,7 +490,7 @@ impl App {
                                     if ui
                                         .add_enabled(
                                             !busy,
-                                            egui::Button::new("ダウンロードして使う"),
+                                            sweet_ui::accent_button(ui, "ダウンロードして使う"),
                                         )
                                         .clicked()
                                     {

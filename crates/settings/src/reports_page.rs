@@ -94,7 +94,10 @@ impl ReportsSection {
                 let wanted = egui::TextEdit::singleline(&mut self.wanted).hint_text("期待する変換(例: 他に案ある)");
                 ui.add(wanted.desired_width(180.0));
                 let ready = !self.reading.trim().is_empty() && !self.wanted.trim().is_empty();
-                if ui.add_enabled(ready, egui::Button::new("追加")).clicked() {
+                if ui
+                    .add_enabled(ready, sweet_ui::accent_button(ui, "追加"))
+                    .clicked()
+                {
                     self.add(status);
                 }
             });
