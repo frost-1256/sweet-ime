@@ -6,6 +6,7 @@ use crate::kernels::{
     Q8Matrix, attention_row_f32, gelu_f32, layer_norm_f32, log_normalizer_f32, matmul_q8_bias,
 };
 
+mod gguf;
 mod weights;
 
 #[derive(Default)]

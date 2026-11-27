@@ -65,11 +65,16 @@ impl Zenz {
         })
     }
 
-    /// Packs a Hugging Face model directory into a single `.swz` file.
-    pub fn pack(hf_dir: &Path, out: &Path) -> io::Result<()> {
-        let model = Model::load(hf_dir)?;
-        let vocab = std::fs::read_to_string(hf_dir.join("vocab.json"))?;
-        let merges = std::fs::read_to_string(hf_dir.join("merges.txt"))?;
+    /// Packs either a Hugging Face model directory or a GPT-2 `.gguf` file
+    /// into a single `.swz` file.
+    pub fn pack(src: &Path, out: &Path) -> io::Result<()> {
+        if src.is_file() {
+            let (model, vocab, merges) = Model::load_gguf(src)?;
+            return model.pack(&vocab, &merges, out);
+        }
+        let model = Model::load(src)?;
+        let vocab = std::fs::read_to_string(src.join("vocab.json"))?;
+        let merges = std::fs::read_to_string(src.join("merges.txt"))?;
         model.pack(&vocab, &merges, out)
     }
 
