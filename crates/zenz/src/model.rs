@@ -247,6 +247,17 @@ impl Model {
     /// Runs `tokens` after the cached prefix and appends them to the cache.
     /// Returns logits for every position (`want_all`) or only the last one.
     pub fn forward(&self, tokens: &[u32], cache: &mut KvCache, want_all: bool) -> Vec<f32> {
+        self.forward_with(tokens, cache, want_all, |logits| logits.to_vec())
+    }
+
+    /// Consumes logits directly from the reusable forward scratch buffer.
+    pub(crate) fn forward_with<T>(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        want_all: bool,
+        consume: impl FnOnce(&[f32]) -> T,
+    ) -> T {
         let parents: Vec<Option<usize>> = (0..tokens.len()).map(|i| i.checked_sub(1)).collect();
         self.forward_impl(
             tokens,
@@ -254,7 +265,7 @@ impl Model {
             cache,
             tokens.len(),
             if want_all { 0 } else { tokens.len().saturating_sub(1) },
-            |logits| logits.to_vec(),
+            consume,
         )
     }
 
@@ -374,6 +385,16 @@ impl Model {
                 let l = self.view(d, lr);
                 layer_norm(x, l.ln1_w, l.ln1_b, eps, h);
                 matmul_q8_bias(h, &ql.attn_w, Some(l.attn_b), qkv, t, false);
+                // All rows supply keys and values. In the final layer, only
+                // the rows whose logits are requested need attention output
+                // and the feed-forward network.
+                let start = if li + 1 == self.layers.len() {
+                    t - rows
+                } else {
+                    0
+                };
+                let active = t - start;
+                let att = &mut att[..active * e];
                 {
                     let kc = &cache.k[li];
                     let vc = &cache.v[li];
@@ -396,17 +417,17 @@ impl Model {
                             row_scores,
                         );
                     };
-                    if t >= 16 {
+                    if active >= 16 {
                         use rayon::prelude::*;
                         att.par_chunks_exact_mut(e)
                             .enumerate()
                             .for_each_init(
                                 || vec![0f32; max_ctx],
-                                |row_scores, (i, att_row)| run_row(i, att_row, row_scores),
+                                |row_scores, (i, att_row)| run_row(start + i, att_row, row_scores),
                             );
                     } else {
                         for (i, att_row) in att.chunks_exact_mut(e).enumerate() {
-                            run_row(i, att_row, scores);
+                            run_row(start + i, att_row, scores);
                         }
                     }
                 }
@@ -417,11 +438,14 @@ impl Model {
                         cache.v[li].extend_from_slice(&qkv[i * 3 * e + 2 * e..i * 3 * e + 3 * e]);
                     }
                 }
-                matmul_q8_bias(att, &ql.proj_w, Some(l.proj_b), x, t, true);
+                let x = &mut x[start * e..];
+                let h = &mut h[..active * e];
+                let ff = &mut ff[..active * 4 * e];
+                matmul_q8_bias(att, &ql.proj_w, Some(l.proj_b), x, active, true);
                 layer_norm(x, l.ln2_w, l.ln2_b, eps, h);
-                matmul_q8_bias(h, &ql.fc_w, Some(l.fc_b), ff, t, false);
+                matmul_q8_bias(h, &ql.fc_w, Some(l.fc_b), ff, active, false);
                 gelu_new(ff);
-                matmul_q8_bias(ff, &ql.fc2_w, Some(l.fc2_b), x, t, true);
+                matmul_q8_bias(ff, &ql.fc2_w, Some(l.fc2_b), x, active, true);
             }
             let src = &x[(t - rows) * e..];
             layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, hf);

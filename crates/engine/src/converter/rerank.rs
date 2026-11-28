@@ -294,6 +294,17 @@ impl Converter {
         boundaries: &[usize],
         left_context: &str,
     ) -> Vec<Conversion> {
+        self.convert_best_while(text, boundaries, left_context, || true)
+    }
+
+    /// Stops obsolete background requests between conversion stages.
+    pub(crate) fn convert_best_while(
+        &self,
+        text: &str,
+        boundaries: &[usize],
+        left_context: &str,
+        still_needed: impl Fn() -> bool,
+    ) -> Vec<Conversion> {
         let n = self
             .reranker
             .as_ref()
@@ -317,6 +328,9 @@ impl Converter {
         } else {
             self.convert(text, boundaries, 1)
         };
+        if !still_needed() {
+            return Vec::new();
+        }
         if let Some(r) = self.reranker.as_ref().filter(|_| self.has_reranker()) {
             // After a version number, でたね is usually a release
             // announcement. Keep the lattice's release phrase when present.
@@ -337,7 +351,8 @@ impl Converter {
                 let c = res.remove(i);
                 res.insert(0, c);
             }
-            if boundaries.is_empty()
+            if still_needed()
+                && boundaries.is_empty()
                 && let Some(best) = res.first()
                 && personal_spans(best).is_empty()
                 && super::extras::casual_phrases(text).next().is_none()

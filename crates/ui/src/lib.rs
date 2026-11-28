@@ -380,8 +380,29 @@ pub fn title(ui: &mut egui::Ui, text: &str) {
 
 /// A compact accent-filled button matching the active theme's accent color.
 pub fn accent_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
-    let accent = ui.visuals().selection.bg_fill;
-    egui::Button::new(RichText::new(text.to_owned()).color(contrasting_ink(accent))).fill(accent)
+    let fill = accent_button_fill(ui.visuals().selection.bg_fill);
+    egui::Button::new(RichText::new(text.to_owned()).color(Color32::WHITE)).fill(fill)
+}
+
+fn accent_button_fill(accent: Color32) -> Color32 {
+    // White text needs at least 4.5:1 contrast. Find the lightest shade
+    // along the accent-to-black ramp that meets it after sRGB rounding.
+    const MAX_LUMINANCE: f32 = 1.05 / 4.5 - 0.05;
+    if relative_luminance(accent) <= MAX_LUMINANCE {
+        return accent;
+    }
+    let mut lower = 0;
+    let mut upper = 255;
+    while upper - lower > 1 {
+        let middle = (lower + upper) / 2;
+        let shade = Color32::BLACK.lerp_to_gamma(accent, middle as f32 / 255.0);
+        if relative_luminance(shade) <= MAX_LUMINANCE {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    Color32::BLACK.lerp_to_gamma(accent, lower as f32 / 255.0)
 }
 
 /// A primary (accent-filled) button matching the active theme's accent color.
@@ -392,6 +413,22 @@ pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accent_buttons_keep_white_text_readable() {
+        let dark_blue = Color32::from_rgb(26, 70, 140);
+        assert_eq!(accent_button_fill(dark_blue), dark_blue);
+        for accent in [
+            Color32::from_rgb(255, 117, 198),
+            Color32::YELLOW,
+            Color32::WHITE,
+        ] {
+            let fill = accent_button_fill(accent);
+            assert!(1.05 / (relative_luminance(fill) + 0.05) >= 4.5);
+            assert_ne!(fill, Color32::BLACK);
+            assert_ne!(fill, accent);
+        }
+    }
 
     #[test]
     fn card_text_does_not_overlap_wide_control() {

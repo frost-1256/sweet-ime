@@ -12,6 +12,7 @@ const DEFAULT_LIVE_DEBOUNCE: Duration = Duration::ZERO;
 type Completion = Box<dyn FnOnce(String, String) + Send>;
 
 struct Job {
+    window: Option<isize>,
     converter: &'static Converter,
     reading: String,
     left_context: String,
@@ -59,7 +60,13 @@ impl LiveConversionWorker {
         left_context: String,
         done: impl FnOnce(String, String) + Send + 'static,
     ) {
-        self.submit_with_debounce(converter, reading, left_context, DEFAULT_LIVE_DEBOUNCE, done);
+        self.submit_with_debounce(
+            converter,
+            reading,
+            left_context,
+            DEFAULT_LIVE_DEBOUNCE,
+            done,
+        );
     }
 
     /// Replaces any pending request with a caller-chosen settle delay.
@@ -72,6 +79,40 @@ impl LiveConversionWorker {
         debounce: Duration,
         done: impl FnOnce(String, String) + Send + 'static,
     ) {
+        self.enqueue(Job {
+            window: None,
+            converter,
+            reading,
+            left_context,
+            debounce,
+            done: Box::new(done),
+            submitted_at: Instant::now(),
+        });
+    }
+
+    /// Refines a window's current reading. A different request for that same
+    /// window can stop obsolete work between conversion stages.
+    pub fn submit_for_window(
+        &'static self,
+        window: isize,
+        converter: &'static Converter,
+        reading: String,
+        left_context: String,
+        debounce: Duration,
+        done: impl FnOnce(String, String) + Send + 'static,
+    ) {
+        self.enqueue(Job {
+            window: Some(window),
+            converter,
+            reading,
+            left_context,
+            debounce,
+            done: Box::new(done),
+            submitted_at: Instant::now(),
+        });
+    }
+
+    fn enqueue(&'static self, job: Job) {
         self.started.call_once(|| {
             let _ = std::thread::Builder::new()
                 .name("sweet-ime-live".into())
@@ -80,14 +121,7 @@ impl LiveConversionWorker {
         let replaced = {
             let mut state = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             state.generation = state.generation.wrapping_add(1);
-            state.job.replace(Job {
-                converter,
-                reading,
-                left_context,
-                debounce,
-                done: Box::new(done),
-                submitted_at: Instant::now(),
-            })
+            state.job.replace(job)
         };
         self.ready.notify_one();
         drop(replaced);
@@ -124,10 +158,29 @@ impl LiveConversionWorker {
                     }
                 }
             };
+            let still_needed = || {
+                job.window.is_none()
+                    || !self
+                        .pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .job
+                        .as_ref()
+                        .is_some_and(|pending| {
+                            pending.window == job.window
+                                && (pending.reading != job.reading
+                                    || pending.left_context != job.left_context)
+                        })
+            };
             let result = catch_unwind(AssertUnwindSafe(|| {
-                job.converter.refine_live(&job.reading, &job.left_context)
+                job.converter
+                    .convert_best_while(&job.reading, &[], &job.left_context, still_needed)
+                    .first()
+                    .map(|conversion| conversion.surface())
             }));
-            if let Ok(Some(surface)) = result {
+            if let Ok(Some(surface)) = result
+                && still_needed()
+            {
                 (job.done)(job.reading, surface);
             }
         }
@@ -146,12 +199,78 @@ impl Converter {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc::channel;
+    use std::sync::mpsc::{Receiver, Sender, channel};
     use std::time::Duration;
 
     use crate::Dictionary;
 
     use super::*;
+
+    #[test]
+    fn newer_reading_for_the_same_window_skips_obsolete_generation() {
+        struct PausedReranker {
+            started: Sender<()>,
+            release: Mutex<Receiver<()>>,
+            generated: Sender<String>,
+        }
+
+        impl crate::Reranker for PausedReranker {
+            fn choose(&self, reading: &str, _: &str, _: &[crate::Conversion]) -> Option<usize> {
+                if reading == "こうえん" {
+                    self.started.send(()).unwrap();
+                    self.release.lock().unwrap().recv().unwrap();
+                }
+                None
+            }
+
+            fn generate(&self, reading: &str, _: &str, _: &crate::Conversion) -> Option<String> {
+                self.generated.send(reading.to_owned()).unwrap();
+                None
+            }
+        }
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/system.dict");
+        let Ok(dictionary) = Dictionary::open(path) else {
+            return;
+        };
+        static WORKER: LiveConversionWorker = LiveConversionWorker::new();
+        let (started_tx, started_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let (generated_tx, generated_rx) = channel();
+        let converter = Box::leak(Box::new(Converter::new(dictionary).with_reranker(
+            Box::new(PausedReranker {
+                started: started_tx,
+                release: Mutex::new(release_rx),
+                generated: generated_tx,
+            }),
+        )));
+        let timeout = Duration::from_secs(5);
+        let (done_tx, done_rx) = channel();
+        let old_done = done_tx.clone();
+        WORKER.submit_for_window(
+            1,
+            converter,
+            "こうえん".into(),
+            String::new(),
+            Duration::ZERO,
+            move |reading, _| old_done.send(reading).unwrap(),
+        );
+        started_rx.recv_timeout(timeout).unwrap();
+        let latest = "こうえんにいく";
+        WORKER.submit_for_window(
+            1,
+            converter,
+            latest.into(),
+            String::new(),
+            Duration::ZERO,
+            move |reading, _| done_tx.send(reading).unwrap(),
+        );
+        release_tx.send(()).unwrap();
+
+        assert_eq!(done_rx.recv_timeout(timeout).unwrap(), latest);
+        assert_eq!(generated_rx.try_recv().unwrap(), latest);
+        assert!(generated_rx.try_recv().is_err());
+    }
 
     #[test]
     fn keeps_only_the_latest_pending_reading() {

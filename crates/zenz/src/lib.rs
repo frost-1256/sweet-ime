@@ -138,16 +138,27 @@ impl Zenz {
     /// those the model would have picked anyway, so the output stays the
     /// greedy output while the tokens shared with the draft cost one pass.
     pub fn generate_with_draft(&self, prompt: &str, max_tokens: usize, draft: &str) -> String {
+        if max_tokens == 0 {
+            return String::new();
+        }
         let ids = self.encode_prompt(prompt);
         if ids.is_empty() {
             return String::new();
         }
+        // EOS is decided from the preceding token's logits. It never needs
+        // its own forward row because decoding stops as soon as it wins.
+        let draft_ids = if draft.is_empty() {
+            Vec::new()
+        } else {
+            self.tokenizer.encode(&normalize(draft))
+        };
+        // Keep all decode steps on the same pool as the matrix kernels.
+        let out = kernels::pool().install(|| self.generate_tokens(&ids, max_tokens, &draft_ids));
+        self.tokenizer.decode(&out)
+    }
+
+    fn generate_tokens(&self, ids: &[u32], max_tokens: usize, draft_ids: &[u32]) -> Vec<u32> {
         let eos = self.tokenizer.eos;
-        let mut draft_ids = Vec::new();
-        if !draft.is_empty() {
-            draft_ids = self.tokenizer.encode(&normalize(draft));
-            draft_ids.push(eos);
-        }
         let cached = self
             .prefix_cache
             .lock()
@@ -171,14 +182,18 @@ impl Zenz {
             None => (self.model.new_cache(), 0),
         };
         let v = self.model.cfg.vocab_size;
-        let mut logits = self.model.forward(&ids[reuse..], &mut cache, false);
+        let greedy = |logits: &[f32]| model::argmax(logits) as u32;
+        let mut next = self.model.forward_with(&ids[reuse..], &mut cache, false, greedy);
         let prompt_cache_len = ids.len().saturating_sub(1);
         let mut out = Vec::new();
         // Position in `draft_ids` that the output is expected to continue with.
         let mut at = 0;
         while out.len() < max_tokens {
-            let next = model::argmax(&logits) as u32;
             if next == eos {
+                break;
+            }
+            if max_tokens - out.len() == 1 {
+                out.push(next);
                 break;
             }
             if draft_ids.get(at) != Some(&next) {
@@ -191,23 +206,32 @@ impl Zenz {
                 {
                     at += i + 1;
                 }
-                logits = self.model.forward(&[next], &mut cache, false);
+                next = self.model.forward_with(&[next], &mut cache, false, greedy);
                 continue;
             }
             let spec = &draft_ids[at..draft_ids.len().min(at + max_tokens - out.len())];
             let base = cache.len;
-            let rows = self.model.forward(spec, &mut cache, true);
-            // `next` is the greedy token, so the first draft token is kept.
-            let mut kept = 1;
-            while kept < spec.len()
-                && model::argmax(&rows[(kept - 1) * v..kept * v]) as u32 == spec[kept]
-            {
-                kept += 1;
-            }
+            let (kept, continuation) =
+                self.model.forward_with(spec, &mut cache, true, |rows| {
+                    // The first token was already selected by the previous pass.
+                    for (i, &token) in spec.iter().enumerate().skip(1) {
+                        let predicted = greedy(&rows[(i - 1) * v..i * v]);
+                        if predicted != token {
+                            return (i, predicted);
+                        }
+                    }
+                    let n = spec.len();
+                    let continuation = if spec[n - 1] == eos || out.len() + n == max_tokens {
+                        eos
+                    } else {
+                        greedy(&rows[(n - 1) * v..n * v])
+                    };
+                    (n, continuation)
+                });
             let done = spec[..kept].contains(&eos);
             out.extend(spec[..kept].iter().copied().filter(|&t| t != eos));
             cache.truncate(base + kept);
-            logits = rows[(kept - 1) * v..kept * v].to_vec();
+            next = continuation;
             at += kept;
             if done {
                 break;
@@ -220,7 +244,7 @@ impl Zenz {
                 kv: cache,
             });
         }
-        self.tokenizer.decode(&out)
+        out
     }
 
     /// Log-probability of each candidate (plus the end-of-sequence token)
@@ -617,6 +641,30 @@ mod tests {
     }
 
     #[test]
+    fn skipping_unused_final_rows_preserves_logits_and_cache() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/zenz-v3.1-xsmall.swz"
+        );
+        let Ok(zenz) = Zenz::load(path) else { return };
+        let prompt = Zenz::prompt(
+            "きょうはいいてんきなのでさんぽにいきます",
+            "昨日は朝から雨が降っていました。",
+        );
+        let tokens = zenz.encode_prompt(&prompt);
+        let model = &zenz.model;
+        let mut full_cache = model.new_cache();
+        let mut tail_cache = model.new_cache();
+        let full = model.forward(&tokens, &mut full_cache, true);
+        let tail = model.forward(&tokens, &mut tail_cache, false);
+        let bits = |row: &[f32]| row.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&full[full.len() - tail.len()..]), bits(&tail));
+        let next_full = model.forward(&tokens[..1], &mut full_cache, false);
+        let next_tail = model.forward(&tokens[..1], &mut tail_cache, false);
+        assert_eq!(bits(&next_full), bits(&next_tail));
+    }
+
+    #[test]
     fn drafts_do_not_change_the_greedy_output() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -639,11 +687,13 @@ mod tests {
                 "draft {draft}"
             );
         }
-        // The token limit still applies when the draft is accepted.
-        assert_eq!(
-            zenz.generate_with_draft(&prompt, 3, &greedy),
-            zenz.generate(&prompt, 3)
-        );
+        // Check both the single-token fast path and truncation within a batch.
+        for limit in [0, 1, 3] {
+            assert_eq!(
+                zenz.generate_with_draft(&prompt, limit, &greedy),
+                zenz.generate(&prompt, limit)
+            );
+        }
     }
 
     #[test]
