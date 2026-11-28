@@ -29,6 +29,10 @@ jobs:
           persist-credentials: false
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: tag and PR runs restore its caches instead of
+          # filling the 10 GB quota with copies that evict them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Cache the system dictionary
         id: dict-cache
         uses: actions/cache@v4
@@ -110,7 +114,8 @@ jobs:
 
   smoke-intel:
     name: Smoke test on macos-15-intel
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    # Also on main pushes, which save the cache that release tags restore.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'))
     needs: package
     runs-on: macos-15-intel
     timeout-minutes: 15
@@ -119,6 +124,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: tag and PR runs restore its caches instead of
+          # filling the 10 GB quota with copies that evict them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --locked -p sweet-zenz --lib
       - uses: actions/download-artifact@v8
         with:
