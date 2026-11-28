@@ -26,6 +26,7 @@
 #include <fcitx/text.h>
 #include <fcitx/userinterface.h>
 
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -86,6 +87,7 @@ public:
         }
         instance_->inputContextManager().registerProperty("sweetimeState", &factory_);
         dispatcher_.attach(&instance_->eventLoop());
+        checkForUpdate();
     }
 
     ~SweetEngine() override { dispatcher_.detach(); }
@@ -231,6 +233,14 @@ private:
 
     static void launchSettings() {
         fcitx::startProcess({SWEET_SETTINGS_PATH});
+    }
+
+    // The settings app checks GitHub at most once a day, honors the
+    // automatic check setting, and shows a desktop notification.
+    static void checkForUpdate() {
+        if (std::getenv("SWEET_NO_UPDATE_CHECK") == nullptr) {
+            fcitx::startProcess({SWEET_SETTINGS_PATH, "--check-update"});
+        }
     }
 
     fcitx::Instance *instance_;

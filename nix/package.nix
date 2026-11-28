@@ -21,6 +21,7 @@
   curl,
   dbus,
   xdg-utils,
+  libnotify,
 }:
 
 let
@@ -92,6 +93,8 @@ stdenv.mkDerivation (finalAttrs: {
   preConfigure = ''
     export CARGO_TARGET_DIR="$NIX_BUILD_TOP/cargo-target"
     export SWEET_IME_CURL="${curl}/bin/curl"
+    # The settings app leaves updates to Nix.
+    export SWEET_IME_PACKAGE=nix
   '';
 
   postBuild = ''
@@ -121,7 +124,7 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm644 ${mozc}/src/data/dictionary_oss/README.txt "$out/share/sweet-ime/licenses/dictionary-oss.txt"
     wrapProgram "$out/bin/sweet-settings" \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath guiLibs} \
-      --prefix PATH : ${lib.makeBinPath [ fontconfig curl dbus xdg-utils ]}
+      --prefix PATH : ${lib.makeBinPath [ fontconfig curl dbus xdg-utils libnotify ]}
   '';
 
   meta = {

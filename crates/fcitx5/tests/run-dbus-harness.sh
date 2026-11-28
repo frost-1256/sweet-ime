@@ -47,6 +47,8 @@ Layout=
 PROFILE
 
 export XDG_CONFIG_HOME="$tmp/config" XDG_DATA_HOME="$tmp/data"
+# The addon would start the settings app to check GitHub for updates.
+export SWEET_NO_UPDATE_CHECK=1
 export FCITX_ADDON_DIRS="$pkg/lib/fcitx5${FCITX_ADDON_DIRS:+:$FCITX_ADDON_DIRS}"
 export XDG_DATA_DIRS="$pkg/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 unset WAYLAND_DISPLAY DISPLAY

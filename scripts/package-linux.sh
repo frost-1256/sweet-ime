@@ -160,6 +160,8 @@ install -Dm755 "$SCRIPT_DIR/files/bin/sweet-settings" "${PREFIX}/bin/sweet-setti
 install -Dm755 "$SCRIPT_DIR/files/bin/sweet-zenz-pack" "${PREFIX}/bin/sweet-zenz-pack"
 mkdir -p "${PREFIX}/share"
 cp -a "$SCRIPT_DIR/files/share/." "${PREFIX}/share/"
+# The settings app reads this to update with the same locations.
+printf 'PREFIX=%s\nADDON_DIR=%s\n' "$PREFIX" "$ADDON_DIR" > "${PREFIX}/share/sweet-ime/install.conf"
 
 echo "Sweet IME installed to ${PREFIX} (fcitx5 addon: ${ADDON_DIR}/sweetime.so)."
 echo "Restart fcitx5 (fcitx5 -r) and add Sweet IME in fcitx5-configtool."

@@ -90,6 +90,8 @@ sudo ./install.sh
 Restart fcitx5 (`fcitx5 -r`) and add **Sweet IME** (`sweetime`) in `fcitx5-configtool`.
 Pass `--prefix <dir>`, `--addon-dir <dir>`, or `--uninstall` as needed.
 
+When fcitx5 starts, Sweet IME checks for a new release (at most once a day) and shows a desktop notification (`notify-send`). **更新する** in the notification or in the settings app downloads the archive, verifies its SHA-256, runs its `install.sh` with the same locations through `pkexec` (polkit), and restarts fcitx5. Turn the check off in **設定 → 情報**.
+
 **Option B — Nix Flake / NixOS:**
 A public Cachix binary cache (`https://sweet-ime.cachix.org`) serves CI-tested `x86_64-linux` and `aarch64-linux` builds.
 
@@ -100,6 +102,8 @@ sweet-ime.url = "github:frost-1256/sweet-ime";
 # NixOS / Home Manager
 i18n.inputMethod.fcitx5.addons = [ inputs.sweet-ime.packages.${pkgs.system}.default ];
 ```
+
+Nix builds also notify you of new releases, but they never update themselves: run `nix flake update sweet-ime` and rebuild.
 
 <details>
 <summary>Cachix setup & manual CMake build on Linux</summary>

@@ -1,10 +1,8 @@
-//! Update check against GitHub Releases and installation on Windows and macOS.
+//! Update check against GitHub Releases and installation on Windows, macOS,
+//! and Linux installs from the release archive.
 //!
 //! Requests go through `curl`, which ships with Windows 10 and later and is
 //! on the PATH of the Linux package.
-
-// Elsewhere updates come from the package manager: only the check is used.
-#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -15,10 +13,15 @@ use sweet_engine::paths;
 use sweet_ui::eframe::egui;
 
 const REPO: &str = "frost-1256/sweet-ime";
-#[cfg(target_os = "macos")]
-const INSTALLER: &str = "SweetIME-macOS.zip";
-#[cfg(not(target_os = "macos"))]
-const INSTALLER: &str = "SweetIME-Setup.exe";
+/// The release asset that updates this platform.
+fn installer() -> String {
+    #[cfg(windows)]
+    return "SweetIME-Setup.exe".into();
+    #[cfg(target_os = "macos")]
+    return "SweetIME-macOS.zip".into();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    format!("SweetIME-Linux-{}.tar.gz", std::env::consts::ARCH)
+}
 /// The running version. Debug builds can pretend to be another one with
 /// `SWEET_UPDATE_CURRENT` to try the update flow.
 pub fn current() -> String {
@@ -95,10 +98,11 @@ fn run(c: &mut std::process::Command) -> Result<Vec<u8>, String> {
 fn parse_release(json: &[u8]) -> Result<Release, String> {
     let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("応答を読めません: {e}"))?;
     let tag = v["tag_name"].as_str().ok_or("応答にバージョンがありません")?;
-    let expected_url = format!("https://github.com/{REPO}/releases/download/{tag}/{INSTALLER}");
+    let name = installer();
+    let expected_url = format!("https://github.com/{REPO}/releases/download/{tag}/{name}");
     let installer = v["assets"].as_array().into_iter().flatten().find_map(|a| {
         let url = a["browser_download_url"].as_str()?;
-        if a["name"].as_str()? != INSTALLER || url != expected_url {
+        if a["name"].as_str()? != name || url != expected_url {
             return None;
         }
         Some(Asset {
@@ -186,8 +190,10 @@ fn launch(installer: &Path) -> Result<(), String> {
         .map_err(|e| format!("インストーラーを起動できません: {e}"))
 }
 
-#[cfg(target_os = "macos")]
-fn install_macos(asset: &Asset, archive: &Path) -> Result<(), String> {
+/// Creates the private folder that receives a downloaded archive, after
+/// checking that the release publishes the archive's hash.
+#[cfg(not(windows))]
+fn prepare_work_dir(asset: &Asset, archive: &Path) -> Result<(), String> {
     if !asset
         .sha256
         .as_ref()
@@ -195,8 +201,17 @@ fn install_macos(asset: &Asset, archive: &Path) -> Result<(), String> {
     {
         return Err("このリリースのダウンロードを検証できません。".into());
     }
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(archive.parent().unwrap())
+        .map_err(|e| format!("更新用フォルダーを作れません: {e}"))
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos(asset: &Asset, archive: &Path) -> Result<(), String> {
+    prepare_work_dir(asset, archive)?;
     let work = archive.parent().unwrap();
-    std::fs::create_dir(work).map_err(|e| format!("更新用フォルダーを作れません: {e}"))?;
     let result = download(asset, archive).and_then(|archive| {
         let output = std::process::Command::new("/bin/bash")
             .arg("-c")
@@ -214,6 +229,180 @@ fn install_macos(asset: &Asset, archive: &Path) -> Result<(), String> {
     });
     let _ = std::fs::remove_dir_all(work);
     result
+}
+
+/// Where a Linux install from the release archive lives, so an update can
+/// run the new archive's install.sh with the same locations.
+#[cfg(not(any(windows, target_os = "macos")))]
+#[derive(Debug, PartialEq, Eq)]
+pub struct LinuxInstall {
+    /// `install.sh` options; empty for the default /usr/local install.
+    args: Vec<String>,
+}
+
+/// Finds how this copy of the settings app was installed. Copies from Nix
+/// or a distribution package are updated by their package manager.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn linux_install() -> Result<LinuxInstall, String> {
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| format!("設定アプリの場所がわかりません: {e}"))?;
+    let record = exe.parent().and_then(Path::parent).and_then(|prefix| {
+        std::fs::read_to_string(prefix.join("share/sweet-ime/install.conf")).ok()
+    });
+    // nix/package.nix sets SWEET_IME_PACKAGE=nix when building.
+    let nix_build = option_env!("SWEET_IME_PACKAGE") == Some("nix");
+    linux_install_from(&exe, record.as_deref(), nix_build)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn linux_install_from(
+    exe: &Path,
+    record: Option<&str>,
+    nix_build: bool,
+) -> Result<LinuxInstall, String> {
+    const MANUAL: &str =
+        "この環境では自動で更新できません。リリースページから新しいバージョンを入れてください。";
+    if nix_build || exe.starts_with("/nix/store") {
+        return Err("NixOS では、flake の sweet-ime 入力を更新して再ビルドすると新しいバージョンになります。".into());
+    }
+    let prefix = exe
+        .parent()
+        .filter(|bin| bin.file_name().is_some_and(|name| name == "bin"))
+        .and_then(Path::parent)
+        .ok_or(MANUAL)?;
+    // install.sh records the locations it used. Older archives installed
+    // to /usr/local without a record.
+    let Some(record) = record else {
+        return if prefix == Path::new("/usr/local") {
+            Ok(LinuxInstall { args: Vec::new() })
+        } else {
+            Err(MANUAL.into())
+        };
+    };
+    let mut args = Vec::new();
+    for line in record.lines() {
+        let (option, value) = match line.split_once('=') {
+            Some(("PREFIX", value)) => ("--prefix", value),
+            Some(("ADDON_DIR", value)) => ("--addon-dir", value),
+            _ => continue,
+        };
+        if !value.starts_with('/') {
+            return Err(MANUAL.into());
+        }
+        args.extend([option.to_string(), value.to_string()]);
+    }
+    if args.first().map(String::as_str) != Some("--prefix") || Path::new(&args[1]) != prefix {
+        return Err(MANUAL.into());
+    }
+    Ok(LinuxInstall { args })
+}
+
+/// Downloads the release archive, runs its install.sh as root through
+/// polkit, and restarts fcitx5 so it loads the new addon.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn install_linux(asset: &Asset, archive: &Path) -> Result<(), String> {
+    let target = linux_install()?;
+    prepare_work_dir(asset, archive)?;
+    let work = archive.parent().unwrap();
+    let result = download(asset, archive).and_then(|archive| {
+        let status = std::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(work)
+            .status()
+            .map_err(|e| format!("tar を実行できません: {e}"))?;
+        if !status.success() {
+            return Err("ダウンロードしたファイルを展開できません".into());
+        }
+        let script = work
+            .join(format!("sweet-ime-linux-{}", std::env::consts::ARCH))
+            .join("install.sh");
+        if !script.is_file() {
+            return Err("ダウンロードしたファイルに install.sh がありません".into());
+        }
+        let output = std::process::Command::new("pkexec")
+            .arg(&script)
+            .args(&target.args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("pkexec を実行できません(polkit が必要です): {e}"))?;
+        match output.status.code() {
+            Some(0) => {}
+            // pkexec: the dialog was dismissed or authorization failed.
+            Some(126 | 127) => {
+                return Err("管理者の認証ができなかったため、更新を中止しました".into());
+            }
+            _ => {
+                let message = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("アップデートに失敗しました: {}", message.trim()));
+            }
+        }
+        // Replace the running fcitx5 so it loads the new addon.
+        let _ = std::process::Command::new("fcitx5")
+            .args(["-r", "-d"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        Ok(())
+    });
+    let _ = std::fs::remove_dir_all(work);
+    result
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotifyChoice {
+    Open,
+    Skip,
+    Dismissed,
+}
+
+/// Shows a desktop notification about `r` and waits for the user's choice.
+/// Returns `None` when no notification could be shown.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn notify(r: &Release) -> Option<NotifyChoice> {
+    let title = "Sweet IME のアップデート";
+    let body = format!(
+        "Sweet IME {} が公開されています(いまは {})。",
+        r.version,
+        current()
+    );
+    let base = || {
+        let mut c = std::process::Command::new("notify-send");
+        c.args(["--app-name=Sweet IME", "--icon=sweet-ime"]);
+        c.stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        c
+    };
+    let open = if linux_install().is_ok() {
+        "更新する"
+    } else {
+        "詳しく見る"
+    };
+    let output = base()
+        .arg("--wait")
+        .arg(format!("--action=open={open}"))
+        .arg("--action=skip=このバージョンはスキップ")
+        .args([title, body.as_str()])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        return Some(match String::from_utf8_lossy(&output.stdout).trim() {
+            "open" => NotifyChoice::Open,
+            "skip" => NotifyChoice::Skip,
+            _ => NotifyChoice::Dismissed,
+        });
+    }
+    // libnotify before 0.7.9 has no actions.
+    base()
+        .args([title, body.as_str()])
+        .status()
+        .ok()
+        .filter(|status| status.success())
+        .map(|_| NotifyChoice::Dismissed)
 }
 
 // --- Remembered state (last check, skipped version) ---
@@ -276,18 +465,18 @@ pub enum State {
     Available(Release),
     Downloading(Release),
     /// The installer is running; the caller should close.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     Launched,
-    #[cfg(target_os = "macos")]
+    #[cfg(not(windows))]
     Installed,
     Failed(String),
 }
 
 enum Event {
     Checked(Result<Release, String>),
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     Downloaded(Result<PathBuf, String>),
-    #[cfg(target_os = "macos")]
+    #[cfg(not(windows))]
     Installed(Result<(), String>),
 }
 
@@ -327,7 +516,6 @@ impl Updater {
     }
 
     /// Downloads and launches the installer of the available release.
-    #[cfg(any(windows, target_os = "macos"))]
     pub fn install(&mut self, ctx: &egui::Context) {
         let State::Available(r) = &self.state else { return };
         let Some(asset) = r.installer.clone() else {
@@ -337,10 +525,10 @@ impl Updater {
         let r = r.clone();
         #[cfg(windows)]
         let dest = std::env::temp_dir().join(format!("SweetIME-Setup-{}.exe", r.version));
-        #[cfg(target_os = "macos")]
+        #[cfg(not(windows))]
         let dest = std::env::temp_dir()
             .join(format!("sweet-ime-update-{}-{}", std::process::id(), now()))
-            .join(INSTALLER);
+            .join(installer());
         self.download_path = Some((dest.clone(), asset.size));
         let (tx, rx) = channel();
         let ctx2 = ctx.clone();
@@ -349,6 +537,8 @@ impl Updater {
             let _ = tx.send(Event::Downloaded(download(&asset, &dest)));
             #[cfg(target_os = "macos")]
             let _ = tx.send(Event::Installed(install_macos(&asset, &dest)));
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let _ = tx.send(Event::Installed(install_linux(&asset, &dest)));
             ctx2.request_repaint();
         });
         self.rx = Some(rx);
@@ -378,18 +568,16 @@ impl Updater {
                 if is_newer(&r.version, &current()) { State::Available(r) } else { State::UpToDate }
             }
             Event::Checked(Err(e)) => State::Failed(e),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(windows)]
             Event::Downloaded(Err(e)) => State::Failed(e),
             #[cfg(windows)]
             Event::Downloaded(Ok(path)) => match launch(&path) {
                 Ok(()) => State::Launched,
                 Err(e) => State::Failed(e),
             },
-            #[cfg(not(any(windows, target_os = "macos")))]
-            Event::Downloaded(Ok(_)) => State::Idle,
-            #[cfg(target_os = "macos")]
+            #[cfg(not(windows))]
             Event::Installed(Ok(())) => State::Installed,
-            #[cfg(target_os = "macos")]
+            #[cfg(not(windows))]
             Event::Installed(Err(e)) => State::Failed(e),
         };
     }
@@ -423,7 +611,7 @@ mod tests {
                 {"name": "@installer@", "size": 123, "digest": "sha256:ABCDEF",
                  "browser_download_url": "https://github.com/frost-1256/sweet-ime/releases/download/v0.2.0/@installer@"}
             ]
-        }"###.replace("@installer@", INSTALLER);
+        }"###.replace("@installer@", &installer());
         let r = parse_release(json.as_bytes()).unwrap();
         assert_eq!(r.version, "0.2.0");
         assert_eq!(r.notes, "## What's Changed\n* Things");
@@ -448,7 +636,7 @@ mod tests {
     #[ignore]
     fn downloads_and_verifies_installer() {
         let a = fetch_latest().unwrap().installer.unwrap();
-        let dest = std::env::temp_dir().join(format!("sweet-update-test-{INSTALLER}"));
+        let dest = std::env::temp_dir().join(format!("sweet-update-test-{}", installer()));
         download(&a, &dest).unwrap();
         let _ = std::fs::remove_file(&dest);
         let bad = Asset { sha256: Some("0".repeat(64)), ..a };
@@ -456,11 +644,51 @@ mod tests {
         assert!(!dest.exists());
     }
 
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn finds_how_the_linux_archive_was_installed() {
+        let exe = Path::new("/usr/local/bin/sweet-settings");
+        assert_eq!(
+            linux_install_from(exe, None, false),
+            Ok(LinuxInstall { args: vec![] })
+        );
+        let record = "PREFIX=/usr/local\nADDON_DIR=/usr/lib/x86_64-linux-gnu/fcitx5\n";
+        assert_eq!(
+            linux_install_from(exe, Some(record), false).unwrap().args,
+            [
+                "--prefix",
+                "/usr/local",
+                "--addon-dir",
+                "/usr/lib/x86_64-linux-gnu/fcitx5"
+            ]
+        );
+        let opt = Path::new("/opt/sweet/bin/sweet-settings");
+        assert!(linux_install_from(opt, None, false).is_err());
+        assert!(linux_install_from(opt, Some("PREFIX=/opt/sweet\n"), false).is_ok());
+        // The record must describe this copy.
+        assert!(linux_install_from(opt, Some(record), false).is_err());
+        assert!(linux_install_from(exe, Some("PREFIX=relative\n"), false).is_err());
+        let nix = Path::new("/nix/store/abc-sweet-ime/bin/.sweet-settings-wrapped");
+        assert!(
+            linux_install_from(nix, None, false)
+                .unwrap_err()
+                .contains("NixOS")
+        );
+        // Nix builds say so even outside /nix/store.
+        assert!(
+            linux_install_from(exe, None, true)
+                .unwrap_err()
+                .contains("NixOS")
+        );
+        let package = Path::new("/usr/bin/sweet-settings");
+        assert!(linux_install_from(package, None, false).is_err());
+    }
+
     #[test]
     fn ignores_installers_hosted_elsewhere() {
         let json = r#"{"tag_name": "v9.0.0", "assets": [
             {"name": "@installer@", "size": 1, "browser_download_url": "https://example.com/@installer@"}]}"#
-            .replace("@installer@", INSTALLER);
+            .replace("@installer@", &installer());
         assert!(parse_release(json.as_bytes()).unwrap().installer.is_none());
     }
 }
