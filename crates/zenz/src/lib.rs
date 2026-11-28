@@ -401,11 +401,18 @@ pub struct ZenzReranker {
 
 impl ZenzReranker {
     pub fn new(zenz: Zenz) -> Self {
+        // The 12-layer small model benefits from more lattice weight, while
+        // raising the weight regressed xsmall on the contextual benchmark.
+        let cfg = &zenz.model.cfg;
+        let mix = match (cfg.n_layer, cfg.n_embd, cfg.vocab_size) {
+            (12, 768, 6000) => 0.55,
+            _ => 0.40,
+        };
         Self {
             zenz,
             n: 8,
             n_without_context: 10,
-            mix: 0.40,
+            mix,
             generate_min_chars: 10,
             generate_margin: 2.2,
             generate_spelled_margin: 1.5,
