@@ -25,7 +25,7 @@ pub enum Action {
 }
 
 /// Format version written to files (see [`Keymap::parse`]).
-pub const KEYMAP_VERSION: u32 = 3;
+pub const KEYMAP_VERSION: u32 = 4;
 
 /// When a binding applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -357,7 +357,7 @@ impl Default for Keymap {
                 b(k(0xF2), ImeOn),
                 b(k(0x1A), ImeOff),
                 b(k(0x1D), ImeOff),
-                b(k(0xF0), ImeOff),
+                b(k(0xF0), ImeToggle),
                 b(k(0x20), Key(super::Key::Space)),
                 b(Chord::shift(0x20), Key(super::Key::HalfSpace)),
                 b(k(0x0D), Key(super::Key::Enter)),
@@ -460,6 +460,16 @@ impl Keymap {
     /// Adds default bindings introduced after file `version`, unless the
     /// user already uses the chord.
     fn upgrade(&mut self, version: u32) {
+        if version < 4 {
+            for binding in &mut self.bindings {
+                if binding.chord == Chord::key(0xF0)
+                    && binding.action == Action::ImeOff
+                    && binding.when == When::Always
+                {
+                    binding.action = Action::ImeToggle;
+                }
+            }
+        }
         let added = [
             (2, Chord { vk: 0xC0, ctrl: false, shift: false, alt: true }, Action::ImeToggle),
             (3, Chord::shift(0x20), Action::Key(Key::HalfSpace)),
@@ -543,6 +553,13 @@ mod tests {
     }
 
     #[test]
+    fn legacy_eisu_default_becomes_a_toggle() {
+        let map = Keymap::parse("#! version 3\nEisu ime_off\nEisu ime_off composing\n");
+        assert_eq!(map.lookup(Chord::key(0xF0), false), Some(Action::ImeToggle));
+        assert_eq!(map.lookup(Chord::key(0xF0), true), Some(Action::ImeOff));
+    }
+
+    #[test]
     fn preserved_toggles() {
         let mut map = Keymap::default();
         map.bindings.push(Binding {
@@ -556,7 +573,7 @@ mod tests {
             assert!(keys.contains(&(Chord { alt: true, ..Chord::key(vk) }, Action::ImeToggle)));
         }
         assert!(keys.contains(&(Chord { alt: true, ..Chord::key(0xC0) }, Action::ImeToggle)));
-        assert!(keys.contains(&(Chord::key(0xF0), Action::ImeOff)));
+        assert!(keys.contains(&(Chord::key(0xF0), Action::ImeToggle)));
         assert!(!keys.iter().any(|(chord, _)| chord.vk == 0x1C));
     }
 

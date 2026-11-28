@@ -29,16 +29,19 @@ pub fn setup(ctx: &egui::Context) {
 
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    // One Japanese font for everything (mixing a Latin font gives uneven
-    // baselines), then a fallback.
+    // Keep the Japanese UI fonts first for consistent text metrics.
     let mut loaded = Vec::new();
+    let mut font_files = std::collections::HashMap::new();
     for (name, path, index) in system_fonts() {
-        if let Ok(bytes) = std::fs::read(&path) {
-            let mut data = egui::FontData::from_owned(bytes);
+        let data = font_files
+            .entry(path)
+            .or_insert_with_key(|path| std::fs::read(path).ok().map(egui::FontData::from_owned));
+        if let Some(mut data) = data.clone() {
             data.index = index;
-            // Japanese fonts have a tall ascent; nudge glyphs down so text
-            // is centred in buttons.
-            data.tweak.y_offset_factor = 0.12;
+            if matches!(name.as_str(), "yugothic" | "meiryo" | "hiragino" | "ja") {
+                // Adjust the primary fonts for vertical alignment in buttons.
+                data.tweak.y_offset_factor = 0.12;
+            }
             fonts
                 .font_data
                 .insert(name.clone(), std::sync::Arc::new(data));
@@ -54,26 +57,62 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Japanese UI fonts to try, as (name, file, face index).
+/// UI fonts in fallback order, as (name, file, face index).
 #[cfg(windows)]
 fn system_fonts() -> Vec<(String, String, u32)> {
-    vec![
-        ("yugothic".into(), r"C:\Windows\Fonts\YuGothM.ttc".into(), 0),
-        ("meiryo".into(), r"C:\Windows\Fonts\meiryo.ttc".into(), 0),
+    let directory = std::env::var_os("WINDIR")
+        .map_or_else(
+            || std::path::PathBuf::from(r"C:\Windows"),
+            std::path::PathBuf::from,
+        )
+        .join("Fonts");
+    [
+        ("yugothic", "YuGothM.ttc"),
+        ("meiryo", "meiryo.ttc"),
+        ("yahei", "msyh.ttc"),
+        ("jhenghei", "msjh.ttc"),
+        ("malgun", "malgun.ttf"),
+        ("emoji", "seguiemj.ttf"),
+        ("segoe", "segoeui.ttf"),
+        ("nirmala", "Nirmala.ttc"),
+        ("leelawadee", "LeelawUI.ttf"),
+        ("ebrima", "ebrima.ttf"),
+        ("segoe_symbol", "seguisym.ttf"),
     ]
+    .into_iter()
+    .map(|(name, file)| {
+        (
+            name.into(),
+            directory.join(file).to_string_lossy().into_owned(),
+            0,
+        )
+    })
+    .collect()
 }
 
 #[cfg(target_os = "macos")]
 fn system_fonts() -> Vec<(String, String, u32)> {
-    vec![(
-        "hiragino".into(),
-        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc".into(),
-        0,
-    )]
+    [
+        ("hiragino", "ヒラギノ角ゴシック W3.ttc"),
+        ("pingfang", "PingFang.ttc"),
+        ("songti", "Supplemental/Songti.ttc"),
+        ("korean", "AppleSDGothicNeo.ttc"),
+        ("emoji", "Apple Color Emoji.ttc"),
+        ("arial", "Supplemental/Arial.ttf"),
+        ("arabic", "GeezaPro.ttc"),
+        ("hebrew", "Supplemental/ArialHB.ttc"),
+        ("devanagari", "Supplemental/Devanagari Sangam MN.ttc"),
+        ("bangla", "Supplemental/Bangla Sangam MN.ttc"),
+        ("thai", "Thonburi.ttc"),
+        ("khmer", "Supplemental/Khmer Sangam MN.ttf"),
+        ("ethiopic", "Supplemental/Kefa.ttc"),
+    ]
+    .into_iter()
+    .map(|(name, file)| (name.into(), format!("/System/Library/Fonts/{file}"), 0))
+    .collect()
 }
 
-/// Japanese UI fonts to try, as (name, file, face index): the best match
-/// fontconfig has that covers Japanese.
+/// Use fontconfig's ordered fallback chain, prioritizing its Japanese match.
 #[cfg(not(any(windows, target_os = "macos")))]
 fn system_fonts() -> Vec<(String, String, u32)> {
     let out = std::process::Command::new("fc-match")
@@ -84,22 +123,44 @@ fn system_fonts() -> Vec<(String, String, u32)> {
             "sans-serif:lang=ja",
         ])
         .output();
-    let Ok(out) = out else { return Vec::new() };
-    String::from_utf8_lossy(&out.stdout)
+    match out {
+        Ok(out) if out.status.success() => fontconfig_fonts(&String::from_utf8_lossy(&out.stdout)),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(any(test, not(any(windows, target_os = "macos"))))]
+fn fontconfig_fonts(output: &str) -> Vec<(String, String, u32)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut has_japanese_match = false;
+    let mut fonts: Vec<_> = output
         .lines()
-        .filter_map(|line| {
+        .enumerate()
+        .filter_map(|(i, line)| {
             let mut f = line.split('\t');
             let (file, index, langs) = (f.next()?, f.next()?, f.next()?);
-            let outline = [".ttf", ".otf", ".ttc"]
+            let supported = [".ttf", ".otf", ".ttc", ".otc"]
                 .iter()
                 .any(|ext| file.to_ascii_lowercase().ends_with(ext));
-            let japanese = langs.split('|').any(|l| l == "ja");
             // The upper bits select a named instance of a variable font.
             let index = index.trim().parse::<u32>().ok()? & 0xffff;
-            (outline && japanese).then(|| ("ja".to_string(), file.to_string(), index))
+            if !supported || !seen.insert((file, index)) {
+                return None;
+            }
+            let name = if !has_japanese_match && langs.split('|').any(|lang| lang == "ja") {
+                has_japanese_match = true;
+                "ja".into()
+            } else {
+                format!("fontconfig-{i}")
+            };
+            Some((name, file.to_owned(), index))
         })
-        .take(1)
-        .collect()
+        .collect();
+    if let Some(index) = fonts.iter().position(|(name, _, _)| name == "ja") {
+        let primary = fonts.remove(index);
+        fonts.insert(0, primary);
+    }
+    fonts
 }
 
 /// A Windows 11 style on/off switch.
@@ -412,6 +473,64 @@ pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fontconfig_keeps_multilingual_fallbacks_after_japanese() {
+        let fonts = super::fontconfig_fonts(concat!(
+            "/fonts/Arabic.ttf\t0\tar\n",
+            "/fonts/CJK.ttc\t65538\ten|ja\n",
+            "/fonts/CJK.ttc\t2\tja\n",
+            "/fonts/CJK.ttc\t3\tko\n",
+            "/fonts/Emoji.ttf\t0\t\n",
+            "/fonts/Bitmap.pcf\t0\tth\n",
+        ));
+        assert_eq!(
+            fonts
+                .iter()
+                .map(|(_, path, index)| (path.as_str(), *index))
+                .collect::<Vec<_>>(),
+            [
+                ("/fonts/CJK.ttc", 2),
+                ("/fonts/Arabic.ttf", 0),
+                ("/fonts/CJK.ttc", 3),
+                ("/fonts/Emoji.ttf", 0),
+            ],
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn settings_fonts_cover_multilingual_dictionary_entries() {
+        let ctx = egui::Context::default();
+        super::install_fonts(&ctx);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            ui.ctx().fonts_mut(|fonts| {
+                let font = egui::FontId::proportional(15.0);
+                for sample in [
+                    "闲鱼",
+                    "臺灣",
+                    "한글",
+                    "😀",
+                    "Tiếng Việt",
+                    "Ελληνικά",
+                    "Кириллица",
+                    "العربية",
+                    "עברית",
+                    "हिन्दी",
+                    "বাংলা",
+                    "ไทย",
+                    "ភាសាខ្មែរ",
+                    "አማርኛ",
+                ] {
+                    assert!(
+                        fonts.has_glyphs(&font, sample),
+                        "Missing glyphs for {sample}"
+                    );
+                }
+            });
+        });
+        output.textures_delta.clear();
+    }
+
     use super::*;
 
     #[test]

@@ -1426,7 +1426,12 @@ fn render(hwnd: HWND, st: &mut State) -> Result<()> {
                 X: pad + INPUT_PAD,
                 Y: pad + (INPUT_H - metrics.height) / 2.0,
             };
-            rt.DrawTextLayout(origin, layout, &sub, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            rt.DrawTextLayout(
+                origin,
+                layout,
+                &sub,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+            );
         }
 
         // Clip candidate rows above the footer so shrinking smoothly never overlaps it.
