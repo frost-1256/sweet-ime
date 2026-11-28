@@ -28,6 +28,19 @@ pub trait Reranker: Send + Sync {
     fn generate(&self, _reading: &str, _left_context: &str, _best: &Conversion) -> Option<String> {
         None
     }
+    /// Like [`Reranker::generate`], with `spelled_cost` giving the lattice
+    /// cost of a surface that dictionary words can spell for this reading
+    /// (`None` when they cannot), so the generated text can be weighed like
+    /// a lattice candidate.
+    fn generate_spelled(
+        &self,
+        reading: &str,
+        left_context: &str,
+        best: &Conversion,
+        _spelled_cost: &dyn Fn(&str) -> Option<i32>,
+    ) -> Option<String> {
+        self.generate(reading, left_context, best)
+    }
 }
 
 /// How many lattice candidates per reranker slot `convert_best` draws its
@@ -330,23 +343,33 @@ impl Converter {
                 && super::extras::casual_phrases(text).next().is_none()
                 && let Some(surface) =
                     self.rerank
-                        .cached_generate(r.as_ref(), text, left_context, best)
+                        .cached_generate(r.as_ref(), text, left_context, best, &|surface| {
+                            self.spell(text, surface).map(|c| c.cost)
+                        })
                 && !res.iter().any(|c| c.surface() == surface)
             {
-                let generated = Conversion {
-                    segments: vec![super::Segment {
-                        reading: text.to_string(),
-                        surface: surface.clone(),
-                        words: vec![Word {
+                // Dictionary words keep their segments for later editing.
+                // It keeps the best candidate's cost, as before.
+                let segments = self.spell(text, &surface).map_or_else(
+                    || {
+                        vec![super::Segment {
                             reading: text.to_string(),
-                            surface,
-                            lid: self.noun_pos,
-                            rid: self.noun_pos,
-                            cost: best.cost,
-                            learned: false,
-                            user: false,
-                        }],
-                    }],
+                            surface: surface.clone(),
+                            words: vec![Word {
+                                reading: text.to_string(),
+                                surface: surface.clone(),
+                                lid: self.noun_pos,
+                                rid: self.noun_pos,
+                                cost: best.cost,
+                                learned: false,
+                                user: false,
+                            }],
+                        }]
+                    },
+                    |c| c.segments,
+                );
+                let generated = Conversion {
+                    segments,
                     cost: best.cost,
                 };
                 res.insert(0, generated);
@@ -481,6 +504,7 @@ impl RerankState {
         text: &str,
         left_context: &str,
         best: &Conversion,
+        spelled_cost: &dyn Fn(&str) -> Option<i32>,
     ) -> Option<String> {
         let words = best
             .segments
@@ -539,7 +563,7 @@ impl RerankState {
             }
         }
         let mut done = Done(self, &key, None);
-        let generated = r.generate(text, left_context, best);
+        let generated = r.generate_spelled(text, left_context, best, spelled_cost);
         done.2 = Some(generated.clone());
         generated
     }
@@ -639,13 +663,13 @@ mod tests {
         };
         assert_eq!(
             state
-                .cached_generate(&r_some, "あずみの", "", &best)
+                .cached_generate(&r_some, "あずみの", "", &best, &|_| None)
                 .as_deref(),
             Some("安曇野")
         );
         assert_eq!(
             state
-                .cached_generate(&r_some, "あずみの", "", &best)
+                .cached_generate(&r_some, "あずみの", "", &best, &|_| None)
                 .as_deref(),
             Some("安曇野")
         );
@@ -655,7 +679,7 @@ mod tests {
         let changed = sample_conversion("阿曇野", 12000, 9500);
         assert_eq!(
             state
-                .cached_generate(&r_some, "あずみの", "", &changed)
+                .cached_generate(&r_some, "あずみの", "", &changed, &|_| None)
                 .as_deref(),
             Some("安曇野")
         );
@@ -668,8 +692,14 @@ mod tests {
             result: None,
             barrier: None,
         };
-        assert_eq!(state.cached_generate(&r_none, "ほげ", "", &best), None);
-        assert_eq!(state.cached_generate(&r_none, "ほげ", "", &best), None);
+        assert_eq!(
+            state.cached_generate(&r_none, "ほげ", "", &best, &|_| None),
+            None
+        );
+        assert_eq!(
+            state.cached_generate(&r_none, "ほげ", "", &best, &|_| None),
+            None
+        );
         assert_eq!(calls_none.load(Ordering::SeqCst), 1);
     }
 
@@ -705,11 +735,13 @@ mod tests {
         let s1 = state.clone();
         let r1 = reranker.clone();
         let b1 = best.clone();
-        let t1 = std::thread::spawn(move || s1.cached_generate(r1.as_ref(), "あずみの", "", &b1));
+        let t1 = std::thread::spawn(move || {
+            s1.cached_generate(r1.as_ref(), "あずみの", "", &b1, &|_| None)
+        });
 
         // Wait until t1 has entered `generate` (so key is in `gen_running`), then invoke t2.
         started.wait();
-        let res2 = state.cached_generate(reranker.as_ref(), "あずみの", "", &best);
+        let res2 = state.cached_generate(reranker.as_ref(), "あずみの", "", &best, &|_| None);
         let res1 = t1.join().unwrap();
 
         assert_eq!(res1.as_deref(), Some("安曇野"));

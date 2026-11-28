@@ -1087,6 +1087,72 @@ impl Converter {
         res
     }
 
+    /// The cheapest lattice path for `text` whose words spell `surface`, or
+    /// `None` when no path does.
+    pub(super) fn spell(&self, text: &str, surface: &str) -> Option<Conversion> {
+        if text.is_empty() || surface.is_empty() {
+            return None;
+        }
+        let extras = self.extras(text);
+        let lat = self.build_lattice(text, &[], &extras);
+        // A state is a node and the length of `surface` spelled through it.
+        let mut best: std::collections::HashMap<(u32, usize), (i32, (u32, usize))> =
+            std::collections::HashMap::new();
+        let mut ending: Vec<Vec<(u32, usize)>> = vec![Vec::new(); text.len() + 1];
+        best.insert((BOS, 0), (0, (NONE, 0)));
+        ending[0].push((BOS, 0));
+        let mut end: Option<(i32, (u32, usize))> = None;
+        for pos in 0..=text.len() {
+            for (prev, spelled) in std::mem::take(&mut ending[pos]) {
+                let cost = best[&(prev, spelled)].0;
+                let rid = lat.nodes[prev as usize].rid;
+                if pos == text.len() {
+                    if spelled == surface.len() {
+                        let c = cost + self.dict.connection(rid, lat.nodes[EOS as usize].lid);
+                        if end.is_none_or(|(e, _)| c < e) {
+                            end = Some((c, (prev, spelled)));
+                        }
+                    }
+                    continue;
+                }
+                let mut id = lat.begin_head[pos];
+                while id != NONE {
+                    let node_id = id;
+                    let node = &lat.nodes[id as usize];
+                    id = lat.begin_next[id as usize];
+                    if node.end <= node.start
+                        || node.surface.is_empty()
+                        || !surface[spelled..].starts_with(node.surface)
+                    {
+                        continue;
+                    }
+                    let key = (node_id, spelled + node.surface.len());
+                    let c = cost + self.dict.connection(rid, node.lid) + node.wcost;
+                    match best.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            if c < e.get().0 {
+                                e.insert((c, (prev, spelled)));
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert((c, (prev, spelled)));
+                            ending[node.end].push(key);
+                        }
+                    }
+                }
+            }
+        }
+        let (cost, mut back) = end?;
+        let mut path = Vec::new();
+        while back.0 != BOS {
+            path.push(back.0);
+            back = best[&back].1;
+        }
+        path.reverse();
+        let segments = self.segment(self.to_words(&lat, text, &path), &[]);
+        Some(Conversion { segments, cost })
+    }
+
     /// Remembers that the user chose `surface` for `reading`.
     pub fn learn(&self, reading: &str, surface: &str) {
         if reading == surface

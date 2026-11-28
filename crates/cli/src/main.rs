@@ -38,6 +38,30 @@ fn main() -> Result<()> {
         if let Some(m) = std::env::var("SWEET_MIX").ok().and_then(|v| v.parse().ok()) {
             r.mix = m;
         }
+        if let Some(n) = std::env::var("SWEET_GEN_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            r.generate_min_chars = n;
+        }
+        if let Some(m) = std::env::var("SWEET_GEN_MARGIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            r.generate_margin = m;
+        }
+        if let Some(m) = std::env::var("SWEET_GEN_SPELLED")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            r.generate_spelled_margin = m;
+        }
+        if let Some(n) = std::env::var("SWEET_GEN_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            r.generate_max_chars = n;
+        }
         eprintln!("zenz model {path} loaded in {:.2?}", t.elapsed());
         conv = conv.with_reranker(Box::new(r));
     }

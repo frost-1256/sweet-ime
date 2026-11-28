@@ -305,11 +305,18 @@ pub struct ZenzReranker {
     /// Weight of the lattice cost (in nats, cost / 500) relative to the
     /// model log-probability.
     pub mix: f32,
+    /// Shortest reading (in characters) for which the model generates its
+    /// own conversion.
+    pub generate_min_chars: usize,
+    /// How much higher (in nats) the model must score its own conversion
+    /// than the best lattice candidate to use it.
+    pub generate_margin: f32,
+    /// The least the model must prefer its own conversion when dictionary
+    /// words spell it, on top of the lattice cost difference.
+    pub generate_spelled_margin: f32,
+    /// Longest reading (in characters) for which the model generates.
+    pub generate_max_chars: usize,
 }
-
-/// Shortest reading (in characters) for which [`ZenzReranker`] generates its
-/// own conversion.
-const GENERATE_MIN_CHARS: usize = 14;
 
 impl ZenzReranker {
     pub fn new(zenz: Zenz) -> Self {
@@ -318,6 +325,10 @@ impl ZenzReranker {
             n: 8,
             n_without_context: 10,
             mix: 0.40,
+            generate_min_chars: 10,
+            generate_margin: 2.2,
+            generate_spelled_margin: 1.5,
+            generate_max_chars: 120,
         }
     }
 }
@@ -445,11 +456,21 @@ impl sweet_engine::Reranker for ZenzReranker {
         left_context: &str,
         best: &sweet_engine::Conversion,
     ) -> Option<String> {
+        self.generate_spelled(reading, left_context, best, &|_| None)
+    }
+
+    fn generate_spelled(
+        &self,
+        reading: &str,
+        left_context: &str,
+        best: &sweet_engine::Conversion,
+        spelled_cost: &dyn Fn(&str) -> Option<i32>,
+    ) -> Option<String> {
         let reading_chars = reading.chars().count();
         // Long readings combine several ambiguous spans, so the model's own
         // conversion often beats every lattice candidate. On short readings
         // it mostly replaces correct dictionary words.
-        if !(GENERATE_MIN_CHARS..=48).contains(&reading_chars)
+        if !(self.generate_min_chars..=self.generate_max_chars).contains(&reading_chars)
             || reading.bytes().any(|b| b.is_ascii_alphabetic() || b.is_ascii_digit())
             || best.repeated_kanji_reading().is_some()
             || best
@@ -462,7 +483,7 @@ impl sweet_engine::Reranker for ZenzReranker {
         }
         let best_surface = best.surface();
         let prompt = Zenz::prompt(reading, left_context);
-        let max_tokens = (reading_chars * 2).clamp(16, 80);
+        let max_tokens = (reading_chars * 2).clamp(16, 80.max(reading_chars + 16));
         let generated = self.zenz.generate(&prompt, max_tokens).trim().to_string();
         if generated.is_empty()
             || generated == best_surface
@@ -482,11 +503,23 @@ impl sweet_engine::Reranker for ZenzReranker {
                 return None;
             }
         }
-        // Accept the generated candidate only when the model strongly prefers
-        // it over the best lattice conversion.
+        // When dictionary words spell the generated text, weigh it like a
+        // lattice candidate against the best one. Otherwise accept it only
+        // when the model strongly prefers it.
+        let margin = match spelled_cost(&generated) {
+            Some(cost) => {
+                let mix = if left_context.is_empty() {
+                    self.mix
+                } else {
+                    self.mix.min(0.28)
+                };
+                (mix * (cost - best.cost) as f32 / 500.0).max(self.generate_spelled_margin)
+            }
+            None => self.generate_margin,
+        };
         let pair = [best_surface, generated.clone()];
         let scores = self.zenz.score_candidates(&prompt, &pair, true);
-        if scores.len() == 2 && scores[1] > scores[0] + 2.2 {
+        if scores.len() == 2 && scores[1] > scores[0] + margin {
             Some(generated)
         } else {
             None

@@ -1318,6 +1318,67 @@ impl sweet_engine::Reranker for PickLast {
     }
 }
 
+/// Generates `surface` and records the lattice cost offered for it and for
+/// a spelling no dictionary path produces.
+struct Generates {
+    surface: &'static str,
+    costs: std::sync::Arc<std::sync::Mutex<Vec<Option<i32>>>>,
+}
+
+impl sweet_engine::Reranker for Generates {
+    fn choose(&self, _r: &str, _l: &str, _c: &[sweet_engine::Conversion]) -> Option<usize> {
+        None
+    }
+
+    fn generate_spelled(
+        &self,
+        _reading: &str,
+        _left_context: &str,
+        _best: &sweet_engine::Conversion,
+        spelled_cost: &dyn Fn(&str) -> Option<i32>,
+    ) -> Option<String> {
+        let mut costs = self.costs.lock().unwrap();
+        costs.push(spelled_cost(self.surface));
+        costs.push(spelled_cost("今日はいい天気ｘ"));
+        Some(self.surface.into())
+    }
+}
+
+#[test]
+fn generated_conversions_spelled_by_dictionary_words_keep_their_words() {
+    let Some(c) = converter() else { return };
+    let reading = "きょうはいいてんき";
+    let lattice = c.convert(reading, &[], 1)[0].cost;
+    // An odd spelling, so it is not already a lattice candidate.
+    let surface = "今日葉良い天気";
+    assert!(
+        !c.convert(reading, &[], 10)
+            .iter()
+            .any(|c| c.surface() == surface)
+    );
+    let costs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let c = c.with_reranker(Box::new(Generates {
+        surface,
+        costs: costs.clone(),
+    }));
+    let best = &c.convert_best(reading, &[], "")[0];
+    assert_eq!(best.surface(), surface);
+    assert!(best.segments.len() > 1, "{best:?}");
+    assert!(
+        best.segments
+            .iter()
+            .flat_map(|s| &s.words)
+            .any(|w| w.surface == "葉"),
+        "{best:?}"
+    );
+    // Dictionary words spell the generated text at a lattice path's cost,
+    // which is no cheaper than the lattice best; nothing spells the other.
+    let costs = costs.lock().unwrap();
+    let spelled = costs[0].expect("spelled by dictionary words");
+    assert!(spelled >= lattice, "{spelled} < {lattice}");
+    assert_eq!(costs[1], None);
+}
+
 #[test]
 fn neural_reranking_keeps_learned_words_and_still_picks_other_words() {
     let Some(c) = converter() else { return };
