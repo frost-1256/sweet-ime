@@ -38,7 +38,9 @@ test("stores only the conversion fields and deduplicates a batch", async () => {
     assert.equal((await post({ ...sample, app: "private", installationId: "id" })).status, 204);
     assert.equal((await post(sample)).status, 204);
     assert.equal(records.size, 1);
-    assert.deepEqual([...records.values()], [sample]);
+    assert.equal((await post({ ...sample, version: "1.0.0-beta.1" })).status, 204);
+    assert.equal(records.size, 2);
+    assert.deepEqual([...records.values()][0], sample);
 });
 
 test("rejects invalid credentials and rate-limited requests", async () => {
@@ -49,6 +51,7 @@ test("rejects invalid credentials and rate-limited requests", async () => {
 test("rejects stable versions, disallowed content and oversized bodies", async () => {
     const { records, post } = setup();
     assert.equal((await post({ ...sample, version: "1.0.0" })).status, 400);
+    assert.equal((await post({ ...sample, version: "1.0.0-rc.1" })).status, 400);
     assert.equal((await post({ ...sample, records: [{ reading: "ぱすわーど", text: "秘密123" }] })).status, 400);
     assert.equal((await post("x".repeat(48 * 1024 + 1))).status, 400);
     assert.equal(records.size, 0);

@@ -18,11 +18,14 @@ pub fn endpoint() -> Option<&'static str> {
 
 fn feedback_endpoint<'a>(version: &str, url: &'a str) -> Option<&'a str> {
     let (_, prerelease) = version.split_once('-')?;
-    if prerelease != "alpha"
-        && !prerelease
-            .strip_prefix("alpha.")
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-    {
+    let channel = |name: &str| {
+        prerelease == name
+            || prerelease
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if !channel("alpha") && !channel("beta") {
         return None;
     }
     let host = url.strip_prefix("https://")?.strip_suffix("/v1/batches")?;
@@ -639,10 +642,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_alpha_builds_can_use_the_https_endpoint() {
+    fn only_alpha_and_beta_builds_can_use_the_https_endpoint() {
         let url = "https://alpha.example.com/v1/batches";
         assert_eq!(feedback_endpoint("1.0.0-alpha.5", url), Some(url));
-        assert!(feedback_endpoint("1.0.0-beta.1", url).is_none());
+        assert_eq!(feedback_endpoint("1.0.0-beta.1", url), Some(url));
+        assert!(feedback_endpoint("1.0.0-rc.1", url).is_none());
+        assert!(feedback_endpoint("1.0.0-betax", url).is_none());
         assert!(feedback_endpoint("1.0.0", url).is_none());
         assert!(
             feedback_endpoint("1.0.0-alpha.5", "http://alpha.example.com/v1/batches").is_none()

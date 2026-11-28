@@ -11,7 +11,7 @@ function validText(value, pattern) {
 
 function validate(value) {
     if (!value || value.schema !== 1 ||
-        typeof value.version !== "string" || !/^\d+\.\d+\.\d+-alpha(?:\.\d+)?$/.test(value.version) ||
+        typeof value.version !== "string" || !/^\d+\.\d+\.\d+-(?:alpha|beta)(?:\.\d+)?$/.test(value.version) ||
         !Array.isArray(value.records) || value.records.length === 0 || value.records.length > MAX_RECORDS) {
         return null;
     }
