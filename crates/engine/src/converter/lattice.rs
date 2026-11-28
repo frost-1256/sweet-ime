@@ -202,7 +202,7 @@ fn bos_particle_penalty(
         && reading.len() < text.len()
         && class == PosClass::Functional
         && surface == reading
-        && matches!(surface, "は" | "が" | "を" | "に" | "の" | "へ" | "で" | "も")
+        && matches!(surface, "は" | "が" | "を" | "に" | "の" | "へ" | "で" | "も" | "て")
     {
         2_000
     } else {
@@ -213,14 +213,7 @@ fn bos_particle_penalty(
 /// Prefer common homophones where the surrounding reading already supplies
 /// unambiguous collocation context.
 fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32 {
-    if surface == "テスト"
-        && reading == "てすと"
-        && before.is_empty()
-        && after.starts_with("あああ")
-        && after.chars().all(|ch| ch == 'あ')
-    {
-        3000
-    } else if surface == "円"
+    if surface == "円"
         && reading == "えん"
         && before.ends_with(|ch: char| ch.is_ascii_digit() || ('０'..='９').contains(&ch))
     {
