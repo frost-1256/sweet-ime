@@ -83,6 +83,13 @@ if [ ! -f "$PKG_ROOT/files/lib/fcitx5/sweetui.so" ] || [ ! -f "$PKG_ROOT/files/s
     exit 1
 fi
 
+# Release builds keep line tables (debug = 1), which make up most of each ELF
+# file. Drop them, but keep the symbol table so backtraces still name functions.
+strip --strip-debug \
+    "$PKG_ROOT"/files/lib/fcitx5/*.so \
+    "$PKG_ROOT/files/bin/sweet-settings" \
+    "$PKG_ROOT/files/bin/sweet-zenz-pack"
+
 cat > "$PKG_ROOT/install.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
