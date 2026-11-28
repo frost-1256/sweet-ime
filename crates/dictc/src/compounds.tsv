@@ -80,3 +80,12 @@
 # Collocations whose homophones are common as standalone words.
 おんど	音頭	を	を	おどる	踊る	3500
 きかい	機械	が	が	とまる	止まる	3500
+# Keep idioms and established expressions together across ambiguous boundaries.
+たい	体	を	を	なす	なす	3400
+さんじゅう	三重	に	に	かさなる	重なる	4200
+きり	切り	が	が	ない	ない	3800
+とし	歳	を	を	とる	とる	3800
+しょくじ	食事	を	を	した	した	3500
+ご	ご	かんそう	感想	3300
+よとう	与党	いっきょう	一強	4000
+くうぐん	空軍	しょうこう	将校	4000

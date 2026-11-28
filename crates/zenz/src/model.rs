@@ -258,10 +258,9 @@ impl Model {
         want_all: bool,
         consume: impl FnOnce(&[f32]) -> T,
     ) -> T {
-        let parents: Vec<Option<usize>> = (0..tokens.len()).map(|i| i.checked_sub(1)).collect();
         self.forward_impl(
             tokens,
-            &parents,
+            None,
             cache,
             tokens.len(),
             if want_all { 0 } else { tokens.len().saturating_sub(1) },
@@ -305,14 +304,14 @@ impl Model {
     ) -> T {
         // Keep the layer work on the same workers as the matrix products.
         crate::kernels::pool().install(|| {
-            self.forward_impl(tokens, parents, cache, save_kv_prefix, logits_from, f)
+            self.forward_impl(tokens, Some(parents), cache, save_kv_prefix, logits_from, f)
         })
     }
 
     fn forward_impl<T>(
         &self,
         tokens: &[u32],
-        parents: &[Option<usize>],
+        parents: Option<&[Option<usize>]>,
         cache: &mut KvCache,
         save_kv_prefix: usize,
         logits_from: usize,
@@ -351,11 +350,17 @@ impl Model {
             anc_ranges.reserve(t);
             let mut max_depth = 0usize;
             for i in 0..t {
-                let start = anc_data.len();
-                if let Some(p) = parents[i] {
+                let mut start = anc_data.len();
+                if let Some(p) = parents.map_or_else(|| i.checked_sub(1), |parents| parents[i]) {
                     assert!(p < i, "parent must precede child");
                     let (ps, pe) = anc_ranges[p];
-                    anc_data.extend_from_within(ps..pe);
+                    // Extend the previous path in place when its range reaches
+                    // the end of the buffer. Earlier ranges remain valid.
+                    if pe == start {
+                        start = ps;
+                    } else {
+                        anc_data.extend_from_within(ps..pe);
+                    }
                 }
                 anc_data.push(i);
                 let end = anc_data.len();

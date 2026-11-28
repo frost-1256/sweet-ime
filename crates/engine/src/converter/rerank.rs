@@ -1,5 +1,6 @@
 //! Candidate selection and memoization for neural reranking.
 
+use std::cell::RefCell;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Condvar, Mutex};
 
@@ -351,6 +352,7 @@ impl Converter {
                 let c = res.remove(i);
                 res.insert(0, c);
             }
+            let spelled = RefCell::new(None);
             if still_needed()
                 && boundaries.is_empty()
                 && let Some(best) = res.first()
@@ -359,13 +361,20 @@ impl Converter {
                 && let Some(surface) =
                     self.rerank
                         .cached_generate(r.as_ref(), text, left_context, best, &|surface| {
-                            self.spell(text, surface).map(|c| c.cost)
+                            let conversion = self.spell(text, surface);
+                            let cost = conversion.as_ref().map(|c| c.cost);
+                            *spelled.borrow_mut() = Some((surface.to_owned(), conversion));
+                            cost
                         })
                 && !res.iter().any(|c| c.surface() == surface)
             {
                 // Dictionary words keep their segments for later editing.
                 // It keeps the best candidate's cost, as before.
-                let segments = self.spell(text, &surface).map_or_else(
+                let conversion = match spelled.into_inner() {
+                    Some((scored, conversion)) if scored == surface => conversion,
+                    _ => self.spell(text, &surface),
+                };
+                let segments = conversion.map_or_else(
                     || {
                         vec![super::Segment {
                             reading: text.to_string(),
