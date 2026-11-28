@@ -15,3 +15,5 @@
 ふくじょし	副助詞	-4700
 # SudachiDict words get a flat cost, so a popular title loses to 地位+側.
 ちいかわ	ちいかわ	-2500
+# The place name should stay intact instead of splitting into た + 強羅.
+たごうら	田子浦	-2200
