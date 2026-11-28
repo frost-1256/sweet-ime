@@ -121,6 +121,16 @@ def check(name, got, want):
 pump(0.3)
 check("current input method", str(controller.CurrentInputMethod()), "sweetime")
 
+# fcitx5-configtool runs an external option as a command unless it is an
+# fcitx://config/addon/ URI, which needs a Qt config plugin.
+_value, descriptions = controller.GetConfig("fcitx://config/addon/sweetime")
+external = [str(props.get("External", ""))
+            for _type, options in descriptions
+            for name, _kind, _desc, _default, props in options
+            if str(name) == "Settings"]
+check("settings button runs the settings app",
+      [uri.split("/")[-1] for uri in external if not uri.startswith("fcitx://")], ["sweet-settings"])
+
 type_str("kyouhaiitenkidesune")
 check("live preedit", state["preedit"], "今日はいい天気ですね")
 key("Return")

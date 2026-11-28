@@ -44,9 +44,12 @@ FCITX_DEFINE_LOG_CATEGORY(sweet_log, "sweetime");
 #define SWEET_DEBUG() FCITX_LOGC(sweet_log, Debug)
 #define SWEET_WARN() FCITX_LOGC(sweet_log, Warn)
 
+// fcitx5-configtool runs a command given as an external option itself. It
+// hands an fcitx://config/addon/ URI to a Qt config plugin instead, and
+// Sweet IME has none.
 FCITX_CONFIGURATION(
     SweetConfig,
-    fcitx::ExternalOption settings{this, "Settings", "Sweet IME の設定", "fcitx://config/addon/sweetime/settings"};);
+    fcitx::ExternalOption settings{this, "Settings", "Sweet IME の設定", SWEET_SETTINGS_PATH};);
 
 class SweetEngine;
 
@@ -175,12 +178,6 @@ public:
 
     const fcitx::Configuration *getConfig() const override { return &config_; }
 
-    void setSubConfig(const std::string &path, const fcitx::RawConfig &) override {
-        if (path == "settings") {
-            launchSettings();
-        }
-    }
-
     /// A candidate was clicked (absolute index).
     void selectCandidate(fcitx::InputContext *ic, uint32_t index) {
         auto *ctx = state(ic)->ctx();
@@ -230,10 +227,6 @@ private:
     }
 
     void updateUI(fcitx::InputContext *ic, SweetContext *ctx);
-
-    static void launchSettings() {
-        fcitx::startProcess({SWEET_SETTINGS_PATH});
-    }
 
     // The settings app checks GitHub at most once a day, honors the
     // automatic check setting, and shows a desktop notification.
