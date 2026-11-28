@@ -365,6 +365,13 @@ fn activate_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
     )
 }
 
+/// Removes the model's weight cache once no model is active.
+fn remove_cache_without_model(data_dir: &Path) {
+    if !data_dir.join("zenz.swz").exists() {
+        sweet_engine::paths::remove_zenz_cache();
+    }
+}
+
 /// Deletes `target` whether it is currently active or stored as inactive.
 fn delete_model(data_dir: &Path, target: ModelKind) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("削除できませんでした: {e}");
@@ -1083,6 +1090,7 @@ impl App {
                 }
                 (ModelAction::Delete(kind), Some(dir)) => match delete_model(dir, kind) {
                     Ok(()) => {
+                        remove_cache_without_model(dir);
                         if self
                             .download
                             .as_ref()
@@ -1096,6 +1104,7 @@ impl App {
                 },
                 (ModelAction::DeleteCustom, Some(dir)) => match delete_custom_model(dir) {
                     Ok(()) => {
+                        remove_cache_without_model(dir);
                         self.status = Some(("カスタムモデルを削除しました。".into(), true));
                     }
                     Err(e) => self.status = Some((e, false)),

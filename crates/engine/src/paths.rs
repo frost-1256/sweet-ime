@@ -156,6 +156,30 @@ pub fn modified(path: Option<PathBuf>) -> Option<std::time::SystemTime> {
     std::fs::metadata(path?).ok()?.modified().ok()
 }
 
+/// Cache of the neural model's quantized weights, which every process using
+/// the model maps: `cache` in [`data_dir`] on Windows and macOS,
+/// `$XDG_CACHE_HOME/sweet-ime` elsewhere.
+pub fn zenz_cache_dir() -> Option<PathBuf> {
+    #[cfg(any(windows, target_os = "macos"))]
+    return data_dir().map(|d| d.join("cache"));
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return xdg_dir("XDG_CACHE_HOME", ".cache");
+}
+
+/// Removes the cached quantized weights (`*.q8` in [`zenz_cache_dir`]), for
+/// when the model is gone. Processes that still map a cache keep reading it.
+pub fn remove_zenz_cache() {
+    let Some(entries) = zenz_cache_dir().and_then(|d| std::fs::read_dir(d).ok()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "q8") {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// User-installed neural model (`zenz.swz` in [`data_dir`]).
 pub fn zenz_file() -> Option<PathBuf> {
     data_dir().map(|d| d.join("zenz.swz"))

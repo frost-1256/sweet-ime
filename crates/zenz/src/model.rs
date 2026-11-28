@@ -7,6 +7,7 @@ use crate::kernels::{
 };
 
 mod gguf;
+mod q8cache;
 mod weights;
 
 #[derive(Default)]
@@ -167,6 +168,27 @@ fn gelu_new(v: &mut [f32]) {
 }
 
 impl Model {
+    /// Shapes `(k, n)` of the quantized matrices, in the order `quantize`
+    /// returns them: the LM head, then the attention, projection and two
+    /// feed-forward matrices of each layer.
+    fn q8_shapes(cfg: &Config) -> Vec<(usize, usize)> {
+        let e = cfg.n_embd;
+        let mut shapes = vec![(e, cfg.vocab_size)];
+        for _ in 0..cfg.n_layer {
+            shapes.extend([(e, 3 * e), (e, e), (e, 4 * e), (4 * e, e)]);
+        }
+        shapes
+    }
+
+    fn quantize(cfg: &Config, d: &[f32], wte_t: &R, layers: &[Layer]) -> Vec<Q8Matrix> {
+        let ranges = std::iter::once(wte_t)
+            .chain(layers.iter().flat_map(|l| [&l.attn_w, &l.proj_w, &l.fc_w, &l.fc2_w]));
+        ranges
+            .zip(Self::q8_shapes(cfg))
+            .map(|(r, (k, n))| Q8Matrix::from_f32(&d[r.clone()], k, n))
+            .collect()
+    }
+
     fn build_q8(
         cfg: Config,
         store: Store,
@@ -176,17 +198,19 @@ impl Model {
         layers: Vec<Layer>,
         lnf_w: R,
         lnf_b: R,
+        q8: Option<Vec<Q8Matrix>>,
     ) -> Self {
-        let d = store.data();
-        let e = cfg.n_embd;
-        let wte_t_q8 = Q8Matrix::from_f32(&d[wte_t.clone()], e, cfg.vocab_size);
+        let q8 = q8.unwrap_or_else(|| Self::quantize(&cfg, store.data(), &wte_t, &layers));
+        let mut q8 = q8.into_iter();
+        let mut next = || q8.next().expect("one quantized matrix per shape");
+        let wte_t_q8 = next();
         let q8_layers: Vec<Q8Layer> = layers
             .iter()
-            .map(|l| Q8Layer {
-                attn_w: Q8Matrix::from_f32(&d[l.attn_w.clone()], e, 3 * e),
-                proj_w: Q8Matrix::from_f32(&d[l.proj_w.clone()], e, e),
-                fc_w: Q8Matrix::from_f32(&d[l.fc_w.clone()], e, 4 * e),
-                fc2_w: Q8Matrix::from_f32(&d[l.fc2_w.clone()], 4 * e, e),
+            .map(|_| Q8Layer {
+                attn_w: next(),
+                proj_w: next(),
+                fc_w: next(),
+                fc2_w: next(),
             })
             .collect();
         Self {

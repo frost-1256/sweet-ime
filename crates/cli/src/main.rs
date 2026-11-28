@@ -30,7 +30,11 @@ fn main() -> Result<()> {
     let rerank = if args[2] == "audit" { None } else { std::env::var("SWEET_ZENZ").ok() };
     if let Some(path) = rerank {
         let t = Instant::now();
-        let mut r = sweet_zenz::ZenzReranker::new(sweet_zenz::Zenz::load(&path)?);
+        let zenz = match std::env::var_os("SWEET_ZENZ_CACHE") {
+            Some(cache) => sweet_zenz::Zenz::load_cached(&path, cache)?,
+            None => sweet_zenz::Zenz::load(&path)?,
+        };
+        let mut r = sweet_zenz::ZenzReranker::new(zenz);
         if let Some(n) = std::env::var("SWEET_RERANK_N").ok().and_then(|v| v.parse().ok()) {
             r.n = n;
             r.n_without_context = n;

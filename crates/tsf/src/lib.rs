@@ -185,7 +185,16 @@ fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
         }
         paths.push(dir.join("data").join("zenz.swz"));
     }
-    paths.into_iter().find_map(|p| sweet_zenz::Zenz::load(&p).ok()).map(sweet_zenz::ZenzReranker::new)
+    // Every application with the IME loads the model, so share its quantized
+    // weights through the cache.
+    let cache = sweet_engine::paths::zenz_cache_dir();
+    paths
+        .into_iter()
+        .find_map(|p| match &cache {
+            Some(c) => sweet_zenz::Zenz::load_cached(&p, c).ok(),
+            None => sweet_zenz::Zenz::load(&p).ok(),
+        })
+        .map(sweet_zenz::ZenzReranker::new)
 }
 
 pub(crate) fn lock_module(lock: bool) {

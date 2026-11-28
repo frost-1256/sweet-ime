@@ -46,9 +46,19 @@ fn normalize(s: &str) -> String {
 impl Zenz {
     /// Loads either a packed `.swz` file or a Hugging Face model directory.
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_with_cache(path, None)
+    }
+
+    /// Like [`Zenz::load`], but maps the quantized weights of a packed `.swz`
+    /// model from a cache file in `cache`, so processes share one copy.
+    pub fn load_cached(path: impl AsRef<Path>, cache: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_with_cache(path, Some(cache.as_ref()))
+    }
+
+    fn load_with_cache(path: impl AsRef<Path>, cache: Option<&Path>) -> io::Result<Self> {
         let path = path.as_ref();
         if path.is_file() {
-            let (model, vocab, merges) = Model::load_packed(path)?;
+            let (model, vocab, merges) = Model::load_packed(path, cache)?;
             return Ok(Self {
                 tokenizer: Tokenizer::from_strings(&vocab, &merges)?,
                 model,

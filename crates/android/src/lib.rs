@@ -49,7 +49,12 @@ fn wanted_zenz(neural: bool) -> Option<PathBuf> {
 
 fn build(dict: &Path, zenz: Option<&Path>) -> Option<Converter> {
     let mut conv = paths::with_user_data(Converter::new(Dictionary::open(dict).ok()?));
-    if let Some(z) = zenz.and_then(|p| sweet_zenz::Zenz::load(p).ok()) {
+    // The cache saves quantizing the model each time the process starts.
+    let load = |p: &Path| match paths::zenz_cache_dir() {
+        Some(cache) => sweet_zenz::Zenz::load_cached(p, cache),
+        None => sweet_zenz::Zenz::load(p),
+    };
+    if let Some(z) = zenz.and_then(|p| load(p).ok()) {
         conv = conv.with_reranker(Box::new(sweet_zenz::ZenzReranker::new(z)));
     }
     let o = paths::load_options();
@@ -130,6 +135,8 @@ pub fn init(dict: PathBuf, files_dir: &str) -> bool {
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", files_dir);
             std::env::set_var("XDG_DATA_HOME", files_dir);
+            // The model's quantized weights (`paths::zenz_cache_dir`).
+            std::env::set_var("XDG_CACHE_HOME", Path::new(files_dir).join("cache"));
         }
         let _ = DICT_PATH.set(dict);
     }

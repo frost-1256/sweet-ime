@@ -1207,6 +1207,13 @@ public final class SettingsActivity extends Activity {
                 Toast.makeText(this, "削除できませんでした", Toast.LENGTH_LONG).show();
             }
             zenzNameFile().delete();
+            // The model's quantized weights (XDG_CACHE_HOME set by the engine).
+            File[] caches = new File(new File(getFilesDir(), "cache"), "sweet-ime").listFiles();
+            if (caches != null) {
+                for (File f : caches) {
+                    if (f.getName().endsWith(".q8")) f.delete();
+                }
+            }
             updateAi(null);
         });
         model.addView(aiRemove);

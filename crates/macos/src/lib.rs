@@ -218,7 +218,11 @@ pub unsafe extern "C" fn sweet_macos_load(dictionary: *const c_char) -> bool {
         .map(std::path::PathBuf::from)
         .into_iter()
         .chain(paths::zenz_file());
-    let model = models.find_map(|path| sweet_zenz::Zenz::load(&path).ok());
+    let cache = paths::zenz_cache_dir();
+    let model = models.find_map(|path| match &cache {
+        Some(c) => sweet_zenz::Zenz::load_cached(&path, c).ok(),
+        None => sweet_zenz::Zenz::load(&path).ok(),
+    });
     let converter = match model {
         Some(model) => converter.with_reranker(Box::new(sweet_zenz::ZenzReranker::new(model))),
         None => converter,

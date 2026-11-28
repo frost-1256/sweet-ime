@@ -2,7 +2,7 @@
 //! rows): the weight matrix is streamed exactly once, never packed, and
 //! column blocks are spread over a small dedicated thread pool.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 pub(crate) fn pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
@@ -30,13 +30,74 @@ pub struct Q8Matrix {
     k: usize,
     n: usize,
     n_blocks: usize,
-    /// Pre-packed int8 weights of length `n_blocks * k * 16`.
-    q: Vec<i8>,
-    /// Per-column dequantization scales of length `n_blocks * 16`.
-    scales: Vec<f32>,
+    data: Q8Data,
+}
+
+/// Pre-packed int8 weights of length `n_blocks * k * 16` and per-column
+/// dequantization scales of length `n_blocks * 16`.
+enum Q8Data {
+    Owned { q: Vec<i8>, scales: Vec<f32> },
+    /// Byte offsets into a mapped cache file, which every process and every
+    /// loaded copy of the library can share.
+    Mapped { map: Arc<memmap2::Mmap>, q: usize, scales: usize },
 }
 
 impl Q8Matrix {
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    pub fn q_len(&self) -> usize {
+        self.n_blocks * self.k * 16
+    }
+
+    pub fn scales_len(&self) -> usize {
+        self.n_blocks * 16
+    }
+
+    pub fn q(&self) -> &[i8] {
+        match &self.data {
+            Q8Data::Owned { q, .. } => q,
+            Q8Data::Mapped { map, q, .. } => {
+                let bytes = &map[*q..*q + self.q_len()];
+                // SAFETY: i8 has the size and alignment of u8.
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const i8, bytes.len()) }
+            }
+        }
+    }
+
+    pub fn scales(&self) -> &[f32] {
+        match &self.data {
+            Q8Data::Owned { scales, .. } => scales,
+            Q8Data::Mapped { map, scales, .. } => {
+                let bytes = &map[*scales..*scales + self.scales_len() * 4];
+                // SAFETY: `mapped` checked that the offset keeps f32 alignment
+                // within the page-aligned mapping.
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, self.scales_len()) }
+            }
+        }
+    }
+
+    /// A matrix stored in `map` at the given byte offsets, or `None` if it
+    /// does not fit.
+    pub fn mapped(map: &Arc<memmap2::Mmap>, k: usize, n: usize, q: usize, scales: usize) -> Option<Self> {
+        let n_blocks = n.div_ceil(16);
+        let q_len = n_blocks.checked_mul(k)?.checked_mul(16)?;
+        let s_len = n_blocks.checked_mul(16 * 4)?;
+        let fits = |off: usize, len: usize| off.checked_add(len).is_some_and(|end| end <= map.len());
+        let aligned = (map.as_ptr() as usize + scales) % std::mem::align_of::<f32>() == 0;
+        (fits(q, q_len) && fits(scales, s_len) && aligned).then(|| Self {
+            k,
+            n,
+            n_blocks,
+            data: Q8Data::Mapped { map: Arc::clone(map), q, scales },
+        })
+    }
+
     pub fn from_f32(w: &[f32], k: usize, n: usize) -> Self {
         assert!(w.len() >= k * n);
         let n_blocks = n.div_ceil(16);
@@ -93,8 +154,7 @@ impl Q8Matrix {
             k,
             n,
             n_blocks,
-            q,
-            scales,
+            data: Q8Data::Owned { q, scales },
         }
     }
 }
@@ -179,8 +239,8 @@ unsafe fn matmul_q8_generic(
     for jb in b0..b1 {
         let j_base = jb * 16;
         let cols = (n - j_base).min(16);
-        let q_strip = &w.q[jb * k * 16..];
-        let sc = &w.scales[j_base..j_base + cols];
+        let q_strip = &w.q()[jb * k * 16..];
+        let sc = &w.scales()[j_base..j_base + cols];
         for i in 0..m {
             let xr = &x[i * k..(i + 1) * k];
             let mut acc = [0f32; 16];
@@ -221,8 +281,8 @@ unsafe fn matmul_q8_avx2(
 ) {
     let (k, n) = (w.k, w.n);
     let bp = bias.map_or(std::ptr::null(), |b| b.as_ptr());
-    let qp = w.q.as_ptr();
-    let sp = w.scales.as_ptr();
+    let qp = w.q().as_ptr();
+    let sp = w.scales().as_ptr();
     for jb in b0..b1 {
         let j = jb * 16;
         let q_strip = unsafe { qp.add(jb * k * 16) };

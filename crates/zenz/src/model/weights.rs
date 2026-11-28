@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-use super::{Config, Layer, Model, R, Store};
+use super::{Config, Layer, Model, R, Store, q8cache};
 
 pub(super) fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -187,6 +187,7 @@ impl Model {
             layers,
             lnf_w,
             lnf_b,
+            None,
         ))
     }
 
@@ -239,7 +240,9 @@ impl Model {
     }
 
     /// Loads a packed `.swz` file. Returns the model and (vocab.json, merges.txt).
-    pub fn load_packed(path: &Path) -> io::Result<(Self, String, String)> {
+    /// With `cache`, the quantized weights are mapped from a cache file in that
+    /// directory, written on first use.
+    pub fn load_packed(path: &Path, cache: Option<&Path>) -> io::Result<(Self, String, String)> {
         let file = std::fs::File::open(path)?;
         // SAFETY: the file is opened read-only and must not change while mapped.
         let map = unsafe { memmap2::Mmap::map(&file)? };
@@ -298,19 +301,28 @@ impl Model {
         }
         let vocab = hdr["vocab"].as_str().unwrap_or("").to_string();
         let merges = hdr["merges"].as_str().unwrap_or("").to_string();
+        let key = cache.map(|_| q8cache::key(&file, &map, 16 + hl));
+        let store = Store::Mapped {
+            map,
+            offset: off,
+            len: n,
+        };
+        let wte_t = r("wte_t")?;
+        let q8 = cache.zip(key).map(|(dir, key)| {
+            q8cache::load_or_build(dir, path, key, &Self::q8_shapes(&cfg), || {
+                Self::quantize(&cfg, store.data(), &wte_t, &layers)
+            })
+        });
         let model = Self::build_q8(
             cfg,
-            Store::Mapped {
-                map,
-                offset: off,
-                len: n,
-            },
+            store,
             r("wte")?,
-            r("wte_t")?,
+            wte_t,
             r("wpe")?,
             layers,
             r("lnf_w")?,
             r("lnf_b")?,
+            q8,
         );
         Ok((model, vocab, merges))
     }

@@ -701,6 +701,7 @@ impl Model {
             layers,
             lnf_w,
             lnf_b,
+            None,
         );
         Ok((model, vocab_json, merges_txt))
     }

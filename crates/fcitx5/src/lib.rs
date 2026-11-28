@@ -82,8 +82,12 @@ fn load_zenz() -> Option<sweet_zenz::ZenzReranker> {
         v.push(PathBuf::from(p));
     }
     v.extend(paths::zenz_file());
+    let cache = paths::zenz_cache_dir();
     v.into_iter()
-        .find_map(|p| sweet_zenz::Zenz::load(&p).ok())
+        .find_map(|p| match &cache {
+            Some(c) => sweet_zenz::Zenz::load_cached(&p, c).ok(),
+            None => sweet_zenz::Zenz::load(&p).ok(),
+        })
         .map(sweet_zenz::ZenzReranker::new)
 }
 
