@@ -1716,19 +1716,28 @@ public:
     }
 
     bool available() override {
-        bool ok = false;
 #ifdef SWEET_HAVE_WAYLAND
+        bool wayland = false;
         for (const auto &[_, p] : wlPopups_) {
             if (p->ready()) {
-                ok = true;
-                break;
+                return true;
             }
+            wayland = true;
+        }
+        // A Wayland session without wlr-layer-shell, such as GNOME. An X11
+        // popup through XWayland would show at the wrong place for Wayland
+        // apps and under the GNOME Shell search, so let kimpanel (the
+        // KIMPanel extension) or classicui draw instead. Sweet UI otherwise
+        // wins the tie with kimpanel's UIPriority by its name.
+        if (wayland) {
+            return false;
         }
 #endif
 #ifdef SWEET_HAVE_XCB
-        ok = ok || !xcbPopups_.empty();
+        return !xcbPopups_.empty();
+#else
+        return false;
 #endif
-        return ok;
     }
 
     void suspend() override {
