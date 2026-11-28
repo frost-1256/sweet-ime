@@ -10,6 +10,7 @@ use crate::user_dict::UserDictionary;
 
 mod extras;
 mod lattice;
+mod negative_adverb;
 mod release_phrase;
 mod rerank;
 

@@ -372,7 +372,9 @@ impl Converter {
                     segments,
                     cost: best.cost,
                 };
-                res.insert(0, generated);
+                if !super::negative_adverb::lacks_negation(text, &generated) {
+                    res.insert(0, generated);
+                }
             }
         }
         res
@@ -397,17 +399,27 @@ impl Converter {
                 protected.push((start, end, phrase));
             }
         }
-        if protected.is_empty() {
+        let misused: Vec<_> = candidates
+            .iter()
+            .map(|candidate| super::negative_adverb::lacks_negation(reading, candidate))
+            .collect();
+        if protected.is_empty() && !misused[1..].contains(&true) {
             return self.choose_ranked(reranker, reading, context, candidates);
         }
         // The model can improve the rest of the sentence while the words
         // learned or registered by the user and casual phrases stay at their original offsets.
+        // It may not switch to the adverb 大して without a negative ending.
         let (indices, eligible): (Vec<_>, Vec<_>) = candidates
             .iter()
             .enumerate()
-            .filter(|(_, candidate)| keeps_personal_words(candidate, &protected))
+            .filter(|&(index, candidate)| {
+                keeps_personal_words(candidate, &protected) && (index == 0 || !misused[index])
+            })
             .map(|(index, candidate)| (index, candidate.clone()))
             .unzip();
+        if eligible.len() < 2 {
+            return None;
+        }
         self.choose_ranked(reranker, reading, context, &eligible)
             .map(|index| indices[index])
     }

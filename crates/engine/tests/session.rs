@@ -1318,6 +1318,45 @@ impl sweet_engine::Reranker for PickLast {
     }
 }
 
+/// Prefers the first candidate containing `surface`, like a model that
+/// knows と大して変わらない better than と対して.
+struct Prefers(&'static str);
+
+impl sweet_engine::Reranker for Prefers {
+    fn choose(&self, _r: &str, _l: &str, c: &[sweet_engine::Conversion]) -> Option<usize> {
+        c.iter().position(|c| c.surface().contains(self.0))
+    }
+
+    fn generate(
+        &self,
+        reading: &str,
+        _left_context: &str,
+        _best: &sweet_engine::Conversion,
+    ) -> Option<String> {
+        (reading == "たいしてぜんたいてきなきょうかがされている")
+            .then(|| "大して全体的な強化がサレている".into())
+    }
+}
+
+#[test]
+fn reranking_keeps_taishite_without_a_negative_ending() {
+    let Some(c) = converter() else { return };
+    let c = c.with_reranker(Box::new(Prefers("大して")));
+    let best = |reading| c.convert_best(reading, &[], "前作")[0].surface();
+    assert_eq!(
+        best("とたいしてぜんたいてきなきょうかがされている"),
+        "と対して全体的な強化がされている"
+    );
+    assert_eq!(best("とたいして"), "と対して");
+    assert_eq!(best("とたいしてかわらない"), "と大して変わらない");
+    assert_eq!(best("とたいしてかわってないね"), "と大して変わってないね");
+    // Nor does a generated conversion switch to it.
+    assert_eq!(
+        best("たいしてぜんたいてきなきょうかがされている"),
+        "対して全体的な強化がされている"
+    );
+}
+
 /// Generates `surface` and records the lattice cost offered for it and for
 /// a spelling no dictionary path produces.
 struct Generates {
