@@ -45,6 +45,10 @@ bool sweet_is_active(SweetContext *ctx);
 bool sweet_is_open(SweetContext *ctx);
 void sweet_set_open(SweetContext *ctx, bool open);
 void sweet_set_left_context(SweetContext *ctx, const char *text);
+/* Whether the focused field may contribute Alpha feedback; call before each key press. */
+void sweet_set_feedback_field(SweetContext *ctx, bool eligible);
+/* Sends pending Alpha feedback without waiting for the batch window. */
+void sweet_feedback_flush(void);
 
 const char *sweet_commit_text(SweetContext *ctx);
 const char *sweet_preedit_text(SweetContext *ctx);

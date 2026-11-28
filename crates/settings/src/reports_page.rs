@@ -13,10 +13,10 @@ pub struct ReportsSection {
     confirm_clear: bool,
     reading: String,
     wanted: String,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     feedback_invite: String,
     /// The shared feedback debug log, newest first, and when it was read.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     feedback_log: Option<(std::time::Instant, Vec<String>)>,
 }
 
@@ -26,9 +26,9 @@ impl ReportsSection {
         let reports = path.as_deref().and_then(|p| reports::load(p).ok()).unwrap_or_default();
         Self {
             path, reports, confirm_clear: false, reading: String::new(), wanted: String::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             feedback_invite: String::new(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             feedback_log: None,
         }
     }
@@ -64,7 +64,7 @@ impl ReportsSection {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         self.alpha_feedback_ui(ui, status);
         card_frame(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -143,7 +143,7 @@ impl ReportsSection {
         });
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn alpha_feedback_ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
         use sweet_engine::alpha_feedback as feedback;
         let Some(endpoint) = feedback::endpoint() else { return };
@@ -182,7 +182,7 @@ impl ReportsSection {
 
     /// Alpha only: the events the IME processes logged while collecting and
     /// sending, and buttons to send now or send a fixed test record.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn feedback_debug_ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
         use sweet_engine::alpha_feedback as feedback;
         egui::CollapsingHeader::new("送信のデバッグ").show(ui, |ui| {

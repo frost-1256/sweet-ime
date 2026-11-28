@@ -457,6 +457,8 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Build the Linux binary archive
+        env:
+          SWEET_IME_ALPHA_FEEDBACK_URL: ${{ vars.SWEET_IME_ALPHA_FEEDBACK_URL }}
         run: bash scripts/package-linux.sh "${{ matrix.arch }}" "out/SweetIME-Linux-${{ matrix.arch }}.tar.gz"
 
       - name: Store the Linux package

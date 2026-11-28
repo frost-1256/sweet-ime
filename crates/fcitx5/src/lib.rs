@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use sweet_engine::keymap::{Action, Chord, Keymap, ModifierTap, is_modifier_key};
 use sweet_engine::live::LiveConversionWorker;
 use sweet_engine::simeji;
-use sweet_engine::{Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
+use sweet_engine::{Converter, Dictionary, Key, ListKind, Session, SpanAttr, alpha_feedback, paths};
 
 mod ffi;
 mod keysym;
@@ -136,6 +136,9 @@ pub struct SweetContext {
     stamp: [Option<SystemTime>; 3],
     live: Arc<LiveShared>,
     snap: Snapshot,
+    /// The Alpha feedback consent in effect for the current composition,
+    /// set when it starts in a field that may contribute.
+    feedback: Option<alpha_feedback::Consent>,
 }
 
 /// The frontend's view of a key event.
@@ -161,6 +164,7 @@ impl SweetContext {
             stamp: [None; 3],
             live: Arc::default(),
             snap: Snapshot::default(),
+            feedback: None,
         }
     }
 
@@ -341,11 +345,53 @@ impl SweetContext {
         true
     }
 
+    /// Whether the focused field may contribute Alpha feedback, as the
+    /// frontend judged from its capability flags. The consent file is read
+    /// when a composition starts; a field that stops qualifying mid-way (its
+    /// flags changed) drops the composition from collection.
+    fn set_feedback_field(&mut self, eligible: bool) {
+        if !self.session.is_active() {
+            let consent = alpha_feedback::consent();
+            if consent.is_some() {
+                alpha_feedback::note_field(if eligible {
+                    "対象"
+                } else {
+                    "対象外(パスワード・機密・メールアドレス・URL・氏名などの入力欄)"
+                });
+            }
+            self.feedback = consent.filter(|_| eligible);
+        } else if !eligible {
+            self.feedback = None;
+        }
+        self.session.capture_feedback = self.feedback.is_some();
+    }
+
+    /// Queues the conversion just committed, if its composition qualified and
+    /// the consent has not changed since it started.
+    fn report_feedback(&mut self, commit: &str) {
+        let Some(consent) = self.feedback.take() else {
+            return;
+        };
+        self.session.capture_feedback = false;
+        if alpha_feedback::consent().as_ref() != Some(&consent) {
+            alpha_feedback::note_skip("入力を始めた後に同意が変わったため記録しませんでした");
+        } else if let Some((reading, text, original)) = self.session.conversion_feedback(commit) {
+            alpha_feedback::enqueue(consent, reading, text, original);
+        } else {
+            alpha_feedback::note_skip(
+                "変換を伴わない確定(ひらがなのまま・予測候補など)のため記録しませんでした",
+            );
+        }
+    }
+
     /// Captures the session state for the getters (takes the commit text).
     fn snapshot(&mut self) {
         let cs = |s: &str| CString::new(s.replace('\0', "")).unwrap_or_default();
-        let s = &mut self.snap;
         let commit = self.session.take_commit();
+        if !commit.is_empty() {
+            self.report_feedback(&commit);
+        }
+        let s = &mut self.snap;
         s.commit = cs(&commit);
         let p = self.session.preedit();
         s.preedit = cs(&p.text);

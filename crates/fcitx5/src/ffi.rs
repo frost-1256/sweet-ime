@@ -355,3 +355,20 @@ pub unsafe extern "C" fn sweet_ui_load_theme(out: *mut SweetUiTheme) {
         *out = theme;
     }
 }
+
+/// Tells whether the focused field may contribute Alpha feedback. Call before
+/// each key press; it only takes effect when a composition starts.
+///
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sweet_set_feedback_field(p: *mut SweetContext, eligible: bool) {
+    let c = unsafe { ctx(p) };
+    guard((), || c.set_feedback_field(eligible))
+}
+
+/// Sends pending Alpha feedback without waiting for the batch window.
+#[unsafe(no_mangle)]
+pub extern "C" fn sweet_feedback_flush() {
+    guard((), sweet_engine::alpha_feedback::flush_soon)
+}

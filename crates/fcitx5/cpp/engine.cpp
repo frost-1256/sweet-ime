@@ -93,7 +93,11 @@ public:
         checkForUpdate();
     }
 
-    ~SweetEngine() override { dispatcher_.detach(); }
+    ~SweetEngine() override {
+        // fcitx5 is exiting or restarting: send what is pending.
+        sweet_feedback_flush();
+        dispatcher_.detach();
+    }
 
     void keyEvent(const fcitx::InputMethodEntry &, fcitx::KeyEvent &event) override {
         auto *ic = event.inputContext();
@@ -120,6 +124,9 @@ public:
         const uint32_t unicode = fcitx::Key::keySymToUnicode(key.sym());
         if (!event.isRelease() && !sweet_is_active(ctx)) {
             setLeftContext(ic, ctx);
+        }
+        if (!event.isRelease()) {
+            sweet_set_feedback_field(ctx, feedbackField(ic));
         }
         const uint32_t r = sweet_process_key(ctx, sym, unicode, mods, allowCloud(ic));
         if (!event.isRelease() &&
@@ -199,6 +206,24 @@ private:
         const auto flags = ic->capabilityFlags();
         return !flags.test(fcitx::CapabilityFlag::Password) &&
                !flags.test(fcitx::CapabilityFlag::Sensitive);
+    }
+
+    /// Alpha feedback is collected only from plain text fields: not from
+    /// passwords, sensitive or private fields, or fields for addresses,
+    /// names, numbers or other special purposes.
+    static bool feedbackField(fcitx::InputContext *ic) {
+        const auto flags = ic->capabilityFlags();
+        for (auto flag : {fcitx::CapabilityFlag::Password, fcitx::CapabilityFlag::Sensitive,
+                          fcitx::CapabilityFlag::Email, fcitx::CapabilityFlag::Url,
+                          fcitx::CapabilityFlag::Name, fcitx::CapabilityFlag::Dialable,
+                          fcitx::CapabilityFlag::Number, fcitx::CapabilityFlag::Digit,
+                          fcitx::CapabilityFlag::Date, fcitx::CapabilityFlag::Time,
+                          fcitx::CapabilityFlag::Terminal}) {
+            if (flags.test(flag)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     void applyLive(const fcitx::ICUUID &uuid) {

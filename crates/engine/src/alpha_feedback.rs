@@ -435,21 +435,33 @@ fn post(url: &str, invite: &str, body: &str) -> io::Result<()> {
     system_post(url, invite, body)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
 fn system_post(_: &str, _: &str, _: &str) -> io::Result<()> {
     Err(io::Error::other("no uploader registered"))
 }
 
-#[cfg(windows)]
+#[cfg(not(target_os = "android"))]
 fn system_post(url: &str, invite: &str, body: &str) -> io::Result<()> {
     use std::io::Write;
-    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
     // Reuse the system curl without putting the invite or text in argv,
     // following redirects, or importing the user's curl configuration.
-    let system = std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("no SystemRoot"))?;
-    let mut child = Command::new(PathBuf::from(system).join(r"System32\curl.exe"))
+    #[cfg(windows)]
+    let (mut command, null) = {
+        use std::os::windows::process::CommandExt;
+        let system =
+            std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("no SystemRoot"))?;
+        let mut c = Command::new(PathBuf::from(system).join(r"System32\curl.exe"));
+        c.creation_flags(0x0800_0000);
+        (c, "NUL")
+    };
+    #[cfg(not(windows))]
+    let (mut command, null) = {
+        let system = Path::new("/usr/bin/curl");
+        (Command::new(if system.exists() { system } else { Path::new("curl") }), "/dev/null")
+    };
+    let mut child = command
         .args([
             "--disable",
             "--silent",
@@ -458,18 +470,18 @@ fn system_post(url: &str, invite: &str, body: &str) -> io::Result<()> {
             "--max-time",
             "10",
             "--output",
-            "NUL",
+            null,
             "--write-out",
             "%{http_code}",
             "--config",
             "-",
             url,
         ])
-        .creation_flags(0x0800_0000)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| io::Error::other(format!("curl を実行できません: {e}")))?;
     let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
     let result = child.stdin.take().unwrap().write_all(format!(
         "header = \"Authorization: Bearer {invite}\"\nheader = \"Content-Type: application/json\"\ndata-binary = \"{escaped}\"\n"
@@ -490,11 +502,12 @@ fn system_post(url: &str, invite: &str, body: &str) -> io::Result<()> {
     }
 }
 
-/// Debug events shared between processes. On Windows the settings app runs
-/// apart from the applications hosting the IME, so each process appends to a
+/// Debug events shared between processes. On Windows and Linux the settings
+/// app runs apart from the processes hosting the IME (applications, fcitx5),
+/// so each process appends to a
 /// small local log that the settings app reads. Events never hold conversion
 /// text, and they are written on a background thread.
-#[cfg(windows)]
+#[cfg(not(target_os = "android"))]
 mod shared_log {
     use std::io::Write;
     use std::path::PathBuf;
@@ -561,15 +574,15 @@ mod shared_log {
 }
 
 fn log_event(event: String) {
-    #[cfg(windows)]
+    #[cfg(not(target_os = "android"))]
     shared_log::push(event);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
     let _ = event;
 }
 
 /// The newest `limit` shared debug events, newest first, as
 /// "N秒前 [process] event" lines. Empty when there is no log.
-#[cfg(windows)]
+#[cfg(not(target_os = "android"))]
 pub fn debug_log(limit: usize) -> Vec<String> {
     let Some(text) = shared_log::path().and_then(|p| std::fs::read_to_string(p).ok()) else {
         return Vec::new();
@@ -588,9 +601,9 @@ pub fn debug_log(limit: usize) -> Vec<String> {
         .collect()
 }
 
-/// Asks every IME process holding a batch to send it now (Windows: the
-/// settings app cannot reach their memory, so the workers watch this file).
-#[cfg(windows)]
+/// Asks every IME process holding a batch to send it now (Windows and Linux:
+/// the settings app cannot reach their memory, so the workers watch this file).
+#[cfg(not(target_os = "android"))]
 pub fn request_flush() -> io::Result<()> {
     let path =
         shared_log::flush_request_path().ok_or_else(|| io::Error::other("no data directory"))?;
@@ -604,11 +617,11 @@ pub fn request_flush() -> io::Result<()> {
 
 /// Whether the settings app asked for a flush after `since`.
 fn flush_requested_since(since: SystemTime) -> bool {
-    #[cfg(windows)]
+    #[cfg(not(target_os = "android"))]
     return shared_log::flush_request_path()
         .and_then(|p| std::fs::metadata(p).ok()?.modified().ok())
         .is_some_and(|at| at > since);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
     {
         let _ = since;
         false
@@ -616,9 +629,9 @@ fn flush_requested_since(since: SystemTime) -> bool {
 }
 
 /// How often a waiting worker checks for a flush request from another process.
-#[cfg(windows)]
+#[cfg(not(target_os = "android"))]
 const FLUSH_POLL: Duration = Duration::from_secs(2);
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
 const FLUSH_POLL: Duration = BATCH_WINDOW;
 
 #[cfg(test)]
