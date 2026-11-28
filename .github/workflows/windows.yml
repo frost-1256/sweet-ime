@@ -132,6 +132,10 @@ jobs:
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
     timeout-minutes: 30
+    env:
+      # Job-wide so the TSF harness build reuses the engine compiled for the
+      # installer instead of rebuilding it for a changed option_env!.
+      SWEET_IME_ALPHA_FEEDBACK_URL: ${{ vars.SWEET_IME_ALPHA_FEEDBACK_URL }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -150,6 +154,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target i686-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: tag and PR runs restore its caches instead of
+          # filling the 10 GB quota with copies that evict them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache the system dictionary
         id: dict-cache
@@ -164,8 +172,6 @@ jobs:
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
 
       - name: Build and verify the installer
-        env:
-          SWEET_IME_ALPHA_FEEDBACK_URL: ${{ vars.SWEET_IME_ALPHA_FEEDBACK_URL }}
         run: ./scripts/build.ps1 -Dictionary data/system.dict
 
       - name: Cache the zenz model
@@ -182,7 +188,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $env:SWEET_IME_ZENZ)) {
             ./scripts/get-zenz.ps1 -Out $env:SWEET_IME_ZENZ
           }
-          cargo run --locked --release -p sweet-tsf --example harness
+          # Same package set as scripts/build.ps1, so Cargo resolves the same
+          # features and reuses the installer's release artifacts.
+          cargo build --locked --release -p sweet-tsf -p sweet-tsf-shim -p sweet-zenz -p sweet-settings -p sweet-installer --example harness
+          if ($LASTEXITCODE) { throw 'harness build failed' }
+          ./target/release/examples/harness.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $searchHarness = Join-Path $env:RUNNER_TEMP 'SearchHost.exe'
           Copy-Item target/release/examples/harness.exe $searchHarness
@@ -229,6 +239,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: tag and PR runs restore its caches instead of
+          # filling the 10 GB quota with copies that evict them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build the system dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
@@ -272,6 +286,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target aarch64-linux-android --target x86_64-linux-android
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: tag and PR runs restore its caches instead of
+          # filling the 10 GB quota with copies that evict them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build the system dictionary
         if: steps.dict-cache.outputs.cache-hit != 'true'
@@ -425,6 +443,10 @@ jobs:
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: tag and PR runs restore its caches instead of
+          # filling the 10 GB quota with copies that evict them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache the system dictionary
         id: dict-cache
