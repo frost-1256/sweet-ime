@@ -119,9 +119,24 @@ impl Zenz {
     /// Greedy decoding until EOS, reusing the prompt prefix KV cache when
     /// available so uncertain sentences can generate a fallback candidate fast.
     pub fn generate(&self, prompt: &str, max_tokens: usize) -> String {
+        self.generate_with_draft(prompt, max_tokens, "")
+    }
+
+    /// Greedy decoding that checks `draft` (usually the best lattice
+    /// candidate) in batches. Whenever the next greedy token starts the rest
+    /// of the draft, one pass scores the following draft tokens and keeps
+    /// those the model would have picked anyway, so the output stays the
+    /// greedy output while the tokens shared with the draft cost one pass.
+    pub fn generate_with_draft(&self, prompt: &str, max_tokens: usize, draft: &str) -> String {
         let ids = self.encode_prompt(prompt);
         if ids.is_empty() {
             return String::new();
+        }
+        let eos = self.tokenizer.eos;
+        let mut draft_ids = Vec::new();
+        if !draft.is_empty() {
+            draft_ids = self.tokenizer.encode(&normalize(draft));
+            draft_ids.push(eos);
         }
         let cached = self
             .prefix_cache
@@ -145,16 +160,48 @@ impl Zenz {
             }
             None => (self.model.new_cache(), 0),
         };
+        let v = self.model.cfg.vocab_size;
         let mut logits = self.model.forward(&ids[reuse..], &mut cache, false);
         let prompt_cache_len = ids.len().saturating_sub(1);
         let mut out = Vec::new();
-        for _ in 0..max_tokens {
+        // Position in `draft_ids` that the output is expected to continue with.
+        let mut at = 0;
+        while out.len() < max_tokens {
             let next = model::argmax(&logits) as u32;
-            if next == self.tokenizer.eos {
+            if next == eos {
                 break;
             }
-            out.push(next);
-            logits = self.model.forward(&[next], &mut cache, false);
+            if draft_ids.get(at) != Some(&next) {
+                out.push(next);
+                // Resynchronize after a replaced word: the draft usually
+                // continues after the next occurrence of this token.
+                if let Some(i) = draft_ids[at.min(draft_ids.len())..]
+                    .iter()
+                    .position(|&t| t == next)
+                {
+                    at += i + 1;
+                }
+                logits = self.model.forward(&[next], &mut cache, false);
+                continue;
+            }
+            let spec = &draft_ids[at..draft_ids.len().min(at + max_tokens - out.len())];
+            let base = cache.len;
+            let rows = self.model.forward(spec, &mut cache, true);
+            // `next` is the greedy token, so the first draft token is kept.
+            let mut kept = 1;
+            while kept < spec.len()
+                && model::argmax(&rows[(kept - 1) * v..kept * v]) as u32 == spec[kept]
+            {
+                kept += 1;
+            }
+            let done = spec[..kept].contains(&eos);
+            out.extend(spec[..kept].iter().copied().filter(|&t| t != eos));
+            cache.truncate(base + kept);
+            logits = rows[(kept - 1) * v..kept * v].to_vec();
+            at += kept;
+            if done {
+                break;
+            }
         }
         if prompt_cache_len > 0 && cache.len >= prompt_cache_len {
             cache.truncate(prompt_cache_len);
@@ -484,7 +531,11 @@ impl sweet_engine::Reranker for ZenzReranker {
         let best_surface = best.surface();
         let prompt = Zenz::prompt(reading, left_context);
         let max_tokens = (reading_chars * 2).clamp(16, 80.max(reading_chars + 16));
-        let generated = self.zenz.generate(&prompt, max_tokens).trim().to_string();
+        let generated = self
+            .zenz
+            .generate_with_draft(&prompt, max_tokens, &best_surface)
+            .trim()
+            .to_string();
         if generated.is_empty()
             || generated == best_surface
             || generated.chars().any(|c| c.is_control() || matches!(c, '\u{EE00}'..='\u{EE02}'))
@@ -553,6 +604,36 @@ mod tests {
         for (i, (g, w)) in got.iter().zip(&want).enumerate() {
             assert!((g - w).abs() < 1e-3, "cand {i}: cached={g} vs fresh={w}");
         }
+    }
+
+    #[test]
+    fn drafts_do_not_change_the_greedy_output() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/zenz-v3.1-xsmall.swz"
+        );
+        let Ok(zenz) = Zenz::load(path) else { return };
+        let prompt = Zenz::prompt("きょうはいいてんきなのでさんぽにいきます", "");
+        let greedy = zenz.generate(&prompt, 40);
+        assert!(!greedy.is_empty());
+        let replaced = greedy.replacen("今日", "京", 1);
+        for draft in [
+            greedy.as_str(),
+            "今日葉良い天気なので散歩に行きます",
+            &replaced,
+            "全然違う文章",
+        ] {
+            assert_eq!(
+                zenz.generate_with_draft(&prompt, 40, draft),
+                greedy,
+                "draft {draft}"
+            );
+        }
+        // The token limit still applies when the draft is accepted.
+        assert_eq!(
+            zenz.generate_with_draft(&prompt, 3, &greedy),
+            zenz.generate(&prompt, 3)
+        );
     }
 
     #[test]
