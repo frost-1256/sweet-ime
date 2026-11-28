@@ -73,3 +73,10 @@
 ふくごう	複合	せい	姓	を	を	せんたく	選択	4200
 ほうてい	法定	の	の	ぎむ	義務	3600
 ぎゃらりー	ギャラリー	の	の	かいかん	開館	3900
+# Productive 待ち compounds that otherwise surface as 街.
+へんしん	返信	まち	待ち	3400
+へんきん	返金	まち	待ち	3400
+れんらく	連絡	まち	待ち	3400
+# Collocations whose homophones are common as standalone words.
+おんど	音頭	を	を	おどる	踊る	3500
+きかい	機械	が	が	とまる	止まる	3500

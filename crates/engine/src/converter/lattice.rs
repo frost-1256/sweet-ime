@@ -301,7 +301,9 @@ fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32
         1200
     } else if surface == "開設"
         && reading == "かいせつ"
-        && before.ends_with("こうざを")
+        && (before.ends_with("こうざを")
+            || before.ends_with("ぎんこうこうざの")
+            || before.ends_with("ふつうこうざの"))
     {
         1200
     } else if surface == "漢字"
@@ -359,6 +361,19 @@ fn context_bonus(before: &str, reading: &str, after: &str, surface: &str) -> i32
             || after.starts_with("がはっせい")
             || after.starts_with("がない")
             || after.starts_with("がある"))
+    {
+        1500
+    } else if reading == "ほうてい"
+        && surface == "法廷"
+        && (after.starts_with("のはんけつ") || after.starts_with("でしんり"))
+    {
+        1500
+    } else if reading == "じ"
+        && surface == "字"
+        && (after.starts_with("をかく")
+            || after.starts_with("をかい")
+            || after.starts_with("をかき"))
+        && (before.ends_with("よみにくい") || before.ends_with("よみやすい"))
     {
         1500
     } else {
@@ -509,6 +524,24 @@ impl Converter {
             // Keep a one-kana homophone from consuming the start of the run.
             let cl = c.len_utf8();
             let repeated_vowel = pos >= trailing_vowel_start && rest.len() >= 3 * cl;
+            // The collocation rules only cover readings starting with these kana.
+            let has_context_rule = matches!(
+                c,
+                'え' | 'ふ'
+                    | 'や'
+                    | 'と'
+                    | 'か'
+                    | 'は'
+                    | 'わ'
+                    | 'つ'
+                    | 'い'
+                    | 'き'
+                    | 'ま'
+                    | 'こ'
+                    | 'じ'
+                    | 'し'
+                    | 'ほ'
+            );
             self.dict.common_prefix(rest, |l, e| {
                 if crosses(pos, pos + l) {
                     return;
@@ -521,7 +554,11 @@ impl Converter {
                         lid: e.lid,
                         rid: e.rid,
                         wcost: i32::from(e.cost)
-                            - context_bonus(&text[..pos], &rest[..l], &rest[l..], e.surface)
+                            - if has_context_rule {
+                                context_bonus(&text[..pos], &rest[..l], &rest[l..], e.surface)
+                            } else {
+                                0
+                            }
                             + standalone_penalty(text, e.surface)
                             + if repeated_vowel && l == cl && !e.surface.chars().all(is_kana) {
                                 1_200
