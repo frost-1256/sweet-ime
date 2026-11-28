@@ -1,11 +1,12 @@
 //! JNI entry points and native context ownership.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use jni::JNIEnv;
-use jni::objects::{JClass, JString};
+use jni::objects::{GlobalRef, JClass, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, jstring};
-use sweet_engine::{UserDictionary, user_dict::DEFAULT_POS};
+use jni::{JNIEnv, JavaVM};
+use sweet_engine::{UserDictionary, alpha_feedback, user_dict::DEFAULT_POS};
 
 use super::{Context, FIELD, converter, init, pack_zenz, refine, refresh_converter};
 
@@ -31,10 +32,11 @@ unsafe fn ctx<'a>(p: jlong) -> &'a mut Context {
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_sweetime_Native_init(
     mut env: JNIEnv,
-    _: JClass,
+    class: JClass,
     dict: JString,
     files_dir: JString,
 ) -> jboolean {
+    register_uploader(&mut env, &class);
     let dict = to_string(&mut env, &dict);
     let files = to_string(&mut env, &files_dir);
     guard(false, || init(PathBuf::from(dict), &files)) as jboolean
@@ -416,4 +418,129 @@ pub extern "system" fn Java_io_github_sweetime_Native_forgetLearned(
         };
         r.map_or(-1, |n| n as jint)
     })
+}
+
+/// The JVM and the `Native` class, for uploading Alpha feedback from the
+/// engine's worker thread. A thread attached from native code cannot look up
+/// app classes by name, so the class is kept from `init`.
+static JAVA: OnceLock<(JavaVM, GlobalRef)> = OnceLock::new();
+
+fn register_uploader(env: &mut JNIEnv, class: &JClass) {
+    if JAVA.get().is_some() {
+        return;
+    }
+    let (Ok(vm), Ok(class)) = (env.get_java_vm(), env.new_global_ref(class)) else {
+        return;
+    };
+    if JAVA.set((vm, class)).is_ok() {
+        alpha_feedback::set_uploader(upload);
+    }
+}
+
+/// Calls `Native.upload(url, invite, body)` (HttpsURLConnection) on the
+/// calling worker thread.
+fn upload(url: &str, invite: &str, body: &str) -> std::io::Result<()> {
+    let fail = |what: &str| std::io::Error::other(format!("feedback upload: {what}"));
+    let (vm, class) = JAVA.get().ok_or_else(|| fail("no JVM"))?;
+    let mut env = vm.attach_current_thread().map_err(|_| fail("attach"))?;
+    let class: &JClass = class.as_obj().into();
+    let (Ok(url), Ok(invite), Ok(body)) = (
+        env.new_string(url),
+        env.new_string(invite),
+        env.new_string(body),
+    ) else {
+        return Err(fail("strings"));
+    };
+    let sent = env
+        .call_static_method(
+            class,
+            "upload",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z",
+            &[
+                JValue::Object(&url),
+                JValue::Object(&invite),
+                JValue::Object(&body),
+            ],
+        )
+        .and_then(|v| v.z());
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    match sent {
+        Ok(true) => Ok(()),
+        _ => Err(fail("rejected")),
+    }
+}
+
+/// Whether the field may contribute Alpha feedback (see
+/// [`Context::set_feedback_field`]).
+///
+/// # Safety
+/// `p` is a live context.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_io_github_sweetime_Native_setFeedbackField(
+    _: JNIEnv,
+    _: JClass,
+    p: jlong,
+    on: jboolean,
+) {
+    let c = unsafe { ctx(p) };
+    guard((), || c.set_feedback_field(on != 0));
+}
+
+/// Sends pending feedback without waiting for the batch window.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackFlush(_: JNIEnv, _: JClass) {
+    guard((), alpha_feedback::flush_soon);
+}
+
+/// The compiled-in feedback destination, or null when this build cannot send.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackEndpoint(
+    mut env: JNIEnv,
+    _: JClass,
+) -> jstring {
+    let url = guard(None, || alpha_feedback::endpoint().map(str::to_owned));
+    to_java(&mut env, url)
+}
+
+/// Whether the consent file at `path` holds a valid consent.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackConsented(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+) -> jboolean {
+    let path = to_string(&mut env, &path);
+    guard(false, || {
+        alpha_feedback::consent_at(Path::new(&path)).is_some()
+    }) as jboolean
+}
+
+/// Records consent with `invite` at `path`. Returns whether it was saved.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackEnable(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+    invite: JString,
+) -> jboolean {
+    let path = to_string(&mut env, &path);
+    let invite = to_string(&mut env, &invite);
+    guard(false, || {
+        alpha_feedback::enable_at(Path::new(&path), invite.trim()).is_ok()
+    }) as jboolean
+}
+
+/// Withdraws consent. Returns whether no consent remains.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackDisable(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+) -> jboolean {
+    let path = to_string(&mut env, &path);
+    guard(false, || {
+        alpha_feedback::disable_at(Path::new(&path)).is_ok()
+    }) as jboolean
 }

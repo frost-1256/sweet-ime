@@ -77,6 +77,49 @@ final class Native {
     static native boolean zenzActive();
     /** Learn nothing in this field (a password or a private tab). */
     static native void setPrivate(long ctx, boolean on);
+    /** Whether the field may contribute Alpha feedback (an ordinary text field). */
+    static native void setFeedbackField(long ctx, boolean on);
+    /** Sends pending Alpha feedback without waiting for the batch window. */
+    static native void feedbackFlush();
+    /** The compiled-in Alpha feedback destination, or null when this build cannot send. */
+    static native String feedbackEndpoint();
+    static native boolean feedbackConsented(String path);
+    /** Records consent with the invite code; false if it is invalid or cannot be saved. */
+    static native boolean feedbackEnable(String path, String invite);
+    static native boolean feedbackDisable(String path);
+
+    /**
+     * Posts one Alpha feedback batch. Called by the engine on its worker
+     * thread, never on the main thread.
+     */
+    @SuppressWarnings("unused")
+    static boolean upload(String url, String invite, String body) {
+        java.net.HttpURLConnection connection = null;
+        try {
+            java.net.URL target = new java.net.URL(url);
+            if (!"https".equals(target.getProtocol())) return false;
+            connection = (java.net.HttpURLConnection) target.openConnection();
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Authorization", "Bearer " + invite);
+            connection.setRequestProperty("Content-Type", "application/json");
+            byte[] data = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(data.length);
+            try (java.io.OutputStream out = connection.getOutputStream()) {
+                out.write(data);
+            }
+            int code = connection.getResponseCode();
+            return code >= 200 && code < 300;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
     /** Registered readings and words, as tab-separated rows. */
     static native String userWords(String path);
     /** Adds, replaces or deletes a word. Returns null on success. */

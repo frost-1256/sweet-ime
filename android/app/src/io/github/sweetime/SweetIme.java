@@ -73,6 +73,8 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
     private EmojiPanel emojiPanel;
     private boolean emojiOpen;
     private boolean privateField;
+    /** The field is plain text that may contribute Alpha feedback (see feedbackField). */
+    private boolean feedbackField;
     /** Direct English input (the あ/A key) or a field that wants no conversion. */
     private boolean english;
     /** The globe key's choice for ordinary text fields, kept across fields. */
@@ -264,7 +266,10 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         if (!ready) return false;
         if (ctx == 0) {
             ctx = Native.create();
-            if (ctx != 0) Native.setPrivate(ctx, privateField);
+            if (ctx != 0) {
+                Native.setPrivate(ctx, privateField);
+                Native.setFeedbackField(ctx, feedbackField);
+            }
             String before = textBeforeCursor();
             if (before != null) Native.setLeftContext(ctx, before);
         }
@@ -438,6 +443,18 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
+    /**
+     * Alpha feedback is collected only from plain text fields: not from
+     * passwords, addresses, names, URLs, filters or any other variation.
+     */
+    private static boolean feedbackField(int inputType) {
+        if ((inputType & EditorInfo.TYPE_MASK_CLASS) != EditorInfo.TYPE_CLASS_TEXT) return false;
+        int variation = inputType & EditorInfo.TYPE_MASK_VARIATION;
+        return variation == EditorInfo.TYPE_TEXT_VARIATION_NORMAL
+                || variation == EditorInfo.TYPE_TEXT_VARIATION_SHORT_MESSAGE
+                || variation == EditorInfo.TYPE_TEXT_VARIATION_LONG_MESSAGE;
+    }
+
     @Override
     public void onStartInput(EditorInfo attr, boolean restarting) {
         super.onStartInput(attr, restarting);
@@ -456,7 +473,11 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
                 || (cls == EditorInfo.TYPE_CLASS_NUMBER
                     && variation == EditorInfo.TYPE_NUMBER_VARIATION_PASSWORD);
         privateField = fieldPassword || (attr.imeOptions & EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0;
-        if (ctx != 0) Native.setPrivate(ctx, privateField);
+        feedbackField = !privateField && feedbackField(attr.inputType);
+        if (ctx != 0) {
+            Native.setPrivate(ctx, privateField);
+            Native.setFeedbackField(ctx, feedbackField);
+        }
         if (clipboardPanel != null) clipboardPanel.setInputActive(false, privateField);
         clipboardOpen = false;
         emojiOpen = false;
@@ -523,6 +544,7 @@ public final class SweetIme extends InputMethodService implements KeyboardView.L
         cancelCloud();
         clearUndo();
         if (composing && ctx != 0) apply(Native.commitAll(ctx));
+        if (ready) Native.feedbackFlush();
         super.onFinishInput();
     }
 

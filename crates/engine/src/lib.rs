@@ -1,6 +1,6 @@
 //! sweet-ime conversion engine.
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 pub mod alpha_feedback;
 pub mod app_modes;
 pub mod converter;

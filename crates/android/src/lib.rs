@@ -8,7 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use sweet_engine::{Converter, Dictionary, Key, ListKind, Session, SpanAttr, paths};
+use sweet_engine::{
+    Converter, Dictionary, Key, ListKind, Session, SpanAttr, alpha_feedback, paths,
+};
 
 mod ffi;
 pub use ffi::*;
@@ -154,6 +156,11 @@ pub struct Context {
     /// The field is a password or asks not to be learned from (a private
     /// browser tab); the session learns nothing there if the option is on.
     private_field: bool,
+    /// The field may contribute Alpha feedback (an ordinary text field), as
+    /// the Java side judged from its input type.
+    feedback_field: bool,
+    /// The consent in effect for this field, read when the field started.
+    feedback: Option<alpha_feedback::Consent>,
 }
 
 impl Default for Context {
@@ -172,6 +179,8 @@ impl Context {
             cloud: Vec::new(),
             listed: Vec::new(),
             private_field: false,
+            feedback_field: false,
+            feedback: None,
         }
     }
 
@@ -180,6 +189,34 @@ impl Context {
         self.session.private = on && self.session.options.private_fields;
         if on {
             self.cloud.clear();
+        }
+        self.refresh_feedback();
+    }
+
+    /// Whether the new field is an ordinary text field that may send
+    /// feedback; the consent file is read again here.
+    pub fn set_feedback_field(&mut self, on: bool) {
+        self.feedback_field = on;
+        self.refresh_feedback();
+    }
+
+    fn refresh_feedback(&mut self) {
+        self.feedback =
+            alpha_feedback::consent().filter(|_| self.feedback_field && !self.private_field);
+        self.session.capture_feedback = self.feedback.is_some();
+    }
+
+    /// Queues the conversion just committed, if this field takes part and
+    /// the consent has not been withdrawn since the field started.
+    fn report_feedback(&self, commit: &str) {
+        let Some(consent) = &self.feedback else {
+            return;
+        };
+        if alpha_feedback::consent().as_ref() != Some(consent) {
+            return;
+        }
+        if let Some((reading, text, original)) = self.session.conversion_feedback(commit) {
+            alpha_feedback::enqueue(consent.clone(), reading, text, original);
         }
     }
 
@@ -399,6 +436,9 @@ impl Context {
     /// selected candidate is -1 for predictions.
     pub fn snapshot(&mut self) -> String {
         let commit = self.session.take_commit();
+        if !commit.is_empty() {
+            self.report_feedback(&commit);
+        }
         let undoable =
             !self.private_field && self.session.undoable_commit() == Some(commit.as_str());
         if !self.cloud.is_empty() && (!commit.is_empty() || self.cloud_reading().is_none()) {

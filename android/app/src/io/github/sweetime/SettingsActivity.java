@@ -428,6 +428,7 @@ public final class SettingsActivity extends Activity {
         engineToggle(learn, "private_fields");
         learningSection();
         reportsSection();
+        alphaFeedbackSection();
     }
 
     private void keyboardPage() {
@@ -1028,6 +1029,65 @@ public final class SettingsActivity extends Activity {
                 .show());
         c.addView(reportClear);
         refreshReports();
+    }
+
+    // ---- Alpha feedback ----
+
+    /** Read by the engine as config_dir()/alpha-feedback-consent.txt. */
+    private String feedbackConsentFile() {
+        return new File(new File(getFilesDir(), "sweet-ime"), "alpha-feedback-consent.txt").getAbsolutePath();
+    }
+
+    /** Opt-in sending of confirmed conversions; only Alpha builds with a destination show it. */
+    private void alphaFeedbackSection() {
+        String endpoint = Native.feedbackEndpoint();
+        if (endpoint == null) return;
+        LinearLayout c = card("Alpha 版の変換データ提供");
+        for (String line : new String[] {
+                "同意すると、確定した日本語の読みと変換結果、候補を選び直した場合は最初の候補を、自動でまとめて開発者に送ります。",
+                "パスワード欄、メールアドレスや URL、氏名などの入力欄、学習しないよう求める欄(シークレットタブなど)は対象外です。送信対象には日本語の氏名や内容が含まれることがあります。",
+                "送信先では報告を非公開で保存し、30日で削除対象になります。同意を取り消すと以後の収集と送信が止まります。送信中・送信済みのデータは取り消せません。"}) {
+            TextView t = text(line, 13, theme.subText);
+            t.setPadding(0, 0, 0, dp(6));
+            c.addView(t);
+        }
+        c.addView(text(endpoint, 12, theme.subText));
+        TextView status = text("", 15, theme.text);
+        status.setPadding(0, dp(8), 0, dp(4));
+        c.addView(status);
+        EditText invite = reportField("招待コード");
+        invite.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        invite.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(128)});
+        c.addView(invite);
+        Button enable = button("同意して提供を開始");
+        Button disable = tonalButton("同意を取り消す");
+        c.addView(enable);
+        c.addView(disable);
+        Runnable refresh = () -> {
+            boolean on = Native.feedbackConsented(feedbackConsentFile());
+            status.setText(on ? "データ提供に同意済み" : "データ提供はオフです");
+            invite.setVisibility(on ? View.GONE : View.VISIBLE);
+            enable.setVisibility(on ? View.GONE : View.VISIBLE);
+            disable.setVisibility(on ? View.VISIBLE : View.GONE);
+        };
+        enable.setOnClickListener(v -> {
+            String code = invite.getText().toString().trim();
+            if (code.isEmpty() || !Native.feedbackEnable(feedbackConsentFile(), code)) {
+                Toast.makeText(this, "招待コードを確認してください。設定を保存できませんでした。", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            invite.setText("");
+            Toast.makeText(this, "データ提供を開始しました。", Toast.LENGTH_SHORT).show();
+            refresh.run();
+        });
+        disable.setOnClickListener(v -> {
+            boolean ok = Native.feedbackDisable(feedbackConsentFile());
+            Toast.makeText(this, ok ? "データ提供を停止しました。" : "データ提供を停止できませんでした。",
+                    Toast.LENGTH_SHORT).show();
+            refresh.run();
+        });
+        refresh.run();
     }
 
     private EditText reportField(String hint) {

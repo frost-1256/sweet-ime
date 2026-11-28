@@ -281,6 +281,7 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.SWEET_ANDROID_KEYSTORE_B64 }}
           SWEET_ANDROID_KEYSTORE_PASS: ${{ secrets.SWEET_ANDROID_KEYSTORE_PASS }}
+          SWEET_IME_ALPHA_FEEDBACK_URL: ${{ vars.SWEET_IME_ALPHA_FEEDBACK_URL }}
         run: |
           # Kept in the Rust cache (~/.cargo/bin): installed once.
           if (-not (Get-Command cargo-ndk -ErrorAction SilentlyContinue)) {

@@ -1,11 +1,10 @@
-//! Opt-in Windows Alpha feedback. Unsent conversions live only in memory.
+//! Opt-in Alpha feedback on Windows and Android. Unsent conversions live only
+//! in memory.
 
 use serde_json::{Value, json};
-use std::io::{self, Read, Write};
-use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::{Condvar, Mutex};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -48,12 +47,17 @@ fn valid_invite(invite: &str) -> bool {
 
 /// An opaque consent receipt. New consent invalidates batches from the
 /// previous enrollment, including when the same invite is entered again.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Consent(String);
 
 pub fn consent() -> Option<Consent> {
+    consent_at(&consent_path()?)
+}
+
+/// The consent stored in `path`, for frontends whose settings screen does not
+/// share the input method's settings directory.
+pub fn consent_at(path: &Path) -> Option<Consent> {
     let endpoint = endpoint()?;
-    let path = consent_path()?;
     let mut receipt = String::new();
     std::fs::File::open(path)
         .ok()?
@@ -77,26 +81,45 @@ fn valid_receipt(receipt: &str, url: &str) -> bool {
 }
 
 pub fn enable(invite: &str) -> io::Result<()> {
+    let path = consent_path().ok_or_else(|| io::Error::other("settings directory unavailable"))?;
+    enable_at(&path, invite)
+}
+
+pub fn enable_at(path: &Path, invite: &str) -> io::Result<()> {
     let Some(url) = endpoint().filter(|_| valid_invite(invite)) else {
         return Err(io::Error::from(io::ErrorKind::InvalidInput));
     };
-    let path = consent_path().ok_or_else(|| io::Error::other("settings directory unavailable"))?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(path, format!("{invite}\n{url}\n{}", stamp.as_nanos()))
 }
 
 pub fn disable() -> io::Result<()> {
-    let Some(path) = consent_path() else {
-        return Ok(());
-    };
-    match std::fs::remove_file(path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-        _ => {}
+    match consent_path() {
+        Some(path) => disable_at(&path),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+pub fn disable_at(path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Sends one batch: `(url, invite, JSON body)`. Frontends without a system
+/// HTTP client register one; the Windows build uses curl.
+pub type Uploader = fn(&str, &str, &str) -> io::Result<()>;
+
+static UPLOADER: OnceLock<Uploader> = OnceLock::new();
+
+pub fn set_uploader(uploader: Uploader) {
+    let _ = UPLOADER.set(uploader);
 }
 
 struct Batch {
@@ -226,6 +249,23 @@ fn flush() {
 }
 
 fn post(url: &str, invite: &str, body: &str) -> io::Result<()> {
+    if let Some(upload) = UPLOADER.get() {
+        return upload(url, invite, body);
+    }
+    system_post(url, invite, body)
+}
+
+#[cfg(not(windows))]
+fn system_post(_: &str, _: &str, _: &str) -> io::Result<()> {
+    Err(io::Error::other("no uploader registered"))
+}
+
+#[cfg(windows)]
+fn system_post(url: &str, invite: &str, body: &str) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
     // Reuse the system curl without putting the invite or text in argv,
     // following redirects, or importing the user's curl configuration.
     let system = std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("no SystemRoot"))?;
