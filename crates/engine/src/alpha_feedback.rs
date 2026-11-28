@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -102,9 +102,20 @@ pub fn disable() -> io::Result<()> {
 struct Batch {
     consent: Consent,
     records: Vec<Value>,
+    /// Set when the host is shutting down the input service; the worker then
+    /// sends without waiting for the rest of the batch window.
+    urgent: bool,
 }
 
 static PENDING: Mutex<Option<Batch>> = Mutex::new(None);
+static WAKE: Condvar = Condvar::new();
+
+/// Delays before each upload attempt after the first one fails.
+const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(15),
+    Duration::from_secs(60),
+    Duration::from_secs(300),
+];
 
 fn japanese(text: &str, reading: bool) -> bool {
     !text.trim().is_empty()
@@ -126,13 +137,12 @@ pub fn enqueue(receipt: Consent, reading: &str, text: &str, original: Option<&st
     {
         return;
     }
-    let Ok(mut pending) = PENDING.try_lock() else {
-        return;
-    };
+    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let needs_worker = pending.is_none();
     let batch = pending.get_or_insert_with(|| Batch {
         consent: Consent(String::new()),
         records: Vec::new(),
+        urgent: false,
     });
     if batch.consent != receipt {
         batch.consent = receipt;
@@ -155,20 +165,64 @@ pub fn enqueue(receipt: Consent, reading: &str, text: &str, original: Option<&st
     }
 }
 
-fn flush() {
-    std::thread::sleep(BATCH_WINDOW);
-    let Some(batch) = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-        return;
-    };
-    if batch.records.is_empty() || consent().as_ref() != Some(&batch.consent) {
-        return;
+/// Asks the worker to send the pending batch now, without blocking. Called
+/// when the input service is deactivated, which usually precedes process exit.
+/// Once curl has read the body it finishes the upload even if this process
+/// exits first.
+pub fn flush_soon() {
+    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(batch) = pending.as_mut() {
+        batch.urgent = true;
+        WAKE.notify_all();
     }
-    let Some(url) = endpoint() else { return };
-    let Some((invite, _)) = batch.consent.0.split_once('\n') else {
-        return;
-    };
-    let body = json!({ "schema": 1, "version": VERSION, "records": batch.records }).to_string();
-    let _ = post(url, invite, &body);
+}
+
+fn flush() {
+    let mut delay = BATCH_WINDOW;
+    let mut retries = RETRY_DELAYS.iter();
+    loop {
+        let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut pending, _) = WAKE
+            .wait_timeout_while(pending, delay, |p| !p.as_ref().is_some_and(|b| b.urgent))
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(batch) = pending.take() else {
+            return;
+        };
+        drop(pending);
+        if batch.records.is_empty() || consent().as_ref() != Some(&batch.consent) {
+            return;
+        }
+        let Some(url) = endpoint() else { return };
+        let Some((invite, _)) = batch.consent.0.split_once('\n') else {
+            return;
+        };
+        let body = json!({ "schema": 1, "version": VERSION, "records": batch.records }).to_string();
+        if post(url, invite, &body).is_ok() {
+            return;
+        }
+        let Some(&next) = retries.next() else { return };
+        // Requeue the failed records ahead of anything typed meanwhile. If a
+        // newer worker already owns the queue, it sends them with its batch.
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        match pending.as_mut() {
+            None => {
+                *pending = Some(Batch {
+                    urgent: false,
+                    ..batch
+                });
+                delay = next;
+            }
+            Some(newer) => {
+                if newer.consent == batch.consent {
+                    let mut records = batch.records;
+                    records.append(&mut newer.records);
+                    records.truncate(MAX_RECORDS);
+                    newer.records = records;
+                }
+                return;
+            }
+        }
+    }
 }
 
 fn post(url: &str, invite: &str, body: &str) -> io::Result<()> {

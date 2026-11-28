@@ -617,6 +617,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
 
     fn Deactivate(&self) -> Result<()> {
         crate::guard(|| {
+            sweet_engine::alpha_feedback::flush_soon();
             let mut st = self.st.borrow_mut();
             if let Some(button) = st.mode_button.take() {
                 if let Some(mgr) = st.thread_mgr.as_ref().and_then(|tm| tm.cast::<ITfLangBarItemMgr>().ok()) {
