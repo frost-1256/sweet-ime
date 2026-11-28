@@ -46,7 +46,12 @@ cmake -S crates/fcitx5 -B "$BUILD_DIR" \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DSWEET_DATADIR="${PREFIX}/share/sweet-ime" \
-    -DSWEET_SETTINGS="sweet-settings"
+    -DSWEET_SETTINGS:STRING="sweet-settings"
+if ! grep -qx 'SWEET_SETTINGS:STRING=sweet-settings' "$BUILD_DIR/CMakeCache.txt"; then
+    echo "SWEET_SETTINGS must stay a bare name for PATH lookup" >&2
+    grep '^SWEET_SETTINGS' "$BUILD_DIR/CMakeCache.txt" >&2
+    exit 1
+fi
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 DESTDIR="$PKG_ROOT" cmake --install "$BUILD_DIR"
 

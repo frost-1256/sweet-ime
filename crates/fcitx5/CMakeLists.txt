@@ -12,7 +12,10 @@ find_package(Fcitx5Core 5.0.0 REQUIRED)
 find_package(Threads REQUIRED)
 
 set(SWEET_DATADIR "${CMAKE_INSTALL_FULL_DATADIR}/sweet-ime" CACHE PATH "Where system.dict is installed")
-set(SWEET_SETTINGS "${CMAKE_INSTALL_FULL_BINDIR}/sweet-settings" CACHE FILEPATH "Settings app")
+# STRING, not FILEPATH: CMake turns a relative FILEPATH given with -D into an
+# absolute path under the build directory, and a bare name must stay bare so
+# execvp looks it up in PATH.
+set(SWEET_SETTINGS "${CMAKE_INSTALL_FULL_BINDIR}/sweet-settings" CACHE STRING "Settings app path or name in PATH")
 
 if(DEFINED ENV{CARGO_TARGET_DIR})
     set(CARGO_TARGET_DIR "$ENV{CARGO_TARGET_DIR}")
