@@ -155,6 +155,8 @@ struct App {
     dict: dict_page::DictPage,
     reports: reports_page::ReportsSection,
     updater: update::Updater,
+    #[cfg(not(any(windows, target_os = "macos")))]
+    notify_debug: update_ui::NotifyDebug,
 }
 
 impl App {
@@ -206,6 +208,8 @@ impl App {
             dict: dict_page::DictPage::new(),
             reports: reports_page::ReportsSection::new(),
             updater,
+            #[cfg(not(any(windows, target_os = "macos")))]
+            notify_debug: Default::default(),
         };
         app.reload_history();
         Ok(app)
@@ -613,6 +617,8 @@ fn about_page(&mut self, ui: &mut egui::Ui) {
     if update_ui::section(ui, &mut self.updater, &mut self.opts.update_check) {
         self.save();
     }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    update_ui::debug_section(ui, &mut self.notify_debug);
     card_frame(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("ライセンス").size(15.5));

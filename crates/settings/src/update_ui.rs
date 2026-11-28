@@ -278,3 +278,97 @@ impl eframe::App for Prompt {
         });
     }
 }
+
+/// The notification tools on the 情報 page of pre-release Linux builds.
+#[cfg(not(any(windows, target_os = "macos")))]
+#[derive(Default)]
+pub struct NotifyDebug {
+    rx: Option<std::sync::mpsc::Receiver<String>>,
+    status: String,
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn debug_section(ui: &mut egui::Ui, d: &mut NotifyDebug) {
+    if !update::is_prerelease_build() {
+        return;
+    }
+    if let Some(rx) = &d.rx {
+        match rx.try_recv() {
+            Ok(status) => {
+                d.status = status;
+                d.rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => d.rx = None,
+        }
+    }
+    card_frame(ui).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("通知のデバッグ(アルファ版のみ)").size(15.5));
+        ui.label(RichText::new("アップデートの通知と更新の流れを確かめるためのメニューです。").small().weak());
+        ui.horizontal(|ui| {
+            if ui.add_enabled(d.rx.is_none(), egui::Button::new("通知だけ試す")).clicked() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    let release = Release {
+                        version: "(テスト通知)".into(),
+                        notes: String::new(),
+                        page: String::new(),
+                        installer: None,
+                    };
+                    let status = match update::notify(&release) {
+                        Some(update::NotifyChoice::Open) => "通知の「更新する」(または「詳しく見る」)が押されました。",
+                        Some(update::NotifyChoice::Skip) => "通知の「このバージョンはスキップ」が押されました。",
+                        Some(update::NotifyChoice::Dismissed) => "通知が閉じられました(ボタンなしの通知を含みます)。",
+                        None => "通知を表示できませんでした。notify-send があるか確かめてください。",
+                    };
+                    let _ = tx.send(status.to_string());
+                    ctx.request_repaint();
+                });
+                d.rx = Some(rx);
+                d.status = "通知を表示しています…".into();
+            }
+            if ui.button("起動時の確認を試す").clicked() {
+                d.status = start_check_as_old_version();
+            }
+        });
+        ui.label(
+            RichText::new(
+                "「起動時の確認を試す」は、fcitx5 の起動時と同じ確認をバージョン 0.0.0 のふりをして行います。最新の正式版が新しいバージョンとして通知され、そこで更新すると正式版に戻ります。",
+            )
+            .small()
+            .weak(),
+        );
+        if !d.status.is_empty() {
+            ui.label(&d.status);
+        }
+    });
+}
+
+/// Runs `--check-update` in a new process as version 0.0.0, after
+/// forgetting the last check and the skipped version.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn start_check_as_old_version() -> String {
+    let mut m = Remembered::load();
+    m.last_check = 0;
+    m.skip.clear();
+    m.save();
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("設定アプリの場所がわかりません: {e}"),
+    };
+    match std::process::Command::new(exe)
+        .arg("--check-update")
+        .env("SWEET_UPDATE_CURRENT", "0.0.0")
+        .spawn()
+    {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+            "起動時の確認を始めました。しばらくすると通知が出ます。".into()
+        }
+        Err(e) => format!("起動時の確認を始められません: {e}"),
+    }
+}

@@ -22,14 +22,20 @@ fn installer() -> String {
     #[cfg(not(any(windows, target_os = "macos")))]
     format!("SweetIME-Linux-{}.tar.gz", std::env::consts::ARCH)
 }
-/// The running version. Debug builds can pretend to be another one with
-/// `SWEET_UPDATE_CURRENT` to try the update flow.
+/// The running version. Debug and pre-release builds can pretend to be
+/// another one with `SWEET_UPDATE_CURRENT` to try the update flow.
 pub fn current() -> String {
-    #[cfg(debug_assertions)]
-    if let Ok(v) = std::env::var("SWEET_UPDATE_CURRENT") {
+    if (cfg!(debug_assertions) || is_prerelease_build())
+        && let Ok(v) = std::env::var("SWEET_UPDATE_CURRENT")
+    {
         return v;
     }
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Whether this is a pre-release build, which shows debugging tools.
+pub fn is_prerelease_build() -> bool {
+    is_prerelease(env!("CARGO_PKG_VERSION"))
 }
 
 /// A published release.
