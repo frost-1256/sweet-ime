@@ -15,6 +15,9 @@ pub struct ReportsSection {
     wanted: String,
     #[cfg(windows)]
     feedback_invite: String,
+    /// The shared feedback debug log, newest first, and when it was read.
+    #[cfg(windows)]
+    feedback_log: Option<(std::time::Instant, Vec<String>)>,
 }
 
 impl ReportsSection {
@@ -25,6 +28,8 @@ impl ReportsSection {
             path, reports, confirm_clear: false, reading: String::new(), wanted: String::new(),
             #[cfg(windows)]
             feedback_invite: String::new(),
+            #[cfg(windows)]
+            feedback_log: None,
         }
     }
 
@@ -170,6 +175,56 @@ impl ReportsSection {
                         });
                     }
                 });
+            }
+            self.feedback_debug_ui(ui, status);
+        });
+    }
+
+    /// Alpha only: the events the IME processes logged while collecting and
+    /// sending, and buttons to send now or send a fixed test record.
+    #[cfg(windows)]
+    fn feedback_debug_ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
+        use sweet_engine::alpha_feedback as feedback;
+        egui::CollapsingHeader::new("送信のデバッグ").show(ui, |ui| {
+            ui.label(RichText::new(
+                "IME を使っているアプリが記録した、収集と送信の出来事です。変換した文章そのものは記録しません。",
+            ).weak());
+            let mut reload = false;
+            ui.horizontal(|ui| {
+                if ui.button("状態を更新").clicked() {
+                    reload = true;
+                }
+                if ui.button("今すぐ送信").clicked() {
+                    *status = Some(match feedback::request_flush() {
+                        Ok(()) => ("送信待ちのデータを数秒以内に送ります。".into(), true),
+                        Err(e) => (format!("送信を要求できませんでした: {e}"), false),
+                    });
+                    reload = true;
+                }
+                if ui.button("テスト値を送信").clicked() {
+                    let (reading, text) = feedback::TEST_RECORD;
+                    *status = Some(if feedback::send_test() {
+                        (format!("「{reading} → {text}」を送ります。"), true)
+                    } else {
+                        ("先にデータ提供に同意してください。".into(), false)
+                    });
+                    reload = true;
+                }
+            });
+            let stale = self
+                .feedback_log
+                .as_ref()
+                .is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(2));
+            if reload || stale {
+                self.feedback_log = Some((std::time::Instant::now(), feedback::debug_log(30)));
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(2));
+            let lines = self.feedback_log.as_ref().map(|(_, l)| l.as_slice()).unwrap_or_default();
+            if lines.is_empty() {
+                ui.label(RichText::new("まだ記録はありません").weak());
+            }
+            for line in lines {
+                ui.label(RichText::new(line).monospace().size(12.0));
             }
         });
     }

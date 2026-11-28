@@ -201,7 +201,16 @@ fn update_document_inner(
         // A settings reload can enable the preview during an existing
         // composition. Only allow it if we checked at composition start.
         st.typed_input_allowed = opts.show_typed_input && private == Some(false);
-        st.feedback_consent = alpha_feedback::consent().filter(|_| feedback_field(ctx, ec));
+        let consent = alpha_feedback::consent();
+        let eligible = consent.is_some() && feedback_field(ctx, ec);
+        if consent.is_some() {
+            alpha_feedback::note_field(if eligible {
+                "対象"
+            } else {
+                "対象外(パスワード・PIN・プライベート欄か、種類を確認できない欄)"
+            });
+        }
+        st.feedback_consent = consent.filter(|_| eligible);
     } else if st.feedback_consent.is_some() && !feedback_field(ctx, ec) {
         st.feedback_consent = None;
     }
@@ -229,11 +238,16 @@ fn update_document_inner(
             set_selection(ctx, ec, &range)?;
             comp.EndComposition(ec)?;
             st.composition = None;
-            if let Some(consent) = st.feedback_consent.take()
-                && alpha_feedback::consent().as_ref() == Some(&consent)
-                && let Some((reading, text, original)) = st.session.conversion_feedback(&commit)
-            {
-                alpha_feedback::enqueue(consent, reading, text, original);
+            if let Some(consent) = st.feedback_consent.take() {
+                if alpha_feedback::consent().as_ref() != Some(&consent) {
+                    alpha_feedback::note_skip("入力を始めた後に同意が変わったため記録しませんでした");
+                } else if let Some((reading, text, original)) = st.session.conversion_feedback(&commit) {
+                    alpha_feedback::enqueue(consent, reading, text, original);
+                } else {
+                    alpha_feedback::note_skip(
+                        "変換を伴わない確定(ひらがなのまま・予測候補など)か、入力欄を確認できなかったため記録しませんでした",
+                    );
+                }
             }
             st.session.capture_feedback = false;
         }

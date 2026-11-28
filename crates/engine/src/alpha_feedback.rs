@@ -143,6 +143,23 @@ fn stats() -> std::sync::MutexGuard<'static, Stats> {
 /// Records why a confirmed conversion was not queued, for the debug menu.
 pub fn note_skip(reason: &'static str) {
     stats().last_skip = Some((SystemTime::now(), reason));
+    log_event(reason.into());
+}
+
+/// Records whether the field a composition started in may send feedback.
+/// Only changes are logged, so typing in one field adds one line.
+pub fn note_field(status: &'static str) {
+    static LAST: Mutex<&str> = Mutex::new("");
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != status {
+        *last = status;
+        log_event(format!("入力欄: {status}"));
+    }
+}
+
+/// Sends the test record with this machine's stored consent.
+pub fn send_test() -> bool {
+    consent_path().is_some_and(|path| send_test_at(&path))
 }
 
 fn ago(at: SystemTime) -> String {
@@ -179,6 +196,10 @@ pub fn send_test_at(path: &Path) -> bool {
             })
             .to_string();
             let result = post(url, invite, &body);
+            log_event(match &result {
+                Ok(()) => "テスト送信に成功しました".into(),
+                Err(e) => format!("テスト送信に失敗しました ({e})"),
+            });
             let mut stats = stats();
             stats.last_test = Some((SystemTime::now(), result.err().map(|e| e.to_string())));
         })
@@ -269,6 +290,14 @@ pub fn enqueue(receipt: Consent, reading: &str, text: &str, original: Option<&st
         return;
     }
     stats().queued += 1;
+    log_event(format!(
+        "変換を記録しました{}",
+        if original.is_some() {
+            "(選び直しあり)"
+        } else {
+            ""
+        }
+    ));
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let needs_worker = pending.is_none();
     let batch = pending.get_or_insert_with(|| Batch {
@@ -313,10 +342,32 @@ fn flush() {
     let mut delay = BATCH_WINDOW;
     let mut retries = RETRY_DELAYS.iter();
     loop {
-        let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-        let (mut pending, _) = WAKE
-            .wait_timeout_while(pending, delay, |p| !p.as_ref().is_some_and(|b| b.urgent))
-            .unwrap_or_else(|e| e.into_inner());
+        let started = SystemTime::now();
+        let deadline = std::time::Instant::now() + delay;
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            pending = WAKE
+                .wait_timeout_while(pending, left.min(FLUSH_POLL), |p| {
+                    !p.as_ref().is_some_and(|b| b.urgent)
+                })
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+            if pending.as_ref().is_some_and(|b| b.urgent) {
+                break;
+            }
+            // Check the request file without holding the queue lock.
+            drop(pending);
+            let requested = flush_requested_since(started);
+            pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+            if requested {
+                log_event("今すぐ送信の要求を受け取りました".into());
+                break;
+            }
+        }
         let Some(batch) = pending.take() else {
             return;
         };
@@ -345,6 +396,10 @@ fn flush() {
                 stats.failures += 1;
             }
         }
+        log_event(match &result {
+            Ok(()) => format!("送信成功 {count}件"),
+            Err(e) => format!("送信失敗 {count}件 ({e})"),
+        });
         if result.is_ok() {
             return;
         }
@@ -398,31 +453,173 @@ fn system_post(url: &str, invite: &str, body: &str) -> io::Result<()> {
         .args([
             "--disable",
             "--silent",
-            "--fail",
             "--proto",
             "=https",
             "--max-time",
             "10",
+            "--output",
+            "NUL",
+            "--write-out",
+            "%{http_code}",
             "--config",
             "-",
             url,
         ])
         .creation_flags(0x0800_0000)
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
     let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
     let result = child.stdin.take().unwrap().write_all(format!(
         "header = \"Authorization: Bearer {invite}\"\nheader = \"Content-Type: application/json\"\ndata-binary = \"{escaped}\"\n"
     ).as_bytes());
+    let mut code = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut code);
+    }
     let status = child.wait()?;
     result?;
-    if !status.success() {
-        return Err(io::Error::other("feedback upload failed"));
+    match code.trim().parse::<u16>() {
+        Ok(200..=299) => Ok(()),
+        Ok(0) | Err(_) => Err(io::Error::other(format!(
+            "接続できませんでした (curl {})",
+            status.code().unwrap_or(-1)
+        ))),
+        Ok(code) => Err(io::Error::other(format!("HTTP {code}"))),
     }
+}
+
+/// Debug events shared between processes. On Windows the settings app runs
+/// apart from the applications hosting the IME, so each process appends to a
+/// small local log that the settings app reads. Events never hold conversion
+/// text, and they are written on a background thread.
+#[cfg(windows)]
+mod shared_log {
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::{OnceLock, mpsc};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const KEEP_LINES: usize = 100;
+    const MAX_BYTES: u64 = 32 * 1024;
+
+    pub fn path() -> Option<PathBuf> {
+        Some(crate::paths::data_dir()?.join("alpha-feedback-debug.log"))
+    }
+
+    pub fn flush_request_path() -> Option<PathBuf> {
+        Some(crate::paths::data_dir()?.join("alpha-feedback-flush"))
+    }
+
+    static TX: OnceLock<Option<mpsc::Sender<String>>> = OnceLock::new();
+
+    pub fn push(event: String) {
+        let tx = TX.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<String>();
+            let process = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            std::thread::Builder::new()
+                .name("sweet-ime-feedback-log".into())
+                .spawn(move || {
+                    for event in rx {
+                        let _ = append(&process, &event);
+                    }
+                })
+                .ok()
+                .map(|_| tx)
+        });
+        if let Some(tx) = tx {
+            let _ = tx.send(event);
+        }
+    }
+
+    fn append(process: &str, event: &str) -> std::io::Result<()> {
+        let path = path().ok_or_else(|| std::io::Error::other("no data directory"))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let line = format!("{secs}\t{process}\t{}\n", event.replace(['\t', '\n'], " "));
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES) {
+            let old = std::fs::read_to_string(&path).unwrap_or_default();
+            let lines: Vec<&str> = old.lines().collect();
+            let kept = lines[lines.len().saturating_sub(KEEP_LINES)..].join("\n");
+            std::fs::write(&path, format!("{kept}\n{line}"))
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?
+                .write_all(line.as_bytes())
+        }
+    }
+}
+
+fn log_event(event: String) {
+    #[cfg(windows)]
+    shared_log::push(event);
+    #[cfg(not(windows))]
+    let _ = event;
+}
+
+/// The newest `limit` shared debug events, newest first, as
+/// "N秒前 [process] event" lines. Empty when there is no log.
+#[cfg(windows)]
+pub fn debug_log(limit: usize) -> Vec<String> {
+    let Some(text) = shared_log::path().and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return Vec::new();
+    };
+    text.lines()
+        .rev()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let secs: u64 = fields.next()?.parse().ok()?;
+            let process = fields.next()?;
+            let event = fields.next()?;
+            let at = UNIX_EPOCH + Duration::from_secs(secs);
+            Some(format!("{} [{process}] {event}", ago(at)))
+        })
+        .take(limit)
+        .collect()
+}
+
+/// Asks every IME process holding a batch to send it now (Windows: the
+/// settings app cannot reach their memory, so the workers watch this file).
+#[cfg(windows)]
+pub fn request_flush() -> io::Result<()> {
+    let path =
+        shared_log::flush_request_path().ok_or_else(|| io::Error::other("no data directory"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, b"")?;
+    log_event("今すぐ送信を要求しました".into());
     Ok(())
 }
+
+/// Whether the settings app asked for a flush after `since`.
+fn flush_requested_since(since: SystemTime) -> bool {
+    #[cfg(windows)]
+    return shared_log::flush_request_path()
+        .and_then(|p| std::fs::metadata(p).ok()?.modified().ok())
+        .is_some_and(|at| at > since);
+    #[cfg(not(windows))]
+    {
+        let _ = since;
+        false
+    }
+}
+
+/// How often a waiting worker checks for a flush request from another process.
+#[cfg(windows)]
+const FLUSH_POLL: Duration = Duration::from_secs(2);
+#[cfg(not(windows))]
+const FLUSH_POLL: Duration = BATCH_WINDOW;
 
 #[cfg(test)]
 mod tests {
