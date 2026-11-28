@@ -112,6 +112,113 @@ pub fn disable_at(path: &Path) -> io::Result<()> {
     }
 }
 
+/// What the debug menu shows about this process's uploads. Holds no
+/// conversion text.
+struct Stats {
+    queued: usize,
+    sent_batches: usize,
+    sent_records: usize,
+    failures: usize,
+    /// When, how many records, and the error if it failed.
+    last_attempt: Option<(SystemTime, usize, Option<String>)>,
+    last_skip: Option<(SystemTime, &'static str)>,
+    /// When the last manual test was sent, and the error if it failed.
+    last_test: Option<(SystemTime, Option<String>)>,
+}
+
+static STATS: Mutex<Stats> = Mutex::new(Stats {
+    queued: 0,
+    sent_batches: 0,
+    sent_records: 0,
+    failures: 0,
+    last_attempt: None,
+    last_skip: None,
+    last_test: None,
+});
+
+fn stats() -> std::sync::MutexGuard<'static, Stats> {
+    STATS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Records why a confirmed conversion was not queued, for the debug menu.
+pub fn note_skip(reason: &'static str) {
+    stats().last_skip = Some((SystemTime::now(), reason));
+}
+
+fn ago(at: SystemTime) -> String {
+    let secs = at.elapsed().map_or(0, |d| d.as_secs());
+    if secs < 60 {
+        format!("{secs}秒前")
+    } else {
+        format!("{}分前", secs / 60)
+    }
+}
+
+/// The fixed record a manual test sends, easy to find and delete in storage.
+pub const TEST_RECORD: (&str, &str) = ("そうしんてすと", "送信テスト");
+
+/// Sends one batch holding only [`TEST_RECORD`] on a background thread, with
+/// the consent at `path`. Returns false if there is no consent. The result
+/// shows up in [`debug_report`].
+pub fn send_test_at(path: &Path) -> bool {
+    let Some(consent) = consent_at(path) else {
+        return false;
+    };
+    let Some(url) = endpoint() else { return false };
+    std::thread::Builder::new()
+        .name("sweet-ime-feedback-test".into())
+        .spawn(move || {
+            let Some((invite, _)) = consent.0.split_once('\n') else {
+                return;
+            };
+            let (reading, text) = TEST_RECORD;
+            let body = json!({
+                "schema": 1,
+                "version": VERSION,
+                "records": [{ "reading": reading, "text": text }],
+            })
+            .to_string();
+            let result = post(url, invite, &body);
+            let mut stats = stats();
+            stats.last_test = Some((SystemTime::now(), result.err().map(|e| e.to_string())));
+        })
+        .is_ok()
+}
+
+/// A plain-text summary of this process's feedback state for debugging.
+pub fn debug_report(consented: bool) -> String {
+    let pending = PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map_or(0, |b| b.records.len());
+    let stats = stats();
+    let mut lines = vec![
+        format!("同意: {}", if consented { "あり" } else { "なし" }),
+        format!("送信待ち: {pending}件"),
+        format!("記録した変換: {}件", stats.queued),
+        format!(
+            "送信成功: {}バッチ / {}件",
+            stats.sent_batches, stats.sent_records
+        ),
+        format!("送信失敗: {}回", stats.failures),
+    ];
+    lines.push(match &stats.last_attempt {
+        None => "最後の送信: まだありません".into(),
+        Some((at, n, None)) => format!("最後の送信: {} {n}件 成功", ago(*at)),
+        Some((at, n, Some(e))) => format!("最後の送信: {} {n}件 失敗 ({e})", ago(*at)),
+    });
+    match &stats.last_test {
+        None => {}
+        Some((at, None)) => lines.push(format!("テスト送信: {} 成功", ago(*at))),
+        Some((at, Some(e))) => lines.push(format!("テスト送信: {} 失敗 ({e})", ago(*at))),
+    }
+    if let Some((at, reason)) = stats.last_skip {
+        lines.push(format!("最後に記録しなかった理由: {} {reason}", ago(at)));
+    }
+    lines.join("\n")
+}
+
 /// Sends one batch: `(url, invite, JSON body)`. Frontends without a system
 /// HTTP client register one; the Windows build uses curl.
 pub type Uploader = fn(&str, &str, &str) -> io::Result<()>;
@@ -158,8 +265,10 @@ pub fn enqueue(receipt: Consent, reading: &str, text: &str, original: Option<&st
         || !japanese(text, false)
         || original.is_some_and(|s| !japanese(s, false))
     {
+        note_skip("日本語以外の文字を含むか、80文字を超えたため記録しませんでした");
         return;
     }
+    stats().queued += 1;
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let needs_worker = pending.is_none();
     let batch = pending.get_or_insert_with(|| Batch {
@@ -220,7 +329,23 @@ fn flush() {
             return;
         };
         let body = json!({ "schema": 1, "version": VERSION, "records": batch.records }).to_string();
-        if post(url, invite, &body).is_ok() {
+        let count = batch.records.len();
+        let result = post(url, invite, &body);
+        {
+            let mut stats = stats();
+            stats.last_attempt = Some((
+                SystemTime::now(),
+                count,
+                result.as_ref().err().map(|e| e.to_string()),
+            ));
+            if result.is_ok() {
+                stats.sent_batches += 1;
+                stats.sent_records += count;
+            } else {
+                stats.failures += 1;
+            }
+        }
+        if result.is_ok() {
             return;
         }
         let Some(&next) = retries.next() else { return };

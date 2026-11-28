@@ -8,7 +8,9 @@ use jni::sys::{jboolean, jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 use sweet_engine::{UserDictionary, alpha_feedback, user_dict::DEFAULT_POS};
 
-use super::{Context, FIELD, converter, init, pack_zenz, refine, refresh_converter};
+use super::{
+    Context, FIELD, converter, feedback_debug, init, pack_zenz, refine, refresh_converter,
+};
 
 fn guard<T>(default: T, f: impl FnOnce() -> T) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(default)
@@ -455,20 +457,22 @@ fn upload(url: &str, invite: &str, body: &str) -> std::io::Result<()> {
         .call_static_method(
             class,
             "upload",
-            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
             &[
                 JValue::Object(&url),
                 JValue::Object(&invite),
                 JValue::Object(&body),
             ],
         )
-        .and_then(|v| v.z());
+        .and_then(|v| v.i());
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
     }
     match sent {
-        Ok(true) => Ok(()),
-        _ => Err(fail("rejected")),
+        Ok(code) if (200..300).contains(&code) => Ok(()),
+        Ok(-1) => Err(std::io::Error::other("接続できませんでした")),
+        Ok(code) => Err(std::io::Error::other(format!("HTTP {code}"))),
+        Err(_) => Err(fail("Java call failed")),
     }
 }
 
@@ -543,4 +547,27 @@ pub extern "system" fn Java_io_github_sweetime_Native_feedbackDisable(
     guard(false, || {
         alpha_feedback::disable_at(Path::new(&path)).is_ok()
     }) as jboolean
+}
+
+/// The Alpha feedback state for the debug menu (no conversion text).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackDebug(
+    mut env: JNIEnv,
+    _: JClass,
+    consent_file: JString,
+) -> jstring {
+    let path = to_string(&mut env, &consent_file);
+    let report = guard(None, || Some(feedback_debug(Path::new(&path))));
+    to_java(&mut env, report)
+}
+
+/// Sends a fixed test record with the consent at `path`; false without consent.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_sweetime_Native_feedbackSendTest(
+    mut env: JNIEnv,
+    _: JClass,
+    path: JString,
+) -> jboolean {
+    let path = to_string(&mut env, &path);
+    guard(false, || alpha_feedback::send_test_at(Path::new(&path))) as jboolean
 }

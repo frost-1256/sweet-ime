@@ -1088,6 +1088,43 @@ public final class SettingsActivity extends Activity {
             refresh.run();
         });
         refresh.run();
+        feedbackDebugMenu(c);
+    }
+
+    /** Alpha only: what the keyboard has queued and sent in this process. */
+    private void feedbackDebugMenu(LinearLayout c) {
+        TextView title = text("送信のデバッグ", 15, theme.text);
+        title.setPadding(0, dp(16), 0, dp(4));
+        c.addView(title);
+        TextView report = text("", 13, theme.subText);
+        report.setTextIsSelectable(true);
+        c.addView(report);
+        Runnable update = () -> {
+            String s = Native.feedbackDebug(feedbackConsentFile());
+            report.setText(s == null ? "状態を取得できませんでした" : s);
+        };
+        Button reload = tonalButton("状態を更新");
+        reload.setOnClickListener(v -> update.run());
+        c.addView(reload);
+        Button flush = tonalButton("今すぐ送信");
+        flush.setOnClickListener(v -> {
+            Native.feedbackFlush();
+            Toast.makeText(this, "送信待ちのデータを送ります。数秒後に「状態を更新」を押してください。",
+                    Toast.LENGTH_SHORT).show();
+            report.postDelayed(update, 3000);
+        });
+        c.addView(flush);
+        Button test = tonalButton("テスト値を送信");
+        test.setOnClickListener(v -> {
+            if (!Native.feedbackSendTest(feedbackConsentFile())) {
+                Toast.makeText(this, "先にデータ提供に同意してください", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Toast.makeText(this, "「そうしんてすと → 送信テスト」を送ります", Toast.LENGTH_SHORT).show();
+            report.postDelayed(update, 3000);
+        });
+        c.addView(test);
+        update.run();
     }
 
     private EditText reportField(String hint) {

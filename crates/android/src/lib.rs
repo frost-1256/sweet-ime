@@ -34,6 +34,15 @@ const ITEM: char = '\u{1e}';
 
 static DICT_PATH: OnceLock<PathBuf> = OnceLock::new();
 
+/// Whether the last field started may send Alpha feedback, for the debug menu.
+static FEEDBACK_FIELD: std::sync::Mutex<&str> = std::sync::Mutex::new("まだ入力欄を開いていません");
+
+/// The Alpha feedback state for the settings screen's debug menu.
+pub fn feedback_debug(consent_file: &Path) -> String {
+    let field = *FEEDBACK_FIELD.lock().unwrap_or_else(|e| e.into_inner());
+    format!("最後に開いた入力欄: {field}\n{}", alpha_feedback::debug_report(alpha_feedback::consent_at(consent_file).is_some()))
+}
+
 /// The converter shared by every keyboard in the process, rebuilt when the
 /// zenz model is installed or removed.
 static CONV: RwLock<Option<Shared>> = RwLock::new(None);
@@ -201,8 +210,18 @@ impl Context {
     }
 
     fn refresh_feedback(&mut self) {
-        self.feedback =
-            alpha_feedback::consent().filter(|_| self.feedback_field && !self.private_field);
+        let consent = alpha_feedback::consent();
+        let status = if consent.is_none() {
+            "同意なし"
+        } else if self.private_field {
+            "対象外(パスワード欄か、学習しないよう求める欄)"
+        } else if !self.feedback_field {
+            "対象外(ふつうの文章以外の入力欄)"
+        } else {
+            "対象"
+        };
+        *FEEDBACK_FIELD.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        self.feedback = consent.filter(|_| self.feedback_field && !self.private_field);
         self.session.capture_feedback = self.feedback.is_some();
     }
 
@@ -213,10 +232,16 @@ impl Context {
             return;
         };
         if alpha_feedback::consent().as_ref() != Some(consent) {
+            alpha_feedback::note_skip("入力欄を開いた後に同意が変わったため記録しませんでした");
             return;
         }
-        if let Some((reading, text, original)) = self.session.conversion_feedback(commit) {
-            alpha_feedback::enqueue(consent.clone(), reading, text, original);
+        match self.session.conversion_feedback(commit) {
+            Some((reading, text, original)) => {
+                alpha_feedback::enqueue(consent.clone(), reading, text, original)
+            }
+            None => alpha_feedback::note_skip(
+                "変換を伴わない確定(ひらがなのまま・予測候補・クラウド候補など)のため記録しませんでした",
+            ),
         }
     }
 

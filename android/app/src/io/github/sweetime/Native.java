@@ -88,16 +88,22 @@ final class Native {
     static native boolean feedbackEnable(String path, String invite);
     static native boolean feedbackDisable(String path);
 
+    /** The Alpha feedback state for the debug menu, as lines of text. */
+    static native String feedbackDebug(String consentPath);
+    /** Sends the fixed test record (そうしんてすと → 送信テスト); false without consent. */
+    static native boolean feedbackSendTest(String consentPath);
+
     /**
-     * Posts one Alpha feedback batch. Called by the engine on its worker
-     * thread, never on the main thread.
+     * Posts one Alpha feedback batch and returns the HTTP status, or -1 if it
+     * could not connect. Called by the engine on its worker thread, never on
+     * the main thread.
      */
     @SuppressWarnings("unused")
-    static boolean upload(String url, String invite, String body) {
+    static int upload(String url, String invite, String body) {
         java.net.HttpURLConnection connection = null;
         try {
             java.net.URL target = new java.net.URL(url);
-            if (!"https".equals(target.getProtocol())) return false;
+            if (!"https".equals(target.getProtocol())) return -1;
             connection = (java.net.HttpURLConnection) target.openConnection();
             connection.setInstanceFollowRedirects(false);
             connection.setUseCaches(false);
@@ -112,10 +118,10 @@ final class Native {
             try (java.io.OutputStream out = connection.getOutputStream()) {
                 out.write(data);
             }
-            int code = connection.getResponseCode();
-            return code >= 200 && code < 300;
+            return connection.getResponseCode();
         } catch (Exception e) {
-            return false;
+            android.util.Log.w("SweetIME", "Alpha feedback upload failed: " + e.getClass().getSimpleName());
+            return -1;
         } finally {
             if (connection != null) connection.disconnect();
         }
