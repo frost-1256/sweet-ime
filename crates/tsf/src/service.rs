@@ -44,6 +44,7 @@ struct State {
     session: Session,
     /// The current composition started with the preview on in a public field.
     typed_input_allowed: bool,
+    feedback_consent: Option<sweet_engine::alpha_feedback::Consent>,
     window: Option<CandidateWindow>,
     bitmap_candidates: bool,
     candidate_font: String,
@@ -117,6 +118,8 @@ impl TextService_Impl {
                 return;
             }
             st.ctx = Some(ctx.clone());
+            st.feedback_consent = None;
+            st.session.capture_feedback = false;
             st.session.cancel_simeji();
             st.layout_sink.take()
         };
@@ -367,7 +370,17 @@ impl TextService_Impl {
         let consumed = self.st.borrow_mut().session.handle(conv, key);
         let report = self.st.borrow_mut().session.take_report();
         if let Some(report) = report {
-            self.save_report(report);
+            let tid = self.st.borrow().tid;
+            let target = ctx.clone();
+            let allowed = std::rc::Rc::new(std::cell::Cell::new(false));
+            let checked = allowed.clone();
+            let checked_field = edit::request(&ctx, tid, move |ec| {
+                checked.set(document::private_field(&target, ec).ok() == Some(false));
+                Ok(())
+            });
+            if checked_field.is_ok() && allowed.get() {
+                self.save_report(report);
+            }
             return Ok(BOOL(1));
         }
         if consumed {
@@ -417,9 +430,14 @@ impl TextService_Impl {
         };
         let hwnd = w.raw();
         let debounce = std::time::Duration::from_millis(st.session.options.live_debounce_ms.into());
-        LIVE.submit_with_debounce(conv, reading, left_context, debounce, move |reading, surface| {
-            crate::candidate_window::post_live(hwnd, reading, surface);
-        });
+        LIVE.submit_for_window(
+            hwnd,
+            conv,
+            reading,
+            left_context,
+            debounce,
+            move |reading, surface| crate::candidate_window::post_live(hwnd, reading, surface),
+        );
     }
 
     /// A background live conversion result arrived (UI thread).

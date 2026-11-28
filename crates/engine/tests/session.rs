@@ -1915,6 +1915,35 @@ fn report_commit_records_the_reading_and_the_text() {
     assert!(s.reportable_commit().is_none());
     assert!(!s.handle(&c, Key::ReportCommit));
     assert!(s.take_report().is_none());
+    s.private = false;
+    assert!(s.reportable_commit().is_none());
+    assert!(!s.handle(&c, Key::ReportCommit));
+}
+
+#[test]
+fn feedback_records_a_selected_alternative_only_after_consent() {
+    let Some(c) = converter() else { return };
+    let mut s = plain();
+    s.capture_feedback = true;
+    type_str(&mut s, &c, "kousya");
+    assert!(s.handle(&c, Key::Space));
+    let original = s.preedit().text;
+    assert!(s.handle(&c, Key::Space));
+    let alternate = s.preedit().text;
+    assert_ne!(original, alternate);
+    assert!(s.handle(&c, Key::Enter));
+    let text = s.take_commit();
+    assert_eq!(s.conversion_feedback(&text), Some(("こうしゃ", alternate.as_str(), Some(original.as_str()))));
+    s.suppress_commit_report();
+    assert!(s.conversion_feedback(&text).is_none());
+
+    let mut s = plain();
+    type_str(&mut s, &c, "kyou");
+    assert!(s.handle(&c, Key::Space));
+    assert!(s.handle(&c, Key::Enter));
+    let text = s.take_commit();
+    s.capture_feedback = true;
+    assert!(s.conversion_feedback(&text).is_none());
 }
 
 /// Live text after typing `typed`.

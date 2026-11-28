@@ -7,16 +7,16 @@
 //! are forwarded here: activation, display attributes and the settings
 //! entry in Windows language settings.
 //!
-//! An old core is never unloaded: its threads and windows may still be
-//! running. Memory-mapped data (dictionary, model) is shared by file, so a
-//! second core mostly costs its code.
+//! A loaded core can still own threads and callbacks after deactivation.
+//! Keep at most two core versions per process and defer further updates
+//! until the host restarts.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{E_FAIL, HWND};
+use windows::Win32::Foundation::{E_FAIL, FreeLibrary, HWND};
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW,
@@ -40,6 +40,7 @@ use crate::CLSID_SWEET_IME;
 const CORE_POINTER: &str = "core.txt";
 /// The core when there is no `core.txt` (development builds).
 const DEV_CORE: &str = "sweet_tsf_core.dll";
+const MAX_LOADED_CORES: usize = 2;
 /// Private `ActivateEx` flag for the core: keep the input mode, no badge.
 const ACTIVATE_HOT_SWAP: u32 = 0x4000_0000;
 /// Look for a new core at most this often.
@@ -56,10 +57,20 @@ struct Core {
     name: String,
     get_class_object: GetClassObject,
     busy: Option<Busy>,
+    activated: bool,
 }
 
 /// Cores loaded in this process, oldest first.
 static CORES: Mutex<Vec<Core>> = Mutex::new(Vec::new());
+
+pub(crate) fn has_loaded_core() -> bool {
+    !CORES.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+}
+
+fn can_switch_to(name: &str) -> bool {
+    let cores = CORES.lock().unwrap_or_else(|e| e.into_inner());
+    cores.len() < MAX_LOADED_CORES || cores.iter().any(|c| c.name.eq_ignore_ascii_case(name))
+}
 
 pub(crate) fn latest_core_name() -> String {
     CORES
@@ -84,10 +95,21 @@ fn wanted_core() -> String {
         .unwrap_or_else(|| DEV_CORE.to_string())
 }
 
-fn load_core(name: &str) -> Result<Core> {
+fn load_core(name: &str, allow_fallback: bool) -> Result<Core> {
     let mut cores = CORES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(c) = cores.iter().find(|c| c.name == name) {
+    if let Some(c) = cores.iter().find(|c| c.name.eq_ignore_ascii_case(name)) {
         return Ok(c.clone());
+    }
+    if cores.len() >= MAX_LOADED_CORES {
+        if allow_fallback {
+            return Ok(cores
+                .iter()
+                .rev()
+                .find(|c| c.activated)
+                .unwrap_or(&cores[0])
+                .clone());
+        }
+        return Err(E_FAIL.into());
     }
     let path = crate::dll_path()
         .parent()
@@ -99,13 +121,16 @@ fn load_core(name: &str) -> Result<Core> {
             None,
             LOAD_WITH_ALTERED_SEARCH_PATH,
         )?;
-        let get = GetProcAddress(module, s!("DllGetClassObject"))
-            .ok_or(windows_core::Error::from(E_FAIL))?;
+        let Some(get) = GetProcAddress(module, s!("DllGetClassObject")) else {
+            let _ = FreeLibrary(module);
+            return Err(E_FAIL.into());
+        };
         let busy = GetProcAddress(module, s!("SweetCoreBusy"));
         let core = Core {
             name: name.to_string(),
             get_class_object: std::mem::transmute::<_, GetClassObject>(get),
             busy: busy.map(|b| std::mem::transmute::<_, Busy>(b)),
+            activated: false,
         };
         cores.push(core.clone());
         Ok(core)
@@ -138,8 +163,13 @@ impl Inner {
         unsafe {
             self.unk
                 .cast::<ITfTextInputProcessorEx>()?
-                .ActivateEx(tm, tid, flags)
+                .ActivateEx(tm, tid, flags)?;
         }
+        let mut cores = CORES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(core) = cores.iter_mut().find(|c| c.name == self.core.name) {
+            core.activated = true;
+        }
+        Ok(())
     }
 
     fn deactivate(&self) {
@@ -196,7 +226,7 @@ impl Shim_Impl {
             .try_borrow_mut()
             .map_err(|_| windows_core::Error::from(E_FAIL))?;
         if st.inner.is_none() {
-            st.inner = Some(Inner::new(load_core(&wanted_core())?)?);
+            st.inner = Some(Inner::new(load_core(&wanted_core(), true)?)?);
         }
         Ok(st.inner.as_ref().map(|i| i.unk.clone()).unwrap())
     }
@@ -214,13 +244,13 @@ impl Shim_Impl {
                     return Ok(());
                 };
                 match &st.inner {
-                    Some(i) if i.core.name != wanted && !i.busy() => {}
+                    Some(i) if !i.core.name.eq_ignore_ascii_case(&wanted) && !i.busy() => {}
                     _ => return Ok(()),
                 }
                 (tm, st.tid, st.flags, st.inner.clone())
             };
             // Keep the current core on failure; try again on a later focus.
-            let Ok(new) = load_core(&wanted).and_then(Inner::new) else { return Ok(()) };
+            let Ok(new) = load_core(&wanted, false).and_then(Inner::new) else { return Ok(()) };
             // `st.inner` always names the text service being (de)activated:
             // TSF may call back into this shim meanwhile, and an empty slot
             // would make `inner()` create a second one.
@@ -301,10 +331,10 @@ impl ITfTextInputProcessorEx_Impl for Shim_Impl {
                 .borrow_mut()
                 .inner
                 .take()
-                .filter(|i| i.core.name == wanted);
+                .filter(|i| i.core.name.eq_ignore_ascii_case(&wanted));
             let inner = match reuse {
                 Some(i) => i,
-                None => Inner::new(load_core(&wanted)?)?,
+                None => Inner::new(load_core(&wanted, true)?)?,
             };
             // In place before activating: TSF may call back into this shim
             // meanwhile (see `swap_if_updated`).
@@ -341,8 +371,11 @@ impl ITfThreadFocusSink_Impl for Shim_Impl {
                     return Ok(());
                 }
                 st.last_check = Some(Instant::now());
-                let current = st.inner.as_ref().map(|i| i.core.name.clone());
-                if current.is_none() || current.as_deref() == Some(wanted_core().as_str()) {
+                let Some(current) = &st.inner else {
+                    return Ok(());
+                };
+                let wanted = wanted_core();
+                if current.core.name.eq_ignore_ascii_case(&wanted) || !can_switch_to(&wanted) {
                     return Ok(());
                 }
             }

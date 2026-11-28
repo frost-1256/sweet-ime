@@ -164,6 +164,8 @@ jobs:
         run: ./scripts/build-dictionary.ps1 -Output data/system.dict
 
       - name: Build and verify the installer
+        env:
+          SWEET_IME_ALPHA_FEEDBACK_URL: ${{ vars.SWEET_IME_ALPHA_FEEDBACK_URL }}
         run: ./scripts/build.ps1 -Dictionary data/system.dict
 
       - name: Cache the zenz model

@@ -436,7 +436,7 @@ unsafe fn hot_swap(tm: &ITfThreadMgr, tid: u32, core: &str, appdata: &std::path:
     let td = appdata.join("swap");
     std::fs::create_dir_all(&td).unwrap();
     std::fs::copy(&shim, td.join("sweet_tsf.dll")).unwrap();
-    for name in ["sweet_tsf_core-a.dll", "sweet_tsf_core-b.dll"] {
+    for name in ["sweet_tsf_core-a.dll", "sweet_tsf_core-b.dll", "sweet_tsf_core-c.dll"] {
         std::fs::copy(core, td.join(name)).unwrap();
     }
     std::fs::write(td.join("core.txt"), "sweet_tsf_core-a.dll\n").unwrap();
@@ -469,7 +469,17 @@ unsafe fn hot_swap(tm: &ITfThreadMgr, tid: u32, core: &str, appdata: &std::path:
         }
         check("focus switches to the new core", name(), "sweet_tsf_core-b.dll", fails);
         check("new core answers", tip.cast::<ITfFunction>()?.GetDisplayName()?.to_string(), "Sweet IME の設定", fails);
+        std::fs::write(td.join("core.txt"), "sweet_tsf_core-c.dll\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        tip.cast::<ITfThreadFocusSink>()?.OnSetThreadFocus()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        pump();
+        check("third core waits for host restart", name(), "sweet_tsf_core-b.dll", fails);
         tip.Deactivate()?;
+        let next_tip: ITfTextInputProcessor = factory.CreateInstance(None)?;
+        next_tip.Activate(tm, tid)?;
+        check("new service reuses a loaded core", name(), "sweet_tsf_core-b.dll", fails);
+        next_tip.Deactivate()?;
     }
     Ok(())
 }
@@ -1038,6 +1048,16 @@ fn main() -> Result<()> {
         let eaten = h.key(0x7B);
         with_ctrl(false);
         check("ctrl+f12 without a commit", format!("{eaten}"), "false", &mut fails);
+
+        h.type_str("tesuto");
+        // Some hosts change the input scope without changing the TSF context.
+        h.store.input_scope.set(IS_NUMERIC_PIN);
+        h.key(0x0D);
+        h.store.input_scope.set(IS_DEFAULT);
+        with_ctrl(true);
+        let eaten = h.key(0x7B);
+        with_ctrl(false);
+        check("PIN commit cannot later be reported", eaten.to_string(), "false", &mut fails);
 
         // 7. Hotkeys delivered as preserved keys.
         h.clear();

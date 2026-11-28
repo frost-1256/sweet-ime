@@ -1,0 +1,15 @@
+name = "sweet-ime-alpha-feedback"
+main = "worker.mjs"
+compatibility_date = "2026-11-28"
+
+[observability]
+enabled = false
+
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "sweet-ime-alpha-feedback"
+
+[[ratelimits]]
+name = "INGEST_LIMIT"
+namespace_id = "11401"
+simple = { limit = 60, period = 60 }

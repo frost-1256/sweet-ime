@@ -13,13 +13,19 @@ pub struct ReportsSection {
     confirm_clear: bool,
     reading: String,
     wanted: String,
+    #[cfg(windows)]
+    feedback_invite: String,
 }
 
 impl ReportsSection {
     pub fn new() -> Self {
         let path = paths::reports_file();
         let reports = path.as_deref().and_then(|p| reports::load(p).ok()).unwrap_or_default();
-        Self { path, reports, confirm_clear: false, reading: String::new(), wanted: String::new() }
+        Self {
+            path, reports, confirm_clear: false, reading: String::new(), wanted: String::new(),
+            #[cfg(windows)]
+            feedback_invite: String::new(),
+        }
     }
 
     fn reload(&mut self) {
@@ -53,6 +59,8 @@ impl ReportsSection {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
+        #[cfg(windows)]
+        self.alpha_feedback_ui(ui, status);
         card_frame(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -126,6 +134,42 @@ impl ReportsSection {
             if let Some(i) = remove {
                 self.reports.remove(i);
                 self.save(status, "報告を 1 件消しました。");
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    fn alpha_feedback_ui(&mut self, ui: &mut egui::Ui, status: &mut Option<(String, bool)>) {
+        use sweet_engine::alpha_feedback as feedback;
+        let Some(endpoint) = feedback::endpoint() else { return };
+        card_frame(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.heading("Alpha 版の変換データ提供");
+            ui.label("同意すると、確定した日本語の読みと変換結果、候補を選び直した場合は最初の候補を、自動でまとめて開発者に送ります。");
+            ui.label("パスワード・PIN・プライベート欄と、入力欄の種類を確認できない場合は対象外です。送信対象には日本語の氏名や内容が含まれることがあります。");
+            ui.label("送信先では報告を非公開で保存し、30日で削除対象になります。同意を取り消すと以後の収集と送信が止まります。送信中・送信済みのデータは取り消せません。");
+            ui.label(RichText::new(endpoint).weak());
+            if feedback::consent().is_some() {
+                ui.label("データ提供に同意済み");
+                if ui.button("同意を取り消す").clicked() {
+                    *status = Some(match feedback::disable() {
+                        Ok(()) => ("データ提供を停止しました。".into(), true),
+                        Err(_) => ("データ提供を停止できませんでした。".into(), false),
+                    });
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.feedback_invite).password(true).hint_text("招待コード"));
+                    if ui.add_enabled(!self.feedback_invite.is_empty(), egui::Button::new("同意して提供を開始")).clicked() {
+                        *status = Some(match feedback::enable(self.feedback_invite.trim()) {
+                            Ok(()) => {
+                                self.feedback_invite.clear();
+                                ("データ提供を開始しました。".into(), true)
+                            }
+                            Err(_) => ("招待コードを確認してください。設定を保存できませんでした。".into(), false),
+                        });
+                    }
+                });
             }
         });
     }

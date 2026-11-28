@@ -285,8 +285,7 @@ struct State {
     size_from: (f32, f32),
     size_to: (f32, f32),
     size_anim_start: Instant,
-    /// Horizontal offset from anchor.left to window left (physical px).
-    last_text_x: f32,
+    placement: Option<Placement>,
     /// Last window rect applied via SetWindowPos (x, y, w, h in physical px).
     last_rect: Option<(i32, i32, i32, i32)>,
     shown_at: Instant,
@@ -427,10 +426,49 @@ fn interpolate_size(from: (f32, f32), to: (f32, f32), elapsed_ms: f32) -> (f32, 
     (from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e)
 }
 
-unsafe fn compute_window_rect(anchor: RECT, w: i32, h: i32, text_x: f32) -> (i32, i32, i32, i32) {
-    // Align candidate text with the composition text.
-    let mut x = anchor.left - text_x as i32;
-    let mut y = anchor.bottom + 4;
+#[derive(Clone, Copy)]
+struct Placement {
+    x: i32,
+    edge: i32,
+    above: bool,
+    work_top: i32,
+}
+
+impl Placement {
+    fn rect(self, w: i32, h: i32) -> (i32, i32, i32, i32) {
+        let y = if self.above { self.edge - h } else { self.edge };
+        (self.x, y.max(self.work_top), w, h)
+    }
+}
+
+fn choose_placement(
+    anchor: RECT,
+    work: RECT,
+    w: i32,
+    h: i32,
+    text_x: f32,
+    previous: Option<Placement>,
+) -> Placement {
+    let below = work.bottom - anchor.bottom - 4;
+    let above = anchor.top - work.top - 4;
+    let place_above = match previous {
+        Some(p) if p.above && (above >= h || below < h) => true,
+        Some(p) if !p.above && (below >= h || above < h) => false,
+        _ => below < h && (above >= h || above > below),
+    };
+    let aligned_x = anchor.left - text_x as i32;
+    // Beside the right edge, growing may need more room to the left. Keep
+    // that position while the anchor stays put and the popup shrinks again.
+    let x = previous.map_or(aligned_x, |p| p.x.min(aligned_x));
+    Placement {
+        x: x.clamp(work.left, (work.right - w).max(work.left)),
+        edge: if place_above { anchor.top - 4 } else { anchor.bottom + 4 },
+        above: place_above,
+        work_top: work.top,
+    }
+}
+
+unsafe fn monitor_work_area(anchor: RECT) -> RECT {
     let mut mi = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -445,14 +483,10 @@ unsafe fn compute_window_rect(anchor: RECT, w: i32, h: i32, text_x: f32) -> (i32
         )
     };
     if unsafe { GetMonitorInfoW(mon, &mut mi).as_bool() } {
-        let wa = mi.rcWork;
-        if y + h > wa.bottom {
-            y = anchor.top - h - 4;
-        }
-        x = x.clamp(wa.left, (wa.right - w).max(wa.left));
-        y = y.max(wa.top);
+        return mi.rcWork;
     }
-    (x, y, w, h)
+    // An unavailable work area should not constrain a valid host anchor.
+    RECT { left: i32::MIN / 2, top: i32::MIN / 2, right: i32::MAX / 2, bottom: i32::MAX / 2 }
 }
 
 thread_local! {
@@ -699,7 +733,7 @@ impl CandidateWindow {
                 size_from: (MIN_W, 0.0),
                 size_to: (MIN_W, 0.0),
                 size_anim_start: Instant::now(),
-                last_text_x: 0.0,
+                placement: None,
                 last_rect: None,
                 shown_at: Instant::now(),
                 hidden_at: None,
@@ -726,6 +760,7 @@ impl CandidateWindow {
         let owner = root_owner(owner);
         if self.owner.get() != owner.0 as isize {
             self.owner.set(owner.0 as isize);
+            with_state(self.hwnd, |st| st.placement = None);
             unsafe {
                 SetWindowLongPtrW(self.hwnd, GWLP_HWNDPARENT, owner.0 as _);
                 if let Some(backdrop) =
@@ -753,6 +788,11 @@ impl CandidateWindow {
             let _ = KillTimer(Some(hwnd), RELAYOUT_TIMER_ID);
         }
         let geom = with_state(hwnd, |st| unsafe {
+            let previous = st.placement.filter(|_| {
+                st.visible && st.last_anchor.is_some_and(|last| {
+                    (last.left, last.top, last.bottom) == (anchor.left, anchor.top, anchor.bottom)
+                })
+            });
             st.last_anchor = Some(anchor);
             let dpi = GetDpiForWindow(hwnd);
             st.scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
@@ -888,11 +928,19 @@ impl CandidateWindow {
             let (cur_w, cur_h) = st.animated_size();
             let text_offset = if st.page_len > 0 { INDEX_W } else { INPUT_PAD };
             let text_x = (padding + text_offset) * st.scale;
-            st.last_text_x = text_x;
             st.visible = true;
             let w_px = (cur_w * st.scale).round().max(1.0) as i32;
             let h_px = (cur_h * st.scale).round().max(1.0) as i32;
-            let rect = compute_window_rect(anchor, w_px, h_px, text_x);
+            let placement = choose_placement(
+                anchor,
+                monitor_work_area(anchor),
+                w_px.max((target_size.0 * st.scale).round() as i32),
+                (target_size.1 * st.scale).round() as i32,
+                text_x,
+                previous,
+            );
+            st.placement = Some(placement);
+            let rect = placement.rect(w_px, h_px);
             st.last_rect = Some(rect);
             (rect, was_visible, fade, st.bitmap_popup, st.pal)
         });
@@ -1621,11 +1669,11 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     if !st.visible {
                         return None;
                     }
-                    let anchor = st.last_anchor?;
+                    let placement = st.placement?;
                     let (cur_w, cur_h) = st.animated_size();
                     let w_px = (cur_w * st.scale).round().max(1.0) as i32;
                     let h_px = (cur_h * st.scale).round().max(1.0) as i32;
-                    let rect = compute_window_rect(anchor, w_px, h_px, st.last_text_x);
+                    let rect = placement.rect(w_px, h_px);
                     if st.last_rect != Some(rect) {
                         st.last_rect = Some(rect);
                         Some(rect)
@@ -1672,6 +1720,22 @@ unsafe fn wndproc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_keeps_its_anchor_at_the_screen_edge() {
+        let work = RECT { left: 0, top: 0, right: 800, bottom: 600 };
+        let anchor = RECT { left: 760, top: 520, right: 780, bottom: 540 };
+        let small = choose_placement(anchor, work, 100, 40, 20.0, None);
+        assert_eq!(small.rect(100, 40), (700, 544, 100, 40));
+
+        let growing = choose_placement(anchor, work, 250, 160, 20.0, Some(small));
+        assert_eq!(growing.rect(100, 40), (550, 476, 100, 40));
+        assert_eq!(growing.rect(250, 160), (550, 356, 250, 160));
+
+        let shrinking = choose_placement(anchor, work, 250, 40, 20.0, Some(growing));
+        let settled = choose_placement(anchor, work, 100, 40, 20.0, Some(shrinking));
+        assert_eq!(settled.rect(100, 40), (550, 476, 100, 40));
+    }
 
     #[test]
     fn bitmap_popup_draws_candidate_text_and_presents_it() {

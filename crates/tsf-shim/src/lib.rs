@@ -108,8 +108,12 @@ unsafe extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GU
 
 #[unsafe(no_mangle)]
 extern "system" fn DllCanUnloadNow() -> HRESULT {
-    // Loaded cores stay loaded; only this DLL's own objects count.
-    if LOCKS.load(Ordering::SeqCst) == 0 { S_OK } else { S_FALSE }
+    // Keep the core registry for the lifetime of the process once used.
+    if LOCKS.load(Ordering::SeqCst) == 0 && !shim::has_loaded_core() {
+        S_OK
+    } else {
+        S_FALSE
+    }
 }
 
 #[unsafe(no_mangle)]

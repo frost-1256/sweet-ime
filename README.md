@@ -28,13 +28,13 @@
 - **Comfortable everyday typing.** Live conversion (with optional debounce), mid-sentence predictive suggestions, romaji typo correction (including long inputs and punctuation), mixed Japanese-English conversion (`korehabestdesu` → `これはベストです`, `pcha` → `PCは`), kana numbers (`さんぜんえん` → `三千円` / `3000円`), date/time & calculator candidates (excluded from learning history), bunsetsu resizing, and F6–F10 transliteration.
 - **Unicode symbols by reading.** Convert `やじるし` for arrows, `すうがくきごう` for math symbols, `つうかきごう` for currency signs, `おんぷ` for music symbols, or `まるつきすうじ` for circled numbers. Greek letter names such as `あるふぁ` offer both cases (`α` / `Α`).
 - **Customizable appearance.** Built-in themes (Default following system light/dark & accent, Light, Dark, Sakura, Matcha, Midnight, Lavender, Dracula, GTK Adwaita) plus a **User Theme** editor with custom colors, **background transparency**, and **named saved presets**.
-- **Private by default.** Everything runs locally; settings, learning history, and reports stay on your device. Password fields and private windows never learn (Windows, Android).
+- **Private by default.** Conversion runs locally. Settings, learning history, and reports stay on your device by default. A Windows Alpha build can offer [opt-in conversion feedback](contrib/alpha-feedback/README.md). Password fields and private windows never learn (Windows, Android).
 
 ## Platforms
 
 | Platform | Download | Highlights |
 |---|---|---|
-| **Windows** | `SweetIME-Setup.exe` | 64-bit & 32-bit TSF text service, Direct2D candidate window (follows Windows light/dark & accent color, transparent user themes, optional rainbow border), live "あ"/"A" badge, hot-swap updates without restarting apps |
+| **Windows** | `SweetIME-Setup.exe` | 64-bit & 32-bit TSF text service, Direct2D candidate window (follows Windows light/dark & accent color, transparent user themes, optional rainbow border), live "あ"/"A" badge, one hot-swap to a new core per running app (restart the app to apply further updates) |
 | **Linux (fcitx5)** | `SweetIME-Linux-{x86_64,aarch64}.tar.gz` / Nix Flake | fcitx5 addon for Wayland (`input-method-v2` native caret popup: niri, Sway, Hyprland, …) & X11, transparent classicui themes with blur, customizable font size / padding / vertical-horizontal layout |
 | **macOS** | `SweetIME-macOS.zip` | Universal (Apple Silicon & Intel) InputMethodKit IME for macOS 15+, compact candidate window, shared Settings app, in-app updates |
 | **Android** | `SweetIME-Android.apk` | QWERTY & 12-key kana/alphanumeric flick keyboards, Material 3 / Expressive wallpaper colors, custom TTF/OTF fonts, on-device AI conversion (Android 10+) |

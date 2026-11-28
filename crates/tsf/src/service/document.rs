@@ -1,11 +1,13 @@
 //! TSF composition ranges, document edits, and caret geometry.
 
-use sweet_engine::SpanAttr;
+use sweet_engine::{SpanAttr, alpha_feedback};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::UI::TextServices::{
-    GUID_PROP_ATTRIBUTE, GUID_PROP_INPUTSCOPE, IS_PASSWORD, IS_PRIVATE, ITfComposition,
+    GUID_PROP_ATTRIBUTE, GUID_PROP_INPUTSCOPE, IS_ALPHANUMERIC_PIN, IS_ALPHANUMERIC_PIN_SET,
+    IS_DEFAULT, IS_HIRAGANA, IS_KATAKANA_FULLWIDTH, IS_NUMERIC_PASSWORD, IS_NUMERIC_PIN,
+    IS_PASSWORD, IS_PRIVATE, ITfComposition,
     ITfCompositionSink, ITfContext, ITfContextComposition, ITfContextView, ITfInputScope,
     ITfInsertAtSelection, ITfRange, InputScope, TF_AE_NONE, TF_ANCHOR_END, TF_ANCHOR_START,
     TF_DEFAULT_SELECTION, TF_IAS_QUERYONLY, TF_SELECTION, TF_SELECTIONSTYLE,
@@ -130,6 +132,25 @@ fn delete_before_caret(ctx: &ITfContext, ec: u32, text: &str) -> Result<bool> {
 /// Whether the field at the selection is a password or a private browser
 /// window (input scopes IS_PASSWORD, IS_PRIVATE).
 pub(super) fn private_field(ctx: &ITfContext, ec: u32) -> Result<bool> {
+    input_scopes(ctx, ec, |scopes| scopes.iter().any(|s| {
+        matches!(
+            *s,
+            IS_PASSWORD | IS_PRIVATE | IS_NUMERIC_PASSWORD | IS_NUMERIC_PIN
+                | IS_ALPHANUMERIC_PIN | IS_ALPHANUMERIC_PIN_SET
+        )
+    }))
+}
+
+fn feedback_field(ctx: &ITfContext, ec: u32) -> bool {
+    input_scopes(ctx, ec, feedback_scopes).unwrap_or(false)
+}
+
+fn feedback_scopes(scopes: &[InputScope]) -> bool {
+    !scopes.is_empty()
+        && scopes.iter().all(|s| matches!(*s, IS_DEFAULT | IS_HIRAGANA | IS_KATAKANA_FULLWIDTH))
+}
+
+fn input_scopes(ctx: &ITfContext, ec: u32, classify: impl FnOnce(&[InputScope]) -> bool) -> Result<bool> {
     unsafe {
         let ins: ITfInsertAtSelection = ctx.cast()?;
         let range = ins.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
@@ -138,21 +159,30 @@ pub(super) fn private_field(ctx: &ITfContext, ec: u32) -> Result<bool> {
             .GetValue(ec, &range)?;
         // Ordinary editors often have no input scope set on the range.
         if value.is_empty() {
-            return Ok(false);
+            return Ok(classify(&[]));
         }
         let scope: ITfInputScope = IUnknown::try_from(&value)?.cast()?;
         let mut list: *mut InputScope = std::ptr::null_mut();
         let mut n = 0u32;
         scope.GetInputScopes(&mut list, &mut n)?;
         if list.is_null() {
-            return Ok(false);
+            return Ok(classify(&[]));
         }
-        let private = std::slice::from_raw_parts(list, n as usize)
-            .iter()
-            .any(|s| *s == IS_PASSWORD || *s == IS_PRIVATE);
+        let value = classify(std::slice::from_raw_parts(list, n as usize));
         windows::Win32::System::Com::CoTaskMemFree(Some(list as *const std::ffi::c_void));
-        Ok(private)
+        Ok(value)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn feedback_requires_explicit_non_sensitive_input_scopes() {
+    assert!(feedback_scopes(&[IS_DEFAULT]));
+    assert!(feedback_scopes(&[IS_HIRAGANA]));
+    assert!(!feedback_scopes(&[]));
+    assert!(!feedback_scopes(&[IS_DEFAULT, IS_PASSWORD]));
+    assert!(!feedback_scopes(&[IS_PRIVATE]));
+    assert!(!feedback_scopes(&[IS_ALPHANUMERIC_PIN_SET]));
 }
 
 fn update_document_inner(
@@ -171,7 +201,11 @@ fn update_document_inner(
         // A settings reload can enable the preview during an existing
         // composition. Only allow it if we checked at composition start.
         st.typed_input_allowed = opts.show_typed_input && private == Some(false);
+        st.feedback_consent = alpha_feedback::consent().filter(|_| feedback_field(ctx, ec));
+    } else if st.feedback_consent.is_some() && !feedback_field(ctx, ec) {
+        st.feedback_consent = None;
     }
+    st.session.capture_feedback = st.feedback_consent.is_some();
     if let Some(undo) = st.session.take_undo() {
         // The caret moved or the text changed since: keep the document.
         if st.composition.is_some() || !delete_before_caret(ctx, ec, &undo).unwrap_or(false) {
@@ -183,6 +217,9 @@ fn update_document_inner(
     unsafe {
         let attr_prop = ctx.GetProperty(&GUID_PROP_ATTRIBUTE)?;
         if !commit.is_empty() {
+            if st.session.reportable_commit().is_some() && private_field(ctx, ec).ok() != Some(false) {
+                st.session.suppress_commit_report();
+            }
             let comp = ensure_composition(this, st, ec, ctx)?;
             let range = comp.GetRange()?;
             let text: Vec<u16> = commit.encode_utf16().collect();
@@ -192,8 +229,17 @@ fn update_document_inner(
             set_selection(ctx, ec, &range)?;
             comp.EndComposition(ec)?;
             st.composition = None;
+            if let Some(consent) = st.feedback_consent.take()
+                && alpha_feedback::consent().as_ref() == Some(&consent)
+                && let Some((reading, text, original)) = st.session.conversion_feedback(&commit)
+            {
+                alpha_feedback::enqueue(consent, reading, text, original);
+            }
+            st.session.capture_feedback = false;
         }
         if pre.text.is_empty() {
+            st.feedback_consent = None;
+            st.session.capture_feedback = false;
             if let Some(comp) = st.composition.take() {
                 let range = comp.GetRange()?;
                 range.SetText(ec, 0, &[])?;
@@ -270,20 +316,29 @@ pub(super) fn refresh_candidates(
     };
     let range = unsafe { comp.GetRange()? };
     let pre = st.session.preedit();
-    let target = pre
+    let focused = pre
         .spans
         .iter()
         .find(|span| span.2 == SpanAttr::Focused)
-        .and_then(|&(start, end, _)| {
-            sub_range(&range, ec, u16_at(&pre.text, start), u16_at(&pre.text, end)).ok()
-        });
+        .copied();
+    let start = focused.map_or(0, |(start, _, _)| start);
+    // Multi-line ranges describe the bounding box of several lines. Anchor
+    // to the first character so wrapping a growing preedit cannot shift it.
+    let leading = pre.text.get(start..).and_then(|tail| {
+        let end = start + tail.chars().next()?.len_utf8();
+        sub_range(&range, ec, u16_at(&pre.text, start), u16_at(&pre.text, end)).ok()
+    });
+    let target = focused.and_then(|(start, end, _)| {
+        sub_range(&range, ec, u16_at(&pre.text, start), u16_at(&pre.text, end)).ok()
+    });
     let caret = u16_at(&pre.text, pre.caret);
     let anchor = unsafe {
         ctx.GetActiveView()
             .ok()
             .and_then(|view| {
                 let owner = view.GetWnd().ok().filter(|h| !h.is_invalid());
-                let bounds = range_bounds(&view, ec, target.as_ref().unwrap_or(&range), owner)
+                let bounds = leading.as_ref().and_then(|r| range_bounds(&view, ec, r, owner))
+                    .or_else(|| range_bounds(&view, ec, target.as_ref().unwrap_or(&range), owner))
                     .or_else(|| {
                         let selection = sub_range(&range, ec, caret, caret).ok()?;
                         range_bounds(&view, ec, &selection, owner)

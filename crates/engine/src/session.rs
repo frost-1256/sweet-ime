@@ -381,6 +381,8 @@ pub struct Session {
     /// The text field is private (a password, a private browser window):
     /// nothing typed there is learned. Set by the frontend.
     pub private: bool,
+    /// Set by frontends after opt-in and a positive field privacy check.
+    pub capture_feedback: bool,
     /// Text before the composition (for context-aware conversion).
     left_context: String,
     /// The last commit, while the next key may still take it back.
@@ -398,6 +400,9 @@ struct LastCommit {
     kana: String,
     raw: String,
     literal: bool,
+    reportable: bool,
+    feedback_eligible: bool,
+    original_candidate: Option<String>,
 }
 
 impl Default for Session {
@@ -415,6 +420,7 @@ impl Session {
             page_size: 9,
             options: Options::default(),
             private: false,
+            capture_feedback: false,
             left_context: String::new(),
             last_commit: None,
             undo: None,
@@ -645,14 +651,33 @@ impl Session {
     pub fn reportable_commit(&self) -> Option<&str> {
         self.last_commit
             .as_ref()
-            .filter(|last| !self.private && !self.is_active() && !last.kana.is_empty())
+            .filter(|last| last.reportable && !self.private && !self.is_active())
             .map(|last| last.text.as_str())
     }
 
     /// The commit that [`Key::ReportCommit`] reported, for the frontend to
     /// store (see [`crate::reports::add`]).
     pub fn take_report(&mut self) -> Option<crate::reports::Report> {
-        self.report.take()
+        self.report.take().filter(|_| !self.private)
+    }
+
+    /// Prevents the frontend from reporting the last commit when the host
+    /// identifies a sensitive field or its privacy check fails.
+    pub fn suppress_commit_report(&mut self) {
+        if let Some(last) = &mut self.last_commit {
+            last.reportable = false;
+        }
+        self.report = None;
+    }
+
+    /// A confirmed Japanese conversion, with the original first candidate
+    /// when the user chose an alternative.
+    pub fn conversion_feedback(&self, committed: &str) -> Option<(&str, &str, Option<&str>)> {
+        let last = self.last_commit.as_ref()?;
+        (self.capture_feedback && last.feedback_eligible && last.reportable && !last.literal
+            && last.text == committed
+            && (last.text != last.kana || last.original_candidate.is_some()))
+        .then_some((&last.kana, &last.text, last.original_candidate.as_deref()))
     }
 
     /// Text to remove before the caret: the commit that
@@ -701,22 +726,34 @@ impl Session {
         consumed
     }
 
-    fn commit_state(&self) -> (String, String, bool, usize) {
+    fn commit_state(&self) -> (String, String, bool, usize, Option<String>) {
+        let original_candidate = self.conv.as_ref().filter(|cv| {
+            self.capture_feedback
+                && !cv.segs.iter().any(|seg| seg.predicted || seg.cloud.contains(&seg.selected))
+                && cv.segs.iter().any(|seg| seg.selected != 0)
+        }).map(|cv| cv.segs.iter().map(|seg| seg.cands[0].as_str()).collect());
         (
             self.comp.kana(),
             self.comp.raw.clone(),
             self.comp.literal,
             self.commit.len(),
+            original_candidate,
         )
     }
 
-    fn remember_commit(&mut self, (kana, raw, literal, commit_start): (String, String, bool, usize)) {
+    fn remember_commit(
+        &mut self,
+        (kana, raw, literal, commit_start, original_candidate): (String, String, bool, usize, Option<String>),
+    ) {
         if self.commit.len() > commit_start && !self.is_active() && !kana.is_empty() {
             self.last_commit = Some(LastCommit {
                 text: self.commit[commit_start..].to_string(),
                 kana,
                 raw,
                 literal,
+                reportable: !self.private,
+                feedback_eligible: self.capture_feedback && !self.private,
+                original_candidate,
             });
         }
     }

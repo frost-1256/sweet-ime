@@ -1,5 +1,7 @@
 //! sweet-ime conversion engine.
 
+#[cfg(windows)]
+pub mod alpha_feedback;
 pub mod app_modes;
 pub mod converter;
 pub mod dict;
