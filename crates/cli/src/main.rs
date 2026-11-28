@@ -116,6 +116,19 @@ fn repl(conv: &Converter) -> Result<()> {
     Ok(())
 }
 
+/// Opens the JSON Lines file named by `SWEET_DUMP` for per-item results.
+fn dump_file() -> Result<Option<std::io::BufWriter<std::fs::File>>> {
+    let Some(path) = std::env::var_os("SWEET_DUMP") else {
+        return Ok(None);
+    };
+    Ok(Some(std::io::BufWriter::new(std::fs::File::create(path)?)))
+}
+
+fn dump_line(out: &mut impl Write, value: serde_json::Value) -> Result<()> {
+    writeln!(out, "{value}")?;
+    Ok(())
+}
+
 fn eval(conv: &Converter, path: &str) -> Result<()> {
     // evaluation.tsv columns: status (Mozc OSS result), input, Mozc output,
     // command, argument. Only conversion commands are scored.
@@ -126,6 +139,7 @@ fn eval(conv: &Converter, path: &str) -> Result<()> {
     let mut worst = std::time::Duration::ZERO;
     let mut sum = std::time::Duration::ZERO;
     let verbose = std::env::var_os("SWEET_VERBOSE").is_some();
+    let mut dump = dump_file()?;
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -176,6 +190,22 @@ fn eval(conv: &Converter, path: &str) -> Result<()> {
         bucket[0] += 1;
         bucket[1] += pass as i32;
         bucket[2] += (status == "OK:") as i32;
+        if let Some(dump) = dump.as_mut() {
+            dump_line(
+                dump,
+                serde_json::json!({
+                    "command": command,
+                    "expected": arg,
+                    "input": input,
+                    "output": top,
+                    "candidates": surfaces.iter().take(top_n).collect::<Vec<_>>(),
+                    "correct": pass,
+                    "mozc_status": status,
+                    "mozc_output": mozc_out,
+                    "ms": el.as_secs_f64() * 1000.0,
+                }),
+            )?;
+        }
         if pass {
             ok += 1;
         } else if verbose {

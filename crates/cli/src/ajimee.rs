@@ -89,6 +89,7 @@ pub fn eval(conv: &Converter, path: &str) -> Result<()> {
     let (mut total, mut no_context, mut with_context) =
         (Scores::default(), Scores::default(), Scores::default());
     let verbose = std::env::var_os("SWEET_VERBOSE").is_some();
+    let mut dump = crate::dump_file()?;
     for item in items {
         ensure!(
             !item.expected_output.is_empty(),
@@ -110,6 +111,21 @@ pub fn eval(conv: &Converter, path: &str) -> Result<()> {
             .fold(f64::INFINITY, f64::min);
         if verbose && !correct {
             println!("FAIL {}: {:?} -> {:?}", item.index, item.input, output);
+        }
+        if let Some(dump) = dump.as_mut() {
+            crate::dump_line(
+                dump,
+                serde_json::json!({
+                    "index": item.index,
+                    "context": item.context_text,
+                    "input": item.input,
+                    "expected": item.expected_output,
+                    "output": output,
+                    "correct": correct,
+                    "min_cer": min_cer,
+                    "ms": elapsed.as_secs_f64() * 1000.0,
+                }),
+            )?;
         }
         total.add(correct, min_cer, elapsed);
         let subset = if item.context_text.is_empty() {
