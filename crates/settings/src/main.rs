@@ -32,6 +32,13 @@ use sweet_engine::{Options, UserHistory, paths};
 use sweet_ui::eframe;
 use sweet_ui::{card, card_frame, card_group, section_header, setting_divider, setting_row, toggle};
 
+/// GNOME leaves the title bar to winit, which draws the title with a single
+/// system font that may lack Japanese glyphs.
+#[cfg(target_os = "linux")]
+const WINDOW_TITLE: &str = "Sweet IME";
+#[cfg(not(target_os = "linux"))]
+const WINDOW_TITLE: &str = "Sweet IME の設定";
+
 fn main() -> eframe::Result<()> {
     #[cfg(not(target_os = "macos"))]
     if std::env::args().any(|a| a == "--check-update") {
@@ -56,7 +63,7 @@ fn main() -> eframe::Result<()> {
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Sweet IME の設定")
+            .with_title(WINDOW_TITLE)
             .with_icon(sweet_ui::app_icon())
             // Matches sweet-settings.desktop (Wayland uses it to find the icon).
             .with_app_id("sweet-settings")

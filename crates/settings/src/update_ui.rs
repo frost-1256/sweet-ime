@@ -187,7 +187,8 @@ pub fn check_at_sign_in() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Sweet IME のアップデート")
+            // The Linux title bar font may lack Japanese glyphs (see WINDOW_TITLE).
+            .with_title(if cfg!(target_os = "linux") { "Sweet IME Update" } else { "Sweet IME のアップデート" })
             .with_icon(sweet_ui::app_icon())
             .with_app_id("sweet-settings")
             .with_inner_size([520.0, 360.0])

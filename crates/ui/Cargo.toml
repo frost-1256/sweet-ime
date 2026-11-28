@@ -11,3 +11,6 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "defa
 # Linux: open windows on Wayland (and X11).
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+# GNOME leaves window decorations to the client. Without this feature winit
+# draws a bare fallback title bar that matches no other window.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
