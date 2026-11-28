@@ -191,15 +191,8 @@ fn bos_auxiliary_penalty(feature: Option<&str>) -> i32 {
     }
 }
 
-fn bos_particle_penalty(
-    pos: usize,
-    reading: &str,
-    text: &str,
-    surface: &str,
-    class: PosClass,
-) -> i32 {
-    if pos == 0
-        && reading.len() < text.len()
+fn bos_particle_penalty(reading: &str, text: &str, surface: &str, class: PosClass) -> i32 {
+    if reading.len() < text.len()
         && class == PosClass::Functional
         && surface == reading
         && matches!(surface, "は" | "が" | "を" | "に" | "の" | "へ" | "で" | "も" | "て")
@@ -391,8 +384,7 @@ impl Converter {
             _ => return None,
         };
         self.dict
-            .lookup(key)
-            .into_iter()
+            .lookup_entries(key)
             .filter(|entry| entry.surface == key)
             .min_by_key(|entry| entry.cost)
             .map(|entry| (entry.lid, entry.rid, i32::from(entry.cost)))
@@ -524,24 +516,28 @@ impl Converter {
             // Keep a one-kana homophone from consuming the start of the run.
             let cl = c.len_utf8();
             let repeated_vowel = pos >= trailing_vowel_start && rest.len() >= 3 * cl;
-            // The collocation rules only cover readings starting with these kana.
-            let has_context_rule = matches!(
-                c,
-                'え' | 'ふ'
-                    | 'や'
-                    | 'と'
-                    | 'か'
-                    | 'は'
-                    | 'わ'
-                    | 'つ'
-                    | 'い'
-                    | 'き'
-                    | 'ま'
-                    | 'こ'
-                    | 'じ'
-                    | 'し'
-                    | 'ほ'
-            );
+            // Check the reading once here instead of scanning the collocation
+            // rules for each dictionary entry at an unrelated position.
+            let has_context_rule = match c {
+                'え' => rest.starts_with("えん"),
+                'か' => {
+                    rest.starts_with("かみ")
+                        || rest.starts_with("かぜ")
+                        || rest.starts_with("かいせつ")
+                        || rest.starts_with("かんじ")
+                }
+                'は' => rest.starts_with("はし"),
+                'わ' => rest.starts_with("わた"),
+                'つ' => rest.starts_with("つく") || rest.starts_with("つい"),
+                'い' => rest.starts_with("いれ") || rest.starts_with("いじょう"),
+                'き' => rest.starts_with("きかい"),
+                'ま' => rest.starts_with("まんしゃ"),
+                'こ' => rest.starts_with("こうざ"),
+                'し' => rest.starts_with("しよう"),
+                'ほ' => rest.starts_with("ほうてい"),
+                'ふ' | 'や' | 'と' | 'じ' => true,
+                _ => false,
+            };
             self.dict.common_prefix(rest, |l, e| {
                 if crosses(pos, pos + l) {
                     return;
@@ -565,15 +561,13 @@ impl Converter {
                             } else {
                                 0
                             }
-                            + bos_particle_penalty(
-                                pos,
-                                &rest[..l],
-                                text,
-                                e.surface,
-                                self.dict.pos_class(e.lid),
-                            )
                             + if pos == 0 {
-                                bos_auxiliary_penalty(self.dict.feature(e.lid))
+                                bos_particle_penalty(
+                                    &rest[..l],
+                                    text,
+                                    e.surface,
+                                    self.dict.pos_class(e.lid),
+                                ) + bos_auxiliary_penalty(self.dict.feature(e.lid))
                             } else {
                                 0
                             },
@@ -688,6 +682,23 @@ impl Converter {
                 id = lat.end_next[id as usize];
             }
             if predecessors.is_empty() {
+                continue;
+            }
+            if let &[(rid, cost)] = predecessors.as_slice()
+                && let Some(row) = self.dict.connection_row_le(rid)
+            {
+                // With one incoming POS, each node can read the row directly.
+                let mut id = lat.begin_head[pos];
+                while id != NONE {
+                    let node = &mut lat.nodes[id as usize];
+                    let best = cost + i32::from(row[node.lid as usize]);
+                    node.best = if best == i32::MAX {
+                        best
+                    } else {
+                        best + node.wcost
+                    };
+                    id = lat.begin_next[id as usize];
+                }
                 continue;
             }
             // Collect unique successor left-POS ids so we can stream each
@@ -913,10 +924,11 @@ impl Converter {
         lat: &'a Lattice<'_>,
         n: usize,
     ) -> impl Iterator<Item = (i32, Vec<u32>)> + 'a {
-        // arena entries: (node, parent arena index, g = cost after node)
+        // Store the path separately from the heap priority. The suffix cost
+        // is the priority minus the Viterbi cost of reaching this node.
         let cap = n.saturating_mul(4).clamp(64, 4096);
-        let mut arena: Vec<(u32, u32, i32)> = Vec::with_capacity(cap);
-        arena.push((EOS, u32::MAX, 0));
+        let mut arena: Vec<(u32, u32)> = Vec::with_capacity(cap);
+        arena.push((EOS, NONE));
         let mut heap = BinaryHeap::with_capacity(cap);
         heap.push((Reverse(lat.nodes[EOS as usize].best), Reverse(0u32)));
         let mut pops = 0;
@@ -924,12 +936,12 @@ impl Converter {
             while pops < 20_000 {
                 let (Reverse(f), Reverse(ai)) = heap.pop()?;
                 pops += 1;
-                let (node, _, g) = arena[ai as usize];
+                let (node, parent) = arena[ai as usize];
                 if node == BOS {
                     let mut path = Vec::new();
-                    let mut cur = arena[ai as usize].1;
-                    while cur != u32::MAX {
-                        let (nd, parent, _) = arena[cur as usize];
+                    let mut cur = parent;
+                    while cur != NONE {
+                        let (nd, parent) = arena[cur as usize];
                         if nd != EOS {
                             path.push(nd);
                         }
@@ -938,14 +950,14 @@ impl Converter {
                     return Some((f, path));
                 }
                 let nd = &lat.nodes[node as usize];
-                let g2 = g + nd.wcost;
+                let g2 = (f - nd.best) + nd.wcost;
                 for p in lat.ends_at(nd.start) {
                     let prev = &lat.nodes[p as usize];
                     if prev.best == i32::MAX {
                         continue;
                     }
                     let g3 = g2 + self.dict.connection(prev.rid, nd.lid);
-                    arena.push((p, ai, g3));
+                    arena.push((p, ai));
                     heap.push((Reverse(prev.best + g3), Reverse((arena.len() - 1) as u32)));
                 }
             }
@@ -1229,8 +1241,7 @@ impl Converter {
         if !found {
             if let Some(e) = self
                 .dict
-                .lookup(reading)
-                .into_iter()
+                .lookup_entries(reading)
                 .find(|e| e.surface == surface)
             {
                 lid = e.lid;
@@ -1309,8 +1320,7 @@ impl Converter {
         let mut seen: HashSet<_> = candidates.iter().map(String::as_str).collect();
         let missing: Vec<_> = self
             .dict
-            .lookup(reading)
-            .into_iter()
+            .lookup_entries(reading)
             .filter(|entry| !entry.surface.is_empty() && seen.insert(entry.surface))
             .map(|entry| entry.surface.to_owned())
             .collect();

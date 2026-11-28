@@ -8,6 +8,7 @@ pub mod kernels;
 pub mod model;
 pub mod tokenizer;
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -39,8 +40,12 @@ pub struct Zenz {
     prefix_cache: Mutex<Option<PrefixCache>>,
 }
 
-fn normalize(s: &str) -> String {
-    s.replace(' ', "\u{3000}").replace(['\n', '\r'], "")
+fn normalize(s: &str) -> Cow<'_, str> {
+    if s.contains([' ', '\n', '\r']) {
+        Cow::Owned(s.replace(' ', "\u{3000}").replace(['\n', '\r'], ""))
+    } else {
+        Cow::Borrowed(s)
+    }
 }
 
 impl Zenz {
@@ -93,11 +98,11 @@ impl Zenz {
         let mut p = String::with_capacity(reading.len() + left_context.len().min(MAX_CONTEXT_CHARS * 3) + 12);
         if !left_context.is_empty() {
             let ctx = normalize(left_context);
-            let n = ctx.chars().count();
             let start = ctx
                 .char_indices()
-                .nth(n.saturating_sub(MAX_CONTEXT_CHARS))
-                .map_or(ctx.len(), |(i, _)| i);
+                .rev()
+                .nth(MAX_CONTEXT_CHARS - 1)
+                .map_or(0, |(i, _)| i);
             let tail = &ctx[start..];
             if !tail.is_empty() {
                 p.push(CONTEXT_TAG);
@@ -118,11 +123,10 @@ impl Zenz {
     }
 
     pub fn encode_prompt(&self, prompt: &str) -> Vec<u32> {
-        let mut ids = Vec::new();
+        let mut ids = self.tokenizer.encode(prompt);
         if self.add_bos {
-            ids.push(self.tokenizer.bos);
+            ids.insert(0, self.tokenizer.bos);
         }
-        ids.extend(self.tokenizer.encode(prompt));
         ids
     }
 
@@ -153,7 +157,16 @@ impl Zenz {
             self.tokenizer.encode(&normalize(draft))
         };
         // Keep all decode steps on the same pool as the matrix kernels.
-        let out = kernels::pool().install(|| self.generate_tokens(&ids, max_tokens, &draft_ids));
+        self.decode_with_draft_tokens(&ids, max_tokens, &draft_ids)
+    }
+
+    fn decode_with_draft_tokens(
+        &self,
+        ids: &[u32],
+        max_tokens: usize,
+        draft_ids: &[u32],
+    ) -> String {
+        let out = kernels::pool().install(|| self.generate_tokens(ids, max_tokens, draft_ids));
         self.tokenizer.decode(&out)
     }
 
@@ -255,9 +268,13 @@ impl Zenz {
     }
 
     fn score_candidates(&self, prompt: &str, candidates: &[String], relative: bool) -> Vec<f32> {
-        let mut ids = self.encode_prompt(prompt);
+        let ids = self.encode_prompt(prompt);
+        let toks: Vec<_> = candidates.iter().map(|c| self.tokenizer.encode(&normalize(c))).collect();
+        self.score_tokens(ids, &toks, relative)
+    }
+
+    fn score_tokens(&self, mut ids: Vec<u32>, toks: &[Vec<u32>], relative: bool) -> Vec<f32> {
         let prompt_len = ids.len();
-        let toks: Vec<Vec<u32>> = candidates.iter().map(|c| self.tokenizer.encode(&normalize(c))).collect();
         // Shared prefix tokens contribute the same log-probability to every
         // candidate. Keep them in the prompt and skip their vocabulary projections.
         let mut shared = 0;
@@ -311,7 +328,7 @@ impl Zenz {
         let mut parents: Vec<Option<usize>> = (0..tail_p).map(|i| i.checked_sub(1)).collect();
         let mut children: std::collections::HashMap<(Option<usize>, u32), usize> = Default::default();
         let mut ends: Vec<Option<usize>> = Vec::with_capacity(toks.len());
-        for t in &toks {
+        for t in toks {
             let mut cur: Option<usize> = tail_p.checked_sub(1);
             for &tok in &t[shared..] {
                 let next = *children.entry((cur, tok)).or_insert_with(|| {
@@ -465,20 +482,24 @@ impl sweet_engine::Reranker for ZenzReranker {
     fn choose(&self, reading: &str, left_context: &str, cands: &[sweet_engine::Conversion]) -> Option<usize> {
         // Preserve dictionary spellings such as IME and UdonSharp when the model
         // prefers spelling them phonetically. Still rerank the surrounding text.
-        let coverage: Vec<usize> = cands.iter().map(|c| {
-            c.segments.iter().flat_map(|s| &s.words)
+        let coverage = |c: &sweet_engine::Conversion| -> usize {
+            c.segments
+                .iter()
+                .flat_map(|s| &s.words)
                 .filter(|w| is_protected_word(w))
                 .map(|w| w.reading.len())
                 .sum()
-        }).collect();
+        };
         // Keep the lattice best's coverage without forcing spellings from other
         // candidates (しょっぴんぐ -> しょっPNG).
-        let lattice_coverage = *coverage.first()?;
-        let mut eligible: Vec<usize> = (0..cands.len()).filter(|&i| coverage[i] >= lattice_coverage).collect();
+        let first = cands.first()?;
+        let lattice_coverage = coverage(first);
+        let mut eligible: Vec<usize> = (0..cands.len())
+            .filter(|&i| lattice_coverage == 0 || i == 0 || coverage(&cands[i]) >= lattice_coverage)
+            .collect();
         // Distant lattice paths are usually poor homophones. Left context
         // gives the model more evidence, so keep a wider window in that case.
         let best_cost = eligible.iter().map(|&i| cands[i].cost).min()?;
-        let first = cands.first()?;
         let repeated = first.repeated_kanji_reading().map(|(reading, count)| {
             (
                 reading,
@@ -574,9 +595,14 @@ impl sweet_engine::Reranker for ZenzReranker {
         let best_surface = best.surface();
         let prompt = Zenz::prompt(reading, left_context);
         let max_tokens = (reading_chars * 2).clamp(16, 80.max(reading_chars + 16));
+        let prompt_ids = self.zenz.encode_prompt(&prompt);
+        if prompt_ids.is_empty() {
+            return None;
+        }
+        let draft_ids = self.zenz.tokenizer.encode(&normalize(&best_surface));
         let generated = self
             .zenz
-            .generate_with_draft(&prompt, max_tokens, &best_surface)
+            .decode_with_draft_tokens(&prompt_ids, max_tokens, &draft_ids)
             .trim()
             .to_string();
         if generated.is_empty()
@@ -597,6 +623,16 @@ impl sweet_engine::Reranker for ZenzReranker {
                 return None;
             }
         }
+        let generated_ids = self.zenz.tokenizer.encode(&normalize(&generated));
+        let scores = self.zenz.score_tokens(prompt_ids, &[draft_ids, generated_ids], true);
+        let [best_score, generated_score] = scores.as_slice() else {
+            return None;
+        };
+        // Skip the lattice search if neither margin could accept this score.
+        let min_margin = self.generate_margin.min(self.generate_spelled_margin);
+        if *generated_score <= *best_score + min_margin {
+            return None;
+        }
         // When dictionary words spell the generated text, weigh it like a
         // lattice candidate against the best one. Otherwise accept it only
         // when the model strongly prefers it.
@@ -611,9 +647,7 @@ impl sweet_engine::Reranker for ZenzReranker {
             }
             None => self.generate_margin,
         };
-        let pair = [best_surface, generated.clone()];
-        let scores = self.zenz.score_candidates(&prompt, &pair, true);
-        if scores.len() == 2 && scores[1] > scores[0] + margin {
+        if *generated_score > *best_score + margin {
             Some(generated)
         } else {
             None

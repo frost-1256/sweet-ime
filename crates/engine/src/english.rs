@@ -579,17 +579,19 @@ pub fn covers_letters(reading: &str, listed: bool) -> bool {
 /// Whether `surface` is a bundled spelling or listed word typed as
 /// `reading` (for keeping such words when reranking).
 pub fn is_spelling(reading: &str, surface: &str) -> bool {
-    word_index().get(reading) == Some(surface)
-        || romaji_readings()
-            .iter()
-            .any(|(r, s)| r == reading && *s == surface)
+    let has_letters = reading.bytes().any(|b| b.is_ascii_alphabetic());
+    // The word index and bundled lists yield ASCII spellings. Only the
+    // loanword rule can protect a non-ASCII surface.
+    if !surface.is_ascii() {
+        return has_letters && surface.chars().all(|c| matches!(c, 'ァ'..='ヺ' | 'ー'));
+    }
+    (has_letters
+        && (word_index().get(reading) == Some(surface)
+            || romaji_readings()
+                .iter()
+                .any(|(r, s)| r == reading && *s == surface)))
         || marked_spellings().iter().any(|(r, s)| r == reading && *s == surface)
         || kana_spelled_readings().iter().any(|(r, s)| r == reading && *s == surface)
-        // A listed word's loanword (てst -> テスト): only these put katakana
-        // over letters.
-        || (reading.bytes().any(|b| b.is_ascii_alphabetic())
-            && !surface.is_empty()
-            && surface.chars().all(|c| matches!(c, 'ァ'..='ヺ' | 'ー')))
 }
 
 /// Whether `surface` is the English word typed as `reading`: ASCII

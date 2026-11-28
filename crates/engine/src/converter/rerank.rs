@@ -66,6 +66,16 @@ fn word_spans(c: &Conversion) -> Vec<(usize, usize, &str)> {
         .collect()
 }
 
+fn has_surface(candidate: &Conversion, mut surface: &str) -> bool {
+    for segment in &candidate.segments {
+        let Some(rest) = surface.strip_prefix(segment.surface.as_str()) else {
+            return false;
+        };
+        surface = rest;
+    }
+    surface.is_empty()
+}
+
 fn personal_spans(c: &Conversion) -> Vec<(usize, usize, &str)> {
     spans(c)
         .filter(|(_, _, word)| word.learned || word.user)
@@ -149,11 +159,11 @@ fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
     let best = word_spans(&pool[0]);
     let personal = personal_spans(&pool[0]);
     let region = |c: &Conversion| {
-        let diff: Vec<_> = word_spans(c)
-            .into_iter()
-            .filter(|w| !best.contains(w))
-            .collect();
-        diff.first().zip(diff.last()).map(|(a, b)| (a.0, b.1))
+        let mut diff = spans(c)
+            .map(|(start, end, word)| (start, end, word.surface.as_str()))
+            .filter(|w| !best.contains(w));
+        let first = diff.next()?;
+        Some((first.0, diff.last().unwrap_or(first).1))
     };
     // Only alternatives the model can use should occupy a region.
     let mut region_sources: Vec<(usize, (usize, usize))> = pool[1..n]
@@ -188,7 +198,7 @@ fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
             let Some(target) = crossover_surface(&pool[0], &pool[ia], ra, &pool[ib], rb) else {
                 continue;
             };
-            if picked.iter().any(|&idx| pool[idx].surface() == target) {
+            if picked.iter().any(|&idx| has_surface(&pool[idx], &target)) {
                 continue;
             }
             if let Some(found) = pool
@@ -198,7 +208,7 @@ fn diverse(pool: &[Conversion], n: usize) -> Vec<Conversion> {
                 .find(|(idx, c)| {
                     !picked.contains(idx)
                         && keeps_personal_words(c, &personal)
-                        && c.surface() == target
+                        && has_surface(c, &target)
                 })
                 .map(|(idx, _)| idx)
             {
@@ -366,7 +376,7 @@ impl Converter {
                             *spelled.borrow_mut() = Some((surface.to_owned(), conversion));
                             cost
                         })
-                && !res.iter().any(|c| c.surface() == surface)
+                && !res.iter().any(|c| has_surface(c, &surface))
             {
                 // Dictionary words keep their segments for later editing.
                 // It keeps the best candidate's cost, as before.

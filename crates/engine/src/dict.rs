@@ -265,6 +265,16 @@ impl Dictionary {
         }
     }
 
+    pub(crate) fn lookup_entries<'a>(
+        &'a self,
+        reading: &str,
+    ) -> impl Iterator<Item = Entry<'a>> + use<'a> {
+        self.fst
+            .get(reading)
+            .into_iter()
+            .flat_map(|v| self.entries(v))
+    }
+
     /// Calls `f(reading_len_bytes, lid, rid, cost)` for every word whose
     /// reading is a prefix of `text`, without decoding surface strings.
     pub(crate) fn common_prefix_costs(

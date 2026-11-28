@@ -86,47 +86,47 @@ fn class(c: char) -> Class {
 /// GPT-2 pre-tokenization, equivalent to
 /// `'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`.
 pub fn pre_tokenize(text: &str) -> Vec<&str> {
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let byte_at = |i: usize| if i < chars.len() { chars[i].0 } else { text.len() };
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i].1;
-        if c == '\'' {
-            let rest = &text[chars[i].0..];
-            if let Some(l) = ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"]
-                .iter()
-                .find(|p| rest.starts_with(**p))
-                .map(|p| p.chars().count())
-            {
-                out.push(&text[chars[i].0..byte_at(i + l)]);
-                i += l;
-                continue;
-            }
-        }
-        let mut j = i;
-        let cls = if c == ' ' && i + 1 < chars.len() && class(chars[i + 1].1) != Class::Space {
-            j += 1;
-            class(chars[i + 1].1)
-        } else {
-            class(c)
-        };
-        if cls == Class::Space {
-            while j < chars.len() && class(chars[j].1) == Class::Space {
-                j += 1;
-            }
-            if j < chars.len() && j - i > 1 {
-                j -= 1; // leave the last whitespace for the next token
-            }
-        } else {
-            while j < chars.len() && class(chars[j].1) == cls {
-                j += 1;
-            }
-        }
-        out.push(&text[chars[i].0..byte_at(j)]);
-        i = j;
-    }
+    for_each_piece(text, |piece| out.push(piece));
     out
+}
+
+fn for_each_piece<'a>(mut text: &'a str, mut emit: impl FnMut(&'a str)) {
+    while !text.is_empty() {
+        let mut chars = text.char_indices().peekable();
+        let (_, first) = chars.next().expect("non-empty token input");
+        if first == '\''
+            && let Some(contraction) = ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"]
+                .into_iter()
+                .find(|&prefix| text.starts_with(prefix))
+        {
+            emit(&text[..contraction.len()]);
+            text = &text[contraction.len()..];
+            continue;
+        }
+        let mut group = class(first);
+        if first == ' '
+            && let Some(&(_, following)) = chars.peek()
+        {
+            group = class(following);
+        }
+        let mut end = text.len();
+        let mut last = 0;
+        for (offset, ch) in chars {
+            if class(ch) != group {
+                // Reserve the final whitespace before a non-space group.
+                end = if group == Class::Space && last > 0 {
+                    last
+                } else {
+                    offset
+                };
+                break;
+            }
+            last = offset;
+        }
+        emit(&text[..end]);
+        text = &text[end..];
+    }
 }
 
 impl Tokenizer {
@@ -211,9 +211,9 @@ impl Tokenizer {
     pub fn encode(&self, text: &str) -> Vec<u32> {
         let mut out = Vec::with_capacity(text.len() / 2 + 4);
         let mut parts = Vec::with_capacity(32);
-        for piece in pre_tokenize(text) {
+        for_each_piece(text, |piece| {
             self.bpe_bytes(piece.as_bytes(), &mut parts, &mut out);
-        }
+        });
         out
     }
 
@@ -228,7 +228,8 @@ impl Tokenizer {
                 }
             }
         }
-        String::from_utf8_lossy(&bytes).into_owned()
+        String::from_utf8(bytes)
+            .unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned())
     }
 }
 
@@ -241,6 +242,14 @@ mod tests {
         assert_eq!(pre_tokenize("hello world"), vec!["hello", " world"]);
         assert_eq!(pre_tokenize("今日は\u{3000}晴れ"), vec!["今日は", "\u{3000}", "晴れ"]);
         assert_eq!(pre_tokenize("a  b"), vec!["a", " ", " b"]);
+        assert_eq!(
+            pre_tokenize("日\t\u{3000} b  "),
+            vec!["日", "\t\u{3000}", " b", "  "]
+        );
+        assert_eq!(
+            pre_tokenize("can't 12 'd"),
+            vec!["can", "'t", " 12", " '", "d"]
+        );
         assert_eq!(pre_tokenize("\u{EE00}カタ\u{EE01}"), vec!["\u{EE00}", "カタ", "\u{EE01}"]);
     }
 }

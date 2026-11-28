@@ -150,8 +150,7 @@ impl Converter {
                 let id = self.dict.pos_id(feature).unwrap_or(self.dict.unknown_id());
                 let base = self
                     .dict
-                    .lookup(&text[pos..pos + l])
-                    .into_iter()
+                    .lookup_entries(&text[pos..pos + l])
                     .filter(|e| e.surface == w.surface)
                     .map(|e| e.cost as i32)
                     .min()
@@ -181,7 +180,7 @@ impl Converter {
                 let (start, end) = (pos, pos + n.len);
                 // A reading that is also an ordinary word (さんじゅう 三重)
                 // is more often that word.
-                let word = self.dict.lookup(&text[start..end]).iter().any(|e| {
+                let word = self.dict.lookup_entries(&text[start..end]).any(|e| {
                     !e.surface.chars().all(|c| {
                         c.is_ascii_digit() || "〇一二三四五六七八九十百千万億兆".contains(c)
                     })
@@ -314,8 +313,7 @@ impl Converter {
         }
         let Some(word) = self
             .dict
-            .lookup(reference)
-            .into_iter()
+            .lookup_entries(reference)
             .filter(|entry| entry.surface == reference)
             .min_by_key(|entry| entry.cost)
         else {
@@ -347,8 +345,7 @@ impl Converter {
         // the phonetic one. The original reading remains a candidate.
         let standard = self
             .dict
-            .lookup(surface)
-            .into_iter()
+            .lookup_entries(surface)
             .filter(|entry| entry.surface == surface)
             .min_by_key(|entry| entry.cost);
         if let Some(entry) = standard {
@@ -388,28 +385,38 @@ impl Converter {
     /// (ちょーだい), a little ahead of the katakana. Loanwords keep their
     /// katakana: ホール is more common than ほうる.
     pub(super) fn long_vowel_extras(&self, text: &str, out: &mut Vec<Extra>) {
-        if !text.contains('ー') {
+        let Some(last_mark) = text.rfind('ー') else {
             return;
-        }
-        for (pos, _) in text.char_indices() {
+        };
+        for (pos, _) in text[..last_mark + 'ー'.len_utf8()].char_indices() {
             // Katakana words with ー starting here, by length.
             let mut katakana: Vec<(usize, u16, u16, i32)> = Vec::new();
+            let mut checked_len = 0;
+            let mut expected = String::new();
             self.dict.common_prefix(&text[pos..], |l, e| {
-                let reading = &text[pos..pos + l];
-                if reading.contains('ー') && e.surface == crate::romaji::to_katakana(reading) {
+                if l != checked_len {
+                    checked_len = l;
+                    let reading = &text[pos..pos + l];
+                    expected = if reading.contains('ー') {
+                        crate::romaji::to_katakana(reading)
+                    } else {
+                        String::new()
+                    };
+                }
+                if !expected.is_empty() && e.surface == expected {
                     katakana.push((l, e.lid, e.rid, i32::from(e.cost)));
                 }
             });
-            let mut lengths: Vec<usize> = katakana.iter().map(|k| k.0).collect();
-            lengths.dedup();
-            for l in lengths {
+            for words in katakana.chunk_by(|a, b| a.0 == b.0) {
+                let l = words[0].0;
                 let reading = &text[pos..pos + l];
-                let words = katakana.iter().filter(|k| k.0 == l);
                 // Against the most common katakana word (シーン, not a rare
                 // シーン with another part of speech).
-                let Some(least) = words.clone().map(|k| k.3).min() else { continue };
+                let least = words.iter().map(|word| word.3).min().unwrap();
                 let hiragana = spelled_out(reading).iter().any(|r| {
-                    self.dict.lookup(r).iter().any(|h| h.surface == r && i32::from(h.cost) + LONG_VOWEL_MARGIN < least)
+                    self.dict
+                        .lookup_entries(r)
+                        .any(|h| h.surface == r && i32::from(h.cost) + LONG_VOWEL_MARGIN < least)
                 });
                 if !hiragana {
                     continue;
@@ -621,12 +628,21 @@ impl Converter {
     /// following Japanese particle (`は` via `sha`/`cha`, or `な/に/ぬ/ね/の`
     /// via `xn` -> `ん`).
     fn merged_particle_spellings(&self, text: &str, noun_id: u16, out: &mut Vec<Extra>) {
+        if !text.contains(['し', 'ち', 'ん']) {
+            return;
+        }
+        static ROMAJI: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static str>> =
+            std::sync::OnceLock::new();
+        let romaji = ROMAJI.get_or_init(|| {
+            let mut index = std::collections::HashMap::new();
+            for (reading, spelling) in crate::english::romaji_readings() {
+                index.entry(reading.as_str()).or_insert(*spelling);
+            }
+            index
+        });
         let lookup_spelling = |cand: &str| -> Option<(&'static str, i32)> {
-            if let Some((_, sp)) = crate::english::romaji_readings()
-                .iter()
-                .find(|(r, _)| r == cand)
-            {
-                return Some((*sp, SPELLING_COST));
+            if let Some(&spelling) = romaji.get(cand) {
+                return Some((spelling, SPELLING_COST));
             }
             if self.english_words_enabled()
                 && let Some(word) = crate::english::word_index().get(cand)
@@ -636,12 +652,7 @@ impl Converter {
             None
         };
         let push_particle = |at: usize, len: usize, kana: &str, out: &mut Vec<Extra>| {
-            for e in self
-                .dict
-                .lookup(kana)
-                .into_iter()
-                .filter(|e| e.surface == kana)
-            {
+            for e in self.dict.lookup_entries(kana).filter(|e| e.surface == kana) {
                 out.push(Extra {
                     start: at,
                     end: at + len,
@@ -743,8 +754,7 @@ impl Converter {
         let kana = "なにぬねの".chars().nth(i).unwrap_or('の').to_string();
         for e in self
             .dict
-            .lookup(&kana)
-            .into_iter()
+            .lookup_entries(&kana)
             .filter(|e| e.surface == kana)
         {
             out.push(Extra {
@@ -774,8 +784,7 @@ impl Converter {
             let kata = crate::romaji::to_katakana(&reading);
             let best = self
                 .dict
-                .lookup(&reading)
-                .into_iter()
+                .lookup_entries(&reading)
                 .filter(|e| e.surface == kata && i32::from(e.cost) <= LOANWORD_MAX_COST)
                 .min_by_key(|e| e.cost);
             if let Some(e) = best {
@@ -832,8 +841,7 @@ impl Converter {
             h.common_prefix(&text[pos..], |l, e| {
                 let base = self
                     .dict
-                    .lookup(&text[pos..pos + l])
-                    .into_iter()
+                    .lookup_entries(&text[pos..pos + l])
                     .filter(|d| d.surface == e.surface)
                     .map(|d| d.cost as i32)
                     .min()

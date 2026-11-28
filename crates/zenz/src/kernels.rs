@@ -178,7 +178,11 @@ pub fn matmul_q8_bias(
     let threads = if work < 1 << 17 {
         1
     } else {
-        pool().current_num_threads().min((n_blocks / 2).max(1))
+        // Small single-token projections do not have enough work for all workers.
+        pool()
+            .current_num_threads()
+            .min((n_blocks / 2).max(1))
+            .min(work.div_ceil(1 << 16))
     };
     let chunk_blocks = n_blocks.div_ceil(threads).max(1);
     let yp = SendPtr(y.as_mut_ptr());

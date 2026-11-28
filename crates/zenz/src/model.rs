@@ -50,6 +50,14 @@ impl ForwardScratch {
     }
 }
 
+/// Keep initialized scratch between calls with differently sized batches.
+fn scratch_prefix(buffer: &mut Vec<f32>, len: usize) -> &mut [f32] {
+    if buffer.len() < len {
+        buffer.resize(len, 0.0);
+    }
+    &mut buffer[..len]
+}
+
 thread_local! {
     static FORWARD_SCRATCH: RefCell<ForwardScratch> = RefCell::new(ForwardScratch::default());
 }
@@ -368,14 +376,14 @@ impl Model {
                 anc_ranges.push((start, end));
             }
             let max_ctx = past + max_depth;
-            x.resize(t * e, 0.0);
-            h.resize(t * e, 0.0);
-            qkv.resize(t * 3 * e, 0.0);
-            att.resize(t * e, 0.0);
-            ff.resize(t * 4 * e, 0.0);
-            scores.resize(max_ctx, 0.0);
-            hf.resize(rows * e, 0.0);
-            logits.resize(rows * vsz, 0.0);
+            let x = scratch_prefix(x, t * e);
+            let h = scratch_prefix(h, t * e);
+            let qkv = scratch_prefix(qkv, t * 3 * e);
+            let att = scratch_prefix(att, t * e);
+            let ff = scratch_prefix(ff, t * 4 * e);
+            let scores = scratch_prefix(scores, max_ctx);
+            let hf = scratch_prefix(hf, rows * e);
+            let logits = scratch_prefix(logits, rows * vsz);
             for (i, &tok) in tokens.iter().enumerate() {
                 let (as_, ae) = anc_ranges[i];
                 let pos = (past + (ae - as_) - 1).min(self.cfg.n_positions - 1);
@@ -455,7 +463,7 @@ impl Model {
             let src = &x[(t - rows) * e..];
             layer_norm(src, &d[self.lnf_w.clone()], &d[self.lnf_b.clone()], eps, hf);
             matmul_q8_bias(hf, &self.wte_t_q8, None, logits, rows, false);
-            consume(&logits[..rows * vsz])
+            consume(logits)
         };
         // Keep steady-state memory bounded after unusually large batches.
         scratch.trim(256 * 4 * e, 64 * vsz);

@@ -2,6 +2,8 @@
 //! converter can offer 三千二百 and 3200 even when the dictionary has no
 //! entry for the whole reading.
 
+use std::sync::OnceLock;
+
 /// A number reading found at the start of a text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NumberReading {
@@ -172,6 +174,22 @@ const TOKENS: &[(&str, Tok)] = {
     ]
 };
 
+fn tokens_starting_with(text: &str) -> &'static [(&'static str, Tok)] {
+    const KANA_COUNT: usize = 'ゖ' as usize - 'ぁ' as usize + 1;
+    static BY_INITIAL: OnceLock<[Vec<(&'static str, Tok)>; KANA_COUNT]> = OnceLock::new();
+    let Some(first @ 'ぁ'..='ゖ') = text.chars().next() else {
+        return &[];
+    };
+    &BY_INITIAL.get_or_init(|| {
+        let mut buckets = std::array::from_fn(|_| Vec::new());
+        for &(reading, token) in TOKENS {
+            let initial = reading.chars().next().expect("number token has a reading");
+            buckets[initial as usize - 'ぁ' as usize].push((reading, token));
+        }
+        buckets
+    })[first as usize - 'ぁ' as usize]
+}
+
 /// Whether `unit` may follow `prev` (sound changes: さんびゃく, ろっぴゃく,
 /// さんぜん; and the plain forms elsewhere).
 fn unit_follows(prev: Option<&str>, unit: &str) -> bool {
@@ -229,7 +247,7 @@ fn walk(text: &str, pos: usize, st: &mut State, out: &mut Vec<NumberReading>) {
         return;
     }
     let rest = &text[pos..];
-    for &(kana, tok) in TOKENS {
+    for &(kana, tok) in tokens_starting_with(rest) {
         if !rest.starts_with(kana) {
             continue;
         }
