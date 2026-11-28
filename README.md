@@ -92,6 +92,8 @@ Pass `--prefix <dir>`, `--addon-dir <dir>`, or `--uninstall` as needed.
 
 On GNOME (Wayland), which has no `wlr-layer-shell`, the candidate window comes from the [Input Method Panel (KIMPanel)](https://extensions.gnome.org/extension/261/kimpanel/) GNOME Shell extension or fcitx5's classic UI instead of Sweet IME's own window, so Sweet IME's candidate window themes do not apply there.
 
+On Ubuntu, the default Snap build of Firefox may show no preedit or commit text and place candidates at the window's top-left with any fcitx5 input method. Install the `.deb` build from [Mozilla's APT repository](https://support.mozilla.org/kb/install-firefox-linux) instead.
+
 When fcitx5 starts, Sweet IME checks for a new release (at most once a day) and shows a desktop notification (`notify-send`). **更新する** in the notification or in the settings app downloads the archive, verifies its SHA-256, runs its `install.sh` with the same locations through `pkexec` (polkit), and restarts fcitx5. Turn the check off in **設定 → 情報**.
 
 **Option B — Nix Flake / NixOS:**
