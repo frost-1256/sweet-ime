@@ -437,6 +437,11 @@ impl Converter {
         let unk = self.dict.unknown_id();
 
         let mut seen_counters: Vec<(usize, &'static str)> = Vec::new();
+        let trailing_vowel_start = text
+            .chars()
+            .next_back()
+            .filter(|c| matches!(c, 'あ' | 'い' | 'う' | 'え' | 'お'))
+            .map_or(text.len(), |c| text.trim_end_matches(c).len());
         let mut pos = 0;
         while pos < len {
             let rest = &text[pos..];
@@ -500,6 +505,10 @@ impl Converter {
             }
             seen_counters.clear();
             let emit_arabic_counters = self.number_pos.is_some();
+            // A trailing run of identical vowels often represents emphasis.
+            // Keep a one-kana homophone from consuming the start of the run.
+            let cl = c.len_utf8();
+            let repeated_vowel = pos >= trailing_vowel_start && rest.len() >= 3 * cl;
             self.dict.common_prefix(rest, |l, e| {
                 if crosses(pos, pos + l) {
                     return;
@@ -514,6 +523,11 @@ impl Converter {
                         wcost: i32::from(e.cost)
                             - context_bonus(&text[..pos], &rest[..l], &rest[l..], e.surface)
                             + standalone_penalty(text, e.surface)
+                            + if repeated_vowel && l == cl && !e.surface.chars().all(is_kana) {
+                                1_200
+                            } else {
+                                0
+                            }
                             + bos_particle_penalty(
                                 pos,
                                 &rest[..l],
@@ -554,7 +568,6 @@ impl Converter {
                 }
             });
             // Always allow a single-character fallback to keep the lattice connected.
-            let cl = c.len_utf8();
             push(
                 &mut lat,
                 Node {
