@@ -288,6 +288,21 @@ pub struct NotifyDebug {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
+impl NotifyDebug {
+    /// Runs `job` on another thread and shows what it returns.
+    fn run(&mut self, ctx: &egui::Context, waiting: &str, job: impl FnOnce() -> String + Send + 'static) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(job());
+            ctx.request_repaint();
+        });
+        self.rx = Some(rx);
+        self.status = waiting.into();
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn debug_section(ui: &mut egui::Ui, d: &mut NotifyDebug) {
     if !update::is_prerelease_build() {
         return;
@@ -310,9 +325,7 @@ pub fn debug_section(ui: &mut egui::Ui, d: &mut NotifyDebug) {
         ui.label(RichText::new("アップデートの通知と更新の流れを確かめるためのメニューです。").small().weak());
         ui.horizontal(|ui| {
             if ui.add_enabled(d.rx.is_none(), egui::Button::new("通知だけ試す")).clicked() {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let ctx = ui.ctx().clone();
-                std::thread::spawn(move || {
+                d.run(ui.ctx(), "通知を表示しています…", || {
                     let release = Release {
                         version: "(テスト通知)".into(),
                         notes: String::new(),
@@ -325,19 +338,55 @@ pub fn debug_section(ui: &mut egui::Ui, d: &mut NotifyDebug) {
                         Some(update::NotifyChoice::Dismissed) => "通知が閉じられました(ボタンなしの通知を含みます)。",
                         None => "通知を表示できませんでした。notify-send があるか確かめてください。",
                     };
-                    let _ = tx.send(status.to_string());
-                    ctx.request_repaint();
+                    status.to_string()
                 });
-                d.rx = Some(rx);
-                d.status = "通知を表示しています…".into();
             }
             if ui.button("起動時の確認を試す").clicked() {
                 d.status = start_check_as_old_version();
             }
         });
+        ui.horizontal(|ui| {
+            let idle = d.rx.is_none();
+            if ui.add_enabled(idle, egui::Button::new("環境をチェック")).clicked() {
+                d.run(ui.ctx(), "確かめています…", || {
+                    update::linux_diagnostics()
+                        .into_iter()
+                        .map(|(name, result)| match result {
+                            Ok(value) => format!("✓ {name}: {value}"),
+                            Err(e) => format!("✗ {name}: {e}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                });
+            }
+            if ui.add_enabled(idle, egui::Button::new("pkexec を試す")).clicked() {
+                d.run(ui.ctx(), "認証ダイアログを待っています…", || match update::try_pkexec() {
+                    Ok(()) => "✓ pkexec で管理者として実行できました(true を実行しただけで、何も変更していません)。".into(),
+                    Err(e) => format!("✗ {e}"),
+                });
+            }
+            if ui.add_enabled(idle, egui::Button::new("更新の予行演習")).clicked() {
+                d.run(ui.ctx(), "最新版をダウンロードしています…", || {
+                    let release = match update::fetch_latest() {
+                        Ok(release) => release,
+                        Err(e) => return format!("✗ {e}"),
+                    };
+                    let Some(asset) = release.installer else {
+                        return format!("✗ {} に {} がありません", release.version, update::installer());
+                    };
+                    match update::rehearse_linux_install(&asset) {
+                        Ok(()) => format!(
+                            "✓ {} のダウンロード、SHA-256 の照合、展開、pkexec での install.sh --help まで成功しました(インストールはしていません)。",
+                            release.version
+                        ),
+                        Err(e) => format!("✗ {e}"),
+                    }
+                });
+            }
+        });
         ui.label(
             RichText::new(
-                "「起動時の確認を試す」は、fcitx5 の起動時と同じ確認をバージョン 0.0.0 のふりをして行います。最新の正式版が新しいバージョンとして通知され、そこで更新すると正式版に戻ります。",
+                "「起動時の確認を試す」は、fcitx5 の起動時と同じ確認をバージョン 0.0.0 のふりをして行います。最新の正式版が新しいバージョンとして通知され、そこで更新すると正式版に戻ります。「更新の予行演習」は、最新の正式版で更新の手順を install.sh --help の実行まで試し、何もインストールしません。",
             )
             .small()
             .weak(),

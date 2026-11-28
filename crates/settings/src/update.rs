@@ -14,7 +14,7 @@ use sweet_ui::eframe::egui;
 
 const REPO: &str = "frost-1256/sweet-ime";
 /// The release asset that updates this platform.
-fn installer() -> String {
+pub fn installer() -> String {
     #[cfg(windows)]
     return "SweetIME-Setup.exe".into();
     #[cfg(target_os = "macos")]
@@ -308,7 +308,26 @@ fn linux_install_from(
 /// polkit, and restarts fcitx5 so it loads the new addon.
 #[cfg(not(any(windows, target_os = "macos")))]
 fn install_linux(asset: &Asset, archive: &Path) -> Result<(), String> {
-    let target = linux_install()?;
+    run_linux_install(asset, archive, false)
+}
+
+/// Does everything [`install_linux`] does up to polkit, but runs
+/// `install.sh --help` instead of installing and leaves fcitx5 running.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn rehearse_linux_install(asset: &Asset) -> Result<(), String> {
+    let archive = std::env::temp_dir()
+        .join(format!("sweet-ime-rehearsal-{}-{}", std::process::id(), now()))
+        .join(installer());
+    run_linux_install(asset, &archive, true)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn run_linux_install(asset: &Asset, archive: &Path, rehearse: bool) -> Result<(), String> {
+    let args = if rehearse {
+        vec!["--help".to_string()]
+    } else {
+        linux_install()?.args
+    };
     prepare_work_dir(asset, archive)?;
     let work = archive.parent().unwrap();
     let result = download(asset, archive).and_then(|archive| {
@@ -330,7 +349,7 @@ fn install_linux(asset: &Asset, archive: &Path) -> Result<(), String> {
         }
         let output = std::process::Command::new("pkexec")
             .arg(&script)
-            .args(&target.args)
+            .args(&args)
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|e| format!("pkexec を実行できません(polkit が必要です): {e}"))?;
@@ -345,6 +364,9 @@ fn install_linux(asset: &Asset, archive: &Path) -> Result<(), String> {
                 return Err(format!("アップデートに失敗しました: {}", message.trim()));
             }
         }
+        if rehearse {
+            return Ok(());
+        }
         // Replace the running fcitx5 so it loads the new addon.
         let _ = std::process::Command::new("fcitx5")
             .args(["-r", "-d"])
@@ -356,6 +378,76 @@ fn install_linux(asset: &Asset, archive: &Path) -> Result<(), String> {
     });
     let _ = std::fs::remove_dir_all(work);
     result
+}
+
+/// Runs `true` through pkexec to check that polkit can authorize the user.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn try_pkexec() -> Result<(), String> {
+    let program = ["/usr/bin/true", "/bin/true"]
+        .into_iter()
+        .find(|path| Path::new(path).exists())
+        .ok_or("true コマンドが見つかりません")?;
+    let status = std::process::Command::new("pkexec")
+        .arg(program)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("pkexec を実行できません: {e}"))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(126) => Err("認証ダイアログが閉じられたか、認証に失敗しました(終了コード 126)".into()),
+        Some(127) => Err("認証できませんでした。polkit の認証エージェントが動いていない可能性があります(終了コード 127)".into()),
+        code => Err(format!("pkexec が失敗しました(終了コード {code:?})")),
+    }
+}
+
+/// Checks what the Linux notification and update need, one line per item.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn linux_diagnostics() -> Vec<(&'static str, Result<String, String>)> {
+    let version = |program: &str| {
+        std::process::Command::new(program)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("見つかりません: {e}"))
+            .and_then(|output| {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let line = text.lines().next().unwrap_or("").trim().to_string();
+                if output.status.success() {
+                    Ok(line)
+                } else {
+                    Err(format!("--version が失敗しました: {line}"))
+                }
+            })
+    };
+    let install = linux_install().map(|install| {
+        if install.args.is_empty() {
+            "tar.gz 版(/usr/local、記録なし)".to_string()
+        } else {
+            format!("tar.gz 版(install.sh {})", install.args.join(" "))
+        }
+    });
+    let work = std::env::temp_dir().join(format!("sweet-ime-check-{}-{}", std::process::id(), now()));
+    let temp = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&work)
+            .map(|()| {
+                let _ = std::fs::remove_dir(&work);
+                work.parent().unwrap_or(&work).display().to_string()
+            })
+            .map_err(|e| format!("作れません: {e}"))
+    };
+    vec![
+        ("自動更新", install),
+        ("アセット", Ok(installer())),
+        ("notify-send", version("notify-send")),
+        ("pkexec", version("pkexec")),
+        ("tar", version("tar")),
+        ("curl", version("curl")),
+        ("fcitx5", version("fcitx5")),
+        ("一時フォルダー", temp),
+    ]
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
