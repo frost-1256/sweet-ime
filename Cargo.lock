@@ -2395,7 +2395,7 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 
 [[package]]
 name = "sweet-android"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "jni 0.21.1",
  "sweet-engine",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-cli"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "anyhow",
  "regex",
@@ -2416,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-dictc"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "anyhow",
  "sweet-engine",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-engine"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "fst",
  "memmap2",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-fcitx5"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "sweet-engine",
  "sweet-zenz",
@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-installer"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "embed-resource",
  "miniz_oxide 0.9.1",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-macos"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "serde_json",
  "sweet-engine",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-settings"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "embed-resource",
  "raw-window-handle",
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-tsf"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "sweet-engine",
  "sweet-zenz",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-tsf-shim"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "embed-resource",
  "windows",
@@ -2493,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-ui"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "eframe",
  "winit",
@@ -2501,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "sweet-zenz"
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 dependencies = [
  "memmap2",
  "rayon",
